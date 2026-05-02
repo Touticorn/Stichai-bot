@@ -2,7 +2,7 @@
 // 🧵 STICHAI EMBROIDERY BOT v4.1
 // ============================================================
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
+const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] }));
 const { Boom } = require("@hapi/boom");
 const express = require("express");
 const axios = require("axios");
