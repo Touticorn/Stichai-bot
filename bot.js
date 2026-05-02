@@ -372,6 +372,22 @@ async function initBaileys() {
 
   sock.ev.on("creds.update", saveCreds);
 
+  // PAIRING CODE - shows 8-digit code in logs
+  if (!sock.authState.creds.registered) {
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode("212675823517");
+        console.log("\n\n========================================");
+        console.log("📱 PAIRING CODE: " + code);
+        console.log("========================================");
+        console.log("WhatsApp → Settings → Linked Devices");
+        console.log("→ Link a Device → Link with phone number");
+        console.log("→ Enter this code");
+        console.log("========================================\n\n");
+      } catch(e) { console.error("Pairing code error:", e.message); }
+    }, 3000);
+  }
+
 cd ~/stichai
 nano bot.js  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
