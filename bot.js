@@ -1,16 +1,12 @@
-// ==============================ll===========================
-// 🧵 STICHAI EMBROIDERY BOT v4.1 — Railway-Ready
-// Baileys WhatsApp (no Chrome needed!)
-// Subscription: Basic (50 MAD) + Pro (350 MAD)
-// Trial codes system
-// Languages: Arabic / French / English
-// Hosted on Railway + PostgreSQL
+// ============================================================
+// 🧵 STICHAI EMBROIDERY BOT v4.1
 // ============================================================
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
-const expres
-const { Poo } = require("pg");
+const express = require("express");
+const axios = require("axios");
+const { Pool } = require("pg");
 const crypto = require("crypto");
 const pino = require("pino");
 const path = require("path");
@@ -29,9 +25,8 @@ const CONFIG = {
   CMI_MERCHANT_ID:       process.env.CMI_MERCHANT_ID,
   DATABASE_URL:          process.env.DATABASE_URL,
   ADMIN_SECRET:          process.env.ADMIN_SECRET || "change_me",
-  ADMIN_PHONE:           process.env.ADMIN_PHONE  || "21267582517",
+  ADMIN_PHONE:           process.env.ADMIN_PHONE  || "212675823517",
   BASE_URL:              process.env.BASE_URL      || "https://stichai.pro",
-  // Use Railway volume or tmp for auth persistence
   AUTH_DIR:              process.env.AUTH_DIR || "/app/.baileys_auth",
 
   PLANS: {
@@ -53,6 +48,10 @@ const CONFIG = {
 const db = new Pool({ connectionString: CONFIG.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
 async function initDB() {
+  if (!CONFIG.DATABASE_URL) {
+    console.log("⚠️ No DATABASE_URL, skipping DB init");
+    return;
+  }
   await db.query(`
     CREATE TABLE IF NOT EXISTS users (
       phone           VARCHAR(20)  PRIMARY KEY,
@@ -62,7 +61,12 @@ async function initDB() {
       plan_end        TIMESTAMP    DEFAULT NULL,
       files_today     INT          DEFAULT 0,
       files_total     INT          DEFAULT 0,
-      last_file_date   DEFAULT 'trial',
+      last_file_date  DATE         DEFAULT NULL,
+      created_at      TIMESTAMP    DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS trial_codes (
+      code        VARCHAR(20)  PRIMARY KEY,
+      plan        VARCHAR(10)  DEFAULT 'trial',
       days        INT          DEFAULT 7,
       max_uses    INT          DEFAULT 1,
       used_count  INT          DEFAULT 0,
@@ -72,7 +76,7 @@ async function initDB() {
     );
     CREATE TABLE IF NOT EXISTS code_uses (
       id      SERIAL PRIMARY KEY,
-      code    VARCHAR(20),
+n      code    VARCHAR(20),
       phone   VARCHAR(20),
       used_at TIMESTAMP DEFAULT NOW()
     );
@@ -155,7 +159,12 @@ async function recordConversion(phone, plan, stitchCount = 0) {
 // TRIAL CODES
 // ============================================================
 async function createCode({ plan="trial", days=7, maxUses=1, prefix="EMB" } = {}) {
-  const code = `${prefix}-${crypto.randomBytes(3)
+  const code = `${prefix}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+  await db.query(
+    `INSERT INTO trial_codes (code,plan,days,max_uses,expires_at) VALUES ($1,$2,$3,$4,NOW()+($3||' days')::INTERVAL)`,
+    [code, plan, days, maxUses]
+  );
+  return code;
 }
 
 async function redeemCode(code, phone) {
@@ -294,7 +303,7 @@ async function payCMI(phone, plan, lang) {
   const amt = CONFIG.PLANS[plan].price_mad;
   sess(phone).orderId = oid;
   await db.query("INSERT INTO payments (phone,plan,amount_mad,method,reference) VALUES ($1,$2,$3,'cmi',$4)", [cleanPhone(phone), plan, amt, oid]);
-  const url = `https://payment.cmi.co.ma/fim/est3Dgate?clientid=${CONFIG.CMI_MERCHANT_ID}&amount=${amt}.00¤cy=504&oid=${oid}&okUrl=${CONFIG.BASE_URL}/payment/cmi/success&callbackUrl=${CONFIG.BASE_URL}/payment/cmi/callback`;
+  const url = `https://payment.cmi.co.ma/fim/est3Dgate?clientid=${CONFIG.CMI_MERCHANT_ID}&amount=${amt}.00&currency=504&oid=${oid}&okUrl=${CONFIG.BASE_URL}/payment/cmi/success&callbackUrl=${CONFIG.BASE_URL}/payment/cmi/callback`;
   return { ar:`💳 *CMI*\n💰 ${amt} درهم\n${url}`, fr:`💳 *CMI*\n💰 ${amt} MAD\n${url}`, en:`💳 *CMI*\n💰 ${amt} MAD\n${url}` }[lang] || url;
 }
 
@@ -386,4 +395,358 @@ async function initBaileys() {
     if (type !== "notify") return;
     for (const msg of messages) {
       if (msg.key.fromMe) continue;
-      if (msg.key.remoteJid?.includ
+      if (msg.key.remoteJid?.includes("@g.us")) continue;
+      try {
+        await handleMessage(msg);
+      } catch(e) {
+        console.error("Message handler error:", e.message);
+      }
+    }
+  });
+}
+
+// ============================================================
+// PROCESS AND DELIVER
+// ============================================================
+async function processAndDeliver(phone, user, msg) {
+  const lang = user.language || "fr";
+  await sendMsg(phone, m("processing", lang));
+
+  try {
+    let b64, mime;
+    const imgMsg = msg.message?.imageMessage || msg.message?.documentMessage;
+
+    if (imgMsg) {
+      const stream = await sock.downloadMediaMessage(msg, "buffer");
+      b64  = stream.toString("base64");
+      mime = imgMsg.mimetype || "image/jpeg";
+    } else {
+      throw new Error("No image found in message");
+    }
+
+    const analysis = await analyzeImage(b64, mime);
+
+    let files = null;
+    try {
+      const r = await axios.post(`${CONFIG.BASE_URL}/generate-embroidery`, { image_b64: b64, mime_type: mime, analysis, phone }, { timeout: 60000 });
+      files = r.data;
+    } catch(e) {
+      console.log("Python service not available:", e.message);
+    }
+
+    await recordConversion(phone, user.plan, files?.stitch_count || 0);
+    await sendMsg(phone, m("done", lang));
+
+    if (files?.dst_url) {
+      await sendMsg(phone, `📁 DST (Tajima): ${files.dst_url}\n📁 PES (Brother): ${files.pes_url}`);
+    }
+
+    const modelLabel = analysis._model?.includes("lite") ? "Flash-Lite ⚡" : analysis._model?.includes("pro") ? "Pro 🎯" : "Flash ✨";
+    const summary = {
+      ar:`📊 الغرز: ~${(analysis.stitch_count||5000).toLocaleString()} | ${analysis.width_mm}×${analysis.height_mm}mm | ${analysis.colors?.length||1} لون | 🤖 Gemini ${modelLabel}`,
+      fr:`📊 Points: ~${(analysis.stitch_count||5000).toLocaleString()} | ${analysis.width_mm}×${analysis.height_mm}mm | ${analysis.colors?.length||1} couleur(s) | 🤖 Gemini ${modelLabel}`,
+      en:`📊 Stitches: ~${(analysis.stitch_count||5000).toLocaleString()} | ${analysis.width_mm}×${analysis.height_mm}mm | ${analysis.colors?.length||1} color(s) | 🤖 Gemini ${modelLabel}`,
+    };
+    await sendMsg(phone, summary[lang]);
+    sess(phone).step = "menu";
+    await sendMsg(phone, m("menu", lang));
+
+  } catch(e) {
+    console.error("Deliver error:", e.message);
+    await sendMsg(phone, m("error", lang));
+  }
+}
+
+// ============================================================
+// MAIN MESSAGE HANDLER
+// ============================================================
+async function handleMessage(msg) {
+  const jid   = msg.key.remoteJid;
+  const phone = jid.replace("@s.whatsapp.net", "");
+  const body  = msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
+  const hasImage = !!(msg.message?.imageMessage || msg.message?.documentMessage);
+
+  const user = await getUser(phone);
+  const lang = user.language || "fr";
+  const s    = sess(phone);
+  const t    = body.trim();
+  const tl   = t.toLowerCase();
+
+  if (["0","menu","قائمة","retour","back"].includes(tl)) { s.step="menu"; return sendMsg(jid, m("menu",lang)); }
+  if (["help","aide","مساعدة"].includes(tl)) return sendMsg(jid, m("help",lang));
+  if (["upgrade","ترقية"].includes(tl)) { s.step="plans"; return sendMsg(jid, m("plans",lang)); }
+
+  switch(s.step) {
+    case "start":
+      await sendMsg(jid, MSG.welcome.fr);
+      s.step = "choose_language";
+      break;
+
+    case "choose_language":
+      if (["1","2","3"].includes(t)) {
+        const lmap = {"1":"ar","2":"fr","3":"en"};
+        await updateUser(phone, { language: lmap[t] });
+        s.step = "menu";
+        return sendMsg(jid, m("menu", lmap[t]));
+      }
+      await sendMsg(jid, MSG.welcome.fr);
+      break;
+
+    case "menu":
+      if (t==="1") {
+        const check = await canConvert(user);
+        if (!check.ok) {
+          if (check.reason==="limit") return sendMsg(jid, m("limitReached",lang));
+          s.step = "no_sub";
+          return sendMsg(jid, m("noSub",lang));
+        }
+        s.step = "waiting_image";
+        return sendMsg(jid, m("askImage",lang));
+      }
+      if (t==="2") {
+        const active = await isSubActive(user);
+        if (!active) { s.step="no_sub"; return sendMsg(jid, m("noSub",lang)); }
+        const days = Math.ceil((new Date(user.plan_end)-new Date())/86400000);
+        return sendMsg(jid, m("myPlan",lang,user,days));
+      }
+      if (t==="3") { s.step="plans"; return sendMsg(jid, m("plans",lang)); }
+      if (t==="4") { s.step="enter_code"; return sendMsg(jid, m("askCode",lang)); }
+      if (t==="5") return sendMsg(jid, m("help",lang));
+      await sendMsg(jid, m("menu",lang));
+      break;
+
+    case "no_sub":
+      if (t==="1") { s.step="plans"; return sendMsg(jid, m("plans",lang)); }
+      if (t==="2") { s.step="enter_code"; return sendMsg(jid, m("askCode",lang)); }
+      await sendMsg(jid, m("noSub",lang));
+      break;
+
+    case "enter_code": {
+      const result = await redeemCode(t, phone);
+      if (result.ok) {
+        s.step="menu";
+        await sendMsg(jid, m("codeOk",lang,result.days,result.plan));
+        return sendMsg(jid, m("menu",lang));
+      }
+      if (result.reason==="already_used") return sendMsg(jid, m("codeUsed",lang));
+      return sendMsg(jid, m("codeBad",lang));
+    }
+
+    case "plans":
+      if (t==="1") { s.selectedPlan="basic"; s.step="choose_payment"; return sendMsg(jid, m("payOpts",lang,CONFIG.PLANS.basic.label[lang])); }
+      if (t==="2") { s.selectedPlan="pro";   s.step="choose_payment"; return sendMsg(jid, m("payOpts",lang,CONFIG.PLANS.pro.label[lang])); }
+      if (t==="3") { s.step="enter_code"; return sendMsg(jid, m("askCode",lang)); }
+      await sendMsg(jid, m("plans",lang));
+      break;
+
+    case "choose_payment": {
+      const pl = s.selectedPlan;
+      let reply;
+      if (t==="1") { s.step="waiting_cashplus"; reply = await payCashplus(phone,pl,lang); }
+      else if (t==="2") { s.step="waiting_cmi"; reply = await payCMI(phone,pl,lang); }
+      else if (t==="3") { s.step="waiting_transfer"; reply = await payTransfer(phone,pl,lang); }
+      else if (t==="4") { s.step="waiting_stripe"; reply = await payStripe(phone,pl,lang); }
+      else reply = m("payOpts",lang,CONFIG.PLANS[pl].label[lang]);
+      await sendMsg(jid, reply);
+      break;
+    }
+
+    case "waiting_cashplus": {
+      const code = s.paymentCode?.toString();
+      if (t.includes(code) && (t.includes("تم")||t.includes("paid")||t.includes("payé"))) {
+        await activatePlan(phone, s.selectedPlan);
+        await db.query("UPDATE payments SET status='confirmed' WHERE phone=$1 AND method='cashplus' AND status='pending'", [cleanPhone(phone)]);
+        s.step = "menu";
+        await sendMsg(jid, m("activated",lang,CONFIG.PLANS[s.selectedPlan].label[lang]));
+        return sendMsg(jid, m("menu",lang));
+      }
+      await sendMsg(jid, { ar:`⏳ أرسل: *تم ${s.paymentCode}*`, fr:`⏳ Envoyez: *payé ${s.paymentCode}*`, en:`⏳ Send: *paid ${s.paymentCode}*` }[lang]);
+      break;
+    }
+
+    case "waiting_transfer":
+      if (hasImage) {
+        await activatePlan(phone, s.selectedPlan);
+        await db.query("UPDATE payments SET status='confirmed' WHERE phone=$1 AND method='transfer' AND status='pending'", [cleanPhone(phone)]);
+        s.step = "menu";
+        await sendMsg(jid, m("activated",lang,CONFIG.PLANS[s.selectedPlan].label[lang]));
+        return sendMsg(jid, m("menu",lang));
+      }
+      break;
+
+    case "waiting_image":
+      if (hasImage) {
+        const freshUser = await getUser(phone);
+        return processAndDeliver(jid, freshUser, msg);
+      }
+      await sendMsg(jid, m("askImage",lang));
+      break;
+
+    default:
+      s.step = "menu";
+      await sendMsg(jid, m("menu",lang));
+  }
+}
+
+// ============================================================
+// EXPRESS ROUTES
+// ============================================================
+app.post("/payment/stripe/callback", express.raw({ type:"application/json" }), async (req, res) => {
+  const stripe = require("stripe")(CONFIG.STRIPE_SECRET_KEY);
+  try {
+    const event = stripe.webhooks.constructEvent(req.body, req.headers["stripe-signature"], CONFIG.STRIPE_WEBHOOK_SECRET);
+    if (event.type === "checkout.session.completed") {
+      const { phone, plan } = event.data.object.metadata;
+      await activatePlan(phone, plan);
+      await db.query("UPDATE payments SET status='confirmed' WHERE phone=$1 AND method='stripe' AND status='pending'", [phone]);
+      const user = await getUser(phone);
+      await sendMsg(`${phone}@s.whatsapp.net`, m("activated", user.language||"fr", CONFIG.PLANS[plan].label[user.language||"fr"]));
+      await sendMsg(`${phone}@s.whatsapp.net`, m("menu", user.language||"fr"));
+    }
+    res.json({ received: true });
+  } catch(e) { res.status(400).send(e.message); }
+});
+
+app.post("/payment/cmi/callback", async (req, res) => {
+  const { oid, Response } = req.body;
+  if (Response === "Approved") {
+    const r = await db.query("SELECT * FROM payments WHERE reference=$1", [oid]);
+    if (r.rows.length) {
+      const { phone, plan } = r.rows[0];
+      await activatePlan(phone, plan);
+      await db.query("UPDATE payments SET status='confirmed' WHERE reference=$1", [oid]);
+      const user = await getUser(phone);
+      await sendMsg(`${phone}@s.whatsapp.net`, m("activated", user.language||"fr", CONFIG.PLANS[plan].label[user.language||"fr"]));
+    }
+  }
+  res.send("ACTION=POSTAUTH");
+});
+
+app.get("/payment/stripe/success", (_, res) =>
+  res.send(`<html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#f0fdf4"><h1 style="color:#16a34a">✅ Payment Successful!</h1><p>Check WhatsApp — your subscription is now active! 🧵</p></body></html>`)
+);
+
+app.get("/", (_, res) => {
+  try { res.sendFile(path.join(__dirname, "index.html")); } catch { res.send("🧵 Stichai Embroidery Bot"); }
+});
+
+function adminAuth(req, res) {
+  const s = req.body?.secret || req.query?.secret;
+  if (s !== CONFIG.ADMIN_SECRET) { res.status(401).json({ error:"Unauthorized" }); return false; }
+  return true;
+}
+
+app.post("/admin/code", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const { plan="trial", days=7, maxUses=1, prefix="EMB" } = req.body;
+  const code = await createCode({ plan, days, maxUses, prefix });
+  res.json({ code, plan, days, maxUses });
+});
+
+app.post("/admin/codes/bulk", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const { count=10, plan="trial", days=7, maxUses=1, prefix="EMB" } = req.body;
+  const codes = [];
+  for (let i=0; i<count; i++) codes.push(await createCode({ plan, days, maxUses, prefix }));
+  res.json({ codes, count: codes.length });
+});
+
+app.post("/admin/send-code", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const { phone, plan="trial", days=7 } = req.body;
+  const code = await createCode({ plan, days, maxUses:1 });
+  const user = await getUser(phone);
+  const lang = user.language||"fr";
+  const t = {
+    ar:`🎁 *هدية من Stichai!*\n🎟️ *${code}*\n✨ ${days} أيام — ${plan==="pro"?"المحترف":"الأساسي"}`,
+    fr:`🎁 *Cadeau de Stichai!*\n🎟️ *${code}*\n✨ ${days} jours — ${plan==="pro"?"Pro":"Basique"}`,
+    en:`🎁 *Gift from Stichai!*\n🎟️ *${code}*\n✨ ${days} days — ${plan==="pro"?"Pro":"Basic"}`,
+  };
+  await sendMsg(`${cleanPhone(phone)}@s.whatsapp.net`, t[lang]||t.fr);
+  res.json({ success:true, code, phone });
+});
+
+app.get("/admin/codes", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const r = await db.query("SELECT * FROM trial_codes ORDER BY created_at DESC LIMIT 100");
+  res.json(r.rows);
+});
+
+app.get("/admin/stats", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const [users,revenue,conversions,codes] = await Promise.all([
+    db.query(`SELECT COUNT(*) total, COUNT(CASE WHEN plan='basic' AND plan_end>NOW() THEN 1 END) basic, COUNT(CASE WHEN plan='pro' AND plan_end>NOW() THEN 1 END) pro, COUNT(CASE WHEN plan='trial' AND plan_end>NOW() THEN 1 END) trial FROM users`),
+    db.query("SELECT SUM(amount_mad) total_mad, COUNT(*) total_payments FROM payments WHERE status='confirmed'"),
+    db.query("SELECT COUNT(*) total, SUM(stitch_count) total_stitches FROM conversions"),
+    db.query("SELECT COUNT(*) total, SUM(used_count) used FROM trial_codes WHERE active=TRUE"),
+  ]);
+  res.json({ users:users.rows[0], revenue:revenue.rows[0], conversions:conversions.rows[0], trial_codes:codes.rows[0] });
+});
+
+app.get("/health", (_,res) => {
+  res.json({ 
+    status: "ok", 
+    uptime: process.uptime(), 
+    version: "4.1", 
+    whatsapp: connectionState,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.post("/generate-embroidery", async (req, res) => {
+  const { analysis } = req.body;
+  res.json({
+    stitch_count: analysis?.stitch_count || 5000,
+    dst_url: null,
+    pes_url: null,
+    jef_url: null,
+    note: "Stub endpoint — implement actual embroidery generation"
+  });
+});
+
+// ============================================================
+// GRACEFUL SHUTDOWN
+// ============================================================
+function gracefulShutdown(signal) {
+  console.log(`\n${signal} received. Shutting down gracefully...`);
+  if (sock) {
+    sock.ev.removeAllListeners();
+    sock.ws?.close();
+  }
+  db.end().then(() => {
+    console.log("Database pool closed.");
+    process.exit(0);
+  });
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// ============================================================
+// BOOT
+// ============================================================
+const PORT = process.env.PORT || 3000;
+
+(async () => {
+  try {
+    // Start server IMMEDIATELY
+    const server = app.listen(PORT, "0.0.0.0", () => {
+      console.log(`🧵 Stichai Bot v4.1 on port ${PORT}`);
+      console.log(`🌐 ${CONFIG.BASE_URL}`);
+    });
+
+    // Init DB (non-blocking)
+    initDB().catch(err => {
+      console.error("DB init failed:", err.message);
+    });
+
+    // Init Baileys (non-blocking)
+    initBaileys().catch(err => {
+      console.error("Baileys init error:", err.message);
+    });
+
+  } catch (err) {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  }
+})();
