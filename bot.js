@@ -372,34 +372,25 @@ async function initBaileys() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
-    if (if (qr) {
-  qrShown = true;
-  console.log("\n📱 QR CODE BELOW - SCAN NOW:\n");
-  const qrcode = require("qrcode-terminal");
-  qrcode.generate(qr, { small: true }, (q) => console.log(q));
-}qr && !qrShown) {
-      qrShown = true;
-      console.log("\n📱 SCAN THIS QR CODE WITH WHATSAPP:\n");
-      console.log("Open WhatsApp → Settings → Linked Devices → Link a Device\n");
+cd ~/stichai
+nano bot.js  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      console.log("
+📱 SCAN THIS QR WITH WHATSAPP:
+");
+      const qrcode = require("qrcode-terminal");
+      qrcode.generate(qr, { small: true }, (q) => console.log(q));
     }
     if (connection === "close") {
       connectionState = "disconnected";
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
       console.log("Connection closed. Reconnecting:", shouldReconnect);
-      if (shouldReconnect) { 
-        qrShown = false; 
-        setTimeout(initBaileys, 5000); 
-      }
+      if (shouldReconnect) setTimeout(initBaileys, 5000);
     }
     if (connection === "open") {
       connectionState = "connected";
-      qrShown = false;
-      console.log("✅ WhatsApp connected!");
     }
-    if (connection === "connecting") {
-      connectionState = "connecting";
-    }
+    if (connection === "connecting") connectionState = "connecting";
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
