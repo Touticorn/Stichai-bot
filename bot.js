@@ -57,7 +57,7 @@ async function initBaileys() {
       connectionState = "disconnected";
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
       console.log("Connection closed. Reconnecting:", shouldReconnect);
-      if (shouldReconnect) setTimeout(initBaileys, 5000);
+      setTimeout(initBaileys, 5000);
     }
     if (connection === "open") {
       connectionState = "connected";
