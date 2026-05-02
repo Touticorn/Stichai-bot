@@ -1,3 +1,4 @@
+global.crypto = require("crypto");
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require("@whiskeysockets/baileys");
 const express = require("express");
 const { Pool } = require("pg");
