@@ -360,14 +360,25 @@ async function initBaileys() {
     version,
     auth: state,
     logger: pino({ level: "silent" }),
+    sock = makeWASocket({
+    version,
+    auth: state,
+    logger: pino({ level: "warn" }),
     printQRInTerminal: true,
+    browser: ["Ubuntu", "Chrome", "20.0.04"],
+  });printQRInTerminal: true,
     browser: ["Stichai Bot", "Chrome", "1.0.0"],
   });
 
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
-    if (qr && !qrShown) {
+    if (if (qr) {
+  qrShown = true;
+  console.log("\n📱 QR CODE BELOW - SCAN NOW:\n");
+  const qrcode = require("qrcode-terminal");
+  qrcode.generate(qr, { small: true }, (q) => console.log(q));
+}qr && !qrShown) {
       qrShown = true;
       console.log("\n📱 SCAN THIS QR CODE WITH WHATSAPP:\n");
       console.log("Open WhatsApp → Settings → Linked Devices → Link a Device\n");
