@@ -76,7 +76,7 @@ async function initDB() {
     );
     CREATE TABLE IF NOT EXISTS code_uses (
       id      SERIAL PRIMARY KEY,
-n      code    VARCHAR(20),
+      code    VARCHAR(20),
       phone   VARCHAR(20),
       used_at TIMESTAMP DEFAULT NOW()
     );
@@ -417,8 +417,9 @@ async function processAndDeliver(phone, user, msg) {
     const imgMsg = msg.message?.imageMessage || msg.message?.documentMessage;
 
     if (imgMsg) {
-      const stream = await sock.downloadMediaMessage(msg, "buffer");
-      b64  = stream.toString("base64");
+      const { downloadMediaMessage } = require("@whiskeysockets/baileys");
+const buffer = await downloadMediaMessage(msg, "buffer", {});
+b64  = buffer.toString("base64");
       mime = imgMsg.mimetype || "image/jpeg";
     } else {
       throw new Error("No image found in message");
