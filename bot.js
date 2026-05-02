@@ -2,7 +2,7 @@
 // 🧵 STICHAI EMBROIDERY BOT v4.1
 // ============================================================
 
-const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] }));
+
 const { Boom } = require("@hapi/boom");
 const express = require("express");
 const axios = require("axios");
@@ -354,7 +354,7 @@ async function initBaileys() {
   if (!fs.existsSync(CONFIG.AUTH_DIR)) fs.mkdirSync(CONFIG.AUTH_DIR, { recursive: true });
 
   const { state, saveCreds } = await useMultiFileAuthState(CONFIG.AUTH_DIR);
-  const { version } = await fetchLatestBaileysVersion();
+  const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] }));
 
   sock = makeWASocket({
     version,
