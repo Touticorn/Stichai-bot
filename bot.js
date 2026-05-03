@@ -43,10 +43,11 @@ const CONFIG = {
   },
 
   GEMINI: {
-    lite:  "gemini-2.5-flash-lite-preview-06-17",
+    lite:  "gemini-2.5-flash-lite",
     flash: "gemini-2.5-flash",
     pro:   "gemini-2.5-pro",
-  },
+},
+
 };
 
 // ============================================================
