@@ -619,36 +619,73 @@ async function handleMessage(msg) {
 // GEMINI IMAGE ANALYSIS (Secure - uses Railway env var)
 // ============================================================
 
+// ============================================================
+// GEMINI IMAGE ANALYSIS (Fixed with size validation)
+// ============================================================
+
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image uploaded" });
-    
-    const b64 = req.file.buffer.toString("base64");
+
+    // Validate image type
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp'];
     const mime = req.file.mimetype || "image/jpeg";
-    
+
+    if (!allowedTypes.includes(mime)) {
+      return res.status(400).json({ error: "Invalid image type: " + mime + ". Use JPEG, PNG, GIF, or WebP." });
+    }
+
+    // Check size - Gemini limit is ~20MB for inline data
+    // Base64 is ~4/3 of binary size, so limit to ~15MB binary = ~20MB base64
+    const maxSize = 15 * 1024 * 1024; // 15MB
+    if (req.file.size > maxSize) {
+      return res.status(400).json({ error: "Image too large: " + req.file.size + " bytes. Max: 15MB." });
+    }
+
+    const b64 = req.file.buffer.toString("base64");
+
+    // Validate base64 length
+    if (b64.length > 20 * 1024 * 1024) { // 20MB base64
+      return res.status(400).json({ error: "Base64 too large: " + b64.length + " chars" });
+    }
+
+    console.log("Sending to Gemini:", mime, req.file.size, "bytes, base64:", b64.length, "chars");
+
     const geminiRes = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.GEMINI.flash}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
       {
         contents: [{
           parts: [
             { inline_data: { mime_type: mime, data: b64 } },
-            { text: `Expert embroidery digitizer. Analyze this design and return ONLY JSON:
-            {
-              "complexity": "simple|medium|complex",
-              "dominant_colors": ["#hex1", "#hex2", ...],
-              "suggested_stitch_type": "satin|fill|running|mixed",
-              "estimated_stitch_count": number,
-              "width_mm": 80,
-              "height_mm": 80,
-              "has_text": true|false,
-              "has_logo": true|false,
-              "description": "brief description"
-            }` }
+            { text: `Expert embroidery digitizer. Analyze this design and return ONLY JSON: {"complexity":"simple|medium|complex","dominant_colors":["#hex1","#hex2"],"suggested_stitch_type":"satin|fill|running|mixed","estimated_stitch_count":5000,"width_mm":80,"height_mm":80,"has_text":false,"has_logo":false,"description":"brief"}` }
           ]
         }]
       },
-      { timeout: 25000 }
+      { 
+        timeout: 25000,
+        headers: { 'Content-Type': 'application/json' }
+      }
     );
+
+    const text = geminiRes.data.candidates[0].content.parts[0].text;
+    const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
+
+    res.json(analysis);
+
+  } catch(e) {
+    console.error("Gemini analysis error:", e.message);
+    if (e.response) {
+      console.error("Status:", e.response.status);
+      console.error("Data:", JSON.stringify(e.response.data));
+      console.error("Headers:", JSON.stringify(e.response.headers));
+    }
+    res.status(500).json({ 
+      error: e.message, 
+      details: e.response?.data,
+      status: e.response?.status 
+    });
+  }
+});
     
     const text = geminiRes.data.candidates[0].content.parts[0].text;
     const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
