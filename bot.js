@@ -609,13 +609,18 @@ async function handleMessage(msg) {
 // EXPRESS ROUTES
 // ============================================================
 
-app.get("/web", (_, res) => {
+app.get(/web", (_, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
 app.get("/", (_, res) => {
-  res.send("Stichai Embroidery Bot v5.5 — <a href='/web'>Web Interface</a> — <a href='/health'>Health</a>");
+  res.sendFile(path.join(__dirname, "index.html"));
 });
+
+app.get("/api", (_, res) => {
+  res.send("Stichai API v5.5 — <a href='/'>Web Interface</a> — <a href='/health'>Health</a>");
+});
+
 
 app.get("/health", (_,res) => {
   res.json({ 
