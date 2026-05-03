@@ -417,9 +417,9 @@
 </head>
 <body>
     <div class="language-switch">
-        <button class="lang-btn active" onclick="setLang('en')">EN</button>
-        <button class="lang-btn" onclick="setLang('fr')">FR</button>
-        <button class="lang-btn" onclick="setLang('ar')">AR</button>
+        <button class="lang-btn active" onclick="setLang('en', this)">EN</button>
+        <button class="lang-btn" onclick="setLang('fr', this)">FR</button>
+        <button class="lang-btn" onclick="setLang('ar', this)">AR</button>
     </div>
 
     <div class="container">
@@ -763,10 +763,10 @@
         let currentZoom = 1.0;
         let previewData = null;
 
-        function setLang(lang) {
+        function setLang(lang, btn) {
             currentLang = lang;
             document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
-            event.target.classList.add('active');
+            btn.classList.add('active');
         }
 
         function handleFile(event) {
@@ -804,8 +804,8 @@
             dropZone.style.borderColor = '#ccc';
             const files = e.dataTransfer.files;
             if (files.length) {
-                document.getElementById('fileInput').files = files;
-                handleFile({ target: { files } });
+                // Direct FileList pass - fixed below
+                handleFile({ target: { files } }); // Fixed: direct pass instead of setting input.files
             }
         });
 
