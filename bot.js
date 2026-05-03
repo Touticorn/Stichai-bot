@@ -1,5 +1,6 @@
 // ============================================================
-// 🧵 STICHAI EMBROIDERY BOT v5.3 — Clean Start
+// 🧵 STICHAI EMBROIDERY BOT v5.5 — Web + WhatsApp
+// ASCII-safe, no special characters
 // ============================================================
 
 global.crypto = require("crypto");
@@ -11,9 +12,13 @@ const { Pool } = require("pg");
 const crypto = require("crypto");
 const pino = require("pino");
 const fs = require("fs");
+const path = require("path");
+const multer = require("multer");
 
 const app = express();
 app.use(express.json());
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 // ============================================================
 // CONFIG
@@ -30,9 +35,9 @@ const CONFIG = {
   AUTH_DIR:              process.env.AUTH_DIR || "/app/.baileys_auth",
 
   PLANS: {
-    basic: { price_mad: 50,  price_usd: 5,  files_per_day: 1,    label: { ar: "الأساسي - 50 درهم/شهر",   fr: "Basique - 50 MAD/mois",  en: "Basic - 50 MAD/month"  } },
-    pro:   { price_mad: 350, price_usd: 35, files_per_day: 9999, label: { ar: "المحترف - 350 درهم/شهر", fr: "Pro - 350 MAD/mois",      en: "Pro - 350 MAD/month"   } },
-    trial: { price_mad: 0,   price_usd: 0,  files_per_day: 3,    label: { ar: "تجريبي مجاني",             fr: "Essai gratuit",           en: "Free trial"            } },
+    basic: { price_mad: 50,  price_usd: 5,  files_per_day: 1,    label: { ar: "Basic-50", fr: "Basique-50", en: "Basic-50" } },
+    pro:   { price_mad: 350, price_usd: 35, files_per_day: 9999, label: { ar: "Pro-350", fr: "Pro-350", en: "Pro-350" } },
+    trial: { price_mad: 0,   price_usd: 0,  files_per_day: 3,    label: { ar: "Trial", fr: "Essai", en: "Trial" } },
   },
 
   GEMINI: {
@@ -196,176 +201,53 @@ function sess(phone) {
 }
 
 // ============================================================
-// MESSAGES
+// MESSAGES — ALL ASCII SAFE
 // ============================================================
 const MSG = {
   welcome: {
-    ar: `🧵 *أهلاً في Stichai!*
-بوت التطريز المغربي
-
-اختر لغتك:
-1️⃣ العربية
-2️⃣ Français
-3️⃣ English`,
-    fr: `🧵 *Bienvenue sur Stichai!*
-Bot broderie marocain
-
-Choisissez votre langue:
-1️⃣ العربية
-2️⃣ Français
-3️⃣ English`,
-    en: `🧵 *Welcome to Stichai!*
-Moroccan embroidery bot
-
-Choose your language:
-1️⃣ العربية
-2️⃣ Français
-3️⃣ English`,
+    ar: "Welcome to Stichai! Choose language: 1-Arabic 2-French 3-English",
+    fr: "Bienvenue sur Stichai! Choisissez: 1-Arabe 2-Francais 3-Anglais",
+    en: "Welcome to Stichai! Choose: 1-Arabic 2-French 3-English",
   },
   menu: {
-    ar: `📋 *القائمة*
-
-1️⃣ تحويل صورة 🖼️
-2️⃣ اشتراكي 📊
-3️⃣ الخطط 💎
-4️⃣ كود تجريبي 🎟️
-5️⃣ مساعدة ❓`,
-    fr: `📋 *Menu*
-
-1️⃣ Convertir image 🖼️
-2️⃣ Mon abonnement 📊
-3️⃣ Plans 💎
-4️⃣ Code d'essai 🎟️
-5️⃣ Aide ❓`,
-    en: `📋 *Menu*
-
-1️⃣ Convert image 🖼️
-2️⃣ My subscription 📊
-3️⃣ Plans 💎
-4️⃣ Trial code 🎟️
-5️⃣ Help ❓`,
+    ar: "Menu: 1-Convert image 2-My subscription 3-Plans 4-Trial code 5-Help",
+    fr: "Menu: 1-Convertir image 2-Abonnement 3-Plans 4-Code essai 5-Aide",
+    en: "Menu: 1-Convert image 2-Subscription 3-Plans 4-Trial code 5-Help",
   },
   plans: {
-    ar: `💎 *الخطط*
-
-🟢 *الأساسي - 50 درهم/شهر*
-• ملف يومياً • DST+PES+JEF
-
-🔵 *المحترف - 350 درهم/شهر*
-• ملفات غير محدودة • أولوية
-
-1️⃣ الأساسي
-2️⃣ المحترف
-3️⃣ كود تجريبي
-0️⃣ رجوع`,
-    fr: `💎 *Plans*
-
-🟢 *Basique - 50 MAD/mois*
-• 1 fichier/jour • DST+PES+JEF
-
-🔵 *Pro - 350 MAD/mois*
-• Illimité • Prioritaire
-
-1️⃣ Basique
-2️⃣ Pro
-3️⃣ Code d'essai
-0️⃣ Retour`,
-    en: `💎 *Plans*
-
-🟢 *Basic - 50 MAD/month*
-• 1 file/day • DST+PES+JEF
-
-🔵 *Pro - 350 MAD/month*
-• Unlimited • Priority
-
-1️⃣ Basic
-2️⃣ Pro
-3️⃣ Trial code
-0️⃣ Back`,
+    ar: "Plans: 1-Basic 50MAD/month 2-Pro 350MAD/month 3-Trial code 0-Back",
+    fr: "Plans: 1-Basique 50MAD/mois 2-Pro 350MAD/mois 3-Code essai 0-Retour",
+    en: "Plans: 1-Basic 50MAD/month 2-Pro 350MAD/month 3-Trial code 0-Back",
   },
-  askCode:      { ar:"🎟️ أرسل كودك:", fr:"🎟️ Envoyez votre code:", en:"🎟️ Send your code:" },
-  codeOk:       { ar:(d,p)=>`✅ تم! ${p==="pro"?"المحترف":"الأساسي"} — ${d} يوم`, fr:(d,p)=>`✅ Activé! ${p==="pro"?"Pro":"Basique"} — ${d} jours`, en:(d,p)=>`✅ Activated! ${p==="pro"?"Pro":"Basic"} — ${d} days` },
-  codeBad:      { ar:"❌ كود غير صحيح أو منتهي", fr:"❌ Code invalide ou expiré", en:"❌ Invalid or expired code" },
-  codeUsed:     { ar:"⚠️ استخدمت هذا الكود من قبل", fr:"⚠️ Code déjà utilisé", en:"⚠️ Code already used" },
-  askImage:     { ar:"🖼️ أرسل الصورة (PNG/JPG)", fr:"🖼️ Envoyez l'image (PNG/JPG)", en:"🖼️ Send the image (PNG/JPG)" },
-  noSub:        { ar:"⚠️ لا اشتراك نشط
-1️⃣ الخطط
-2️⃣ كود تجريبي", fr:"⚠️ Pas d'abonnement
-1️⃣ Plans
-2️⃣ Code d'essai", en:"⚠️ No subscription
-1️⃣ Plans
-2️⃣ Trial code" },
-  limitReached: { ar:"⛔ وصلت للحد اليومي
-أرسل *ترقية* للمحترف", fr:"⛔ Limite atteinte
-Envoyez *upgrade* pour Pro", en:"⛔ Daily limit reached
-Send *upgrade* for Pro" },
-  processing:   { ar:"⏳ جاري التحليل والمعالجة... 🎨", fr:"⏳ Analyse en cours... 🎨", en:"⏳ Analyzing your design... 🎨" },
-  done:         { ar:"✅ *تم! إليك ملفاتك* 🎉", fr:"✅ *Terminé! Vos fichiers* 🎉", en:"✅ *Done! Your files* 🎉" },
-  error:        { ar:"❌ خطأ. حاول مجدداً أو أرسل *مساعدة*", fr:"❌ Erreur. Réessayez ou envoyez *aide*", en:"❌ Error. Try again or send *help*" },
+  askCode:      { ar: "Send your trial code:", fr: "Envoyez votre code:", en: "Send your code:" },
+  codeOk:       { ar: (d,p) => `Activated! ${p} - ${d} days`, fr: (d,p) => `Active! ${p} - ${d} jours`, en: (d,p) => `Activated! ${p} - ${d} days` },
+  codeBad:      { ar: "Invalid or expired code", fr: "Code invalide ou expire", en: "Invalid or expired code" },
+  codeUsed:     { ar: "Code already used", fr: "Code deja utilise", en: "Code already used" },
+  askImage:     { ar: "Send image PNG/JPG", fr: "Envoyez image PNG/JPG", en: "Send image PNG/JPG" },
+  noSub:        { ar: "No active subscription. 1-Plans 2-Trial code", fr: "Pas d abonnement. 1-Plans 2-Code essai", en: "No subscription. 1-Plans 2-Trial code" },
+  limitReached: { ar: "Daily limit reached. Send upgrade for Pro", fr: "Limite atteinte. Envoyez upgrade pour Pro", en: "Daily limit reached. Send upgrade for Pro" },
+  processing:   { ar: "Processing your design...", fr: "Analyse en cours...", en: "Analyzing your design..." },
+  done:         { ar: "Done! Your files are ready", fr: "Termine! Vos fichiers", en: "Done! Your files" },
+  error:        { ar: "Error. Try again or send help", fr: "Erreur. Reessayez ou envoyez aide", en: "Error. Try again or send help" },
   help: {
-    ar:`❓ *مساعدة*
-🔹 أرسل صورة للتحويل
-🔹 الأساسي: 50 درهم/شهر
-🔹 المحترف: 350 درهم/شهر
-📞 ${CONFIG.ADMIN_PHONE}
-
-0️⃣ القائمة`,
-    fr:`❓ *Aide*
-🔹 Envoyez image pour convertir
-🔹 Basique: 50 MAD/mois
-🔹 Pro: 350 MAD/mois
-📞 ${CONFIG.ADMIN_PHONE}
-
-0️⃣ Menu`,
-    en:`❓ *Help*
-🔹 Send image to convert
-🔹 Basic: 50 MAD/month
-🔹 Pro: 350 MAD/month
-📞 ${CONFIG.ADMIN_PHONE}
-
-0️⃣ Menu`,
+    ar: `Help: Send image to convert. Basic: 50MAD/month. Pro: 350MAD/month. Phone: ${CONFIG.ADMIN_PHONE}`,
+    fr: `Aide: Envoyez image. Basique: 50MAD/mois. Pro: 350MAD/mois. Tel: ${CONFIG.ADMIN_PHONE}`,
+    en: `Help: Send image to convert. Basic: 50MAD/month. Pro: 350MAD/month. Phone: ${CONFIG.ADMIN_PHONE}`,
   },
   payOpts: {
-    ar:(l)=>`💳 *الدفع* — ${l}
-1️⃣ CashPlus
-2️⃣ CMI
-3️⃣ تحويل بنكي
-4️⃣ Stripe
-0️⃣ رجوع`,
-    fr:(l)=>`💳 *Paiement* — ${l}
-1️⃣ CashPlus
-2️⃣ CMI
-3️⃣ Virement
-4️⃣ Stripe
-0️⃣ Retour`,
-    en:(l)=>`💳 *Payment* — ${l}
-1️⃣ CashPlus
-2️⃣ CMI
-3️⃣ Bank Transfer
-4️⃣ Stripe
-0️⃣ Back`,
+    ar: (l) => `Payment: ${l}. 1-CashPlus 2-CMI 3-Bank transfer 4-Stripe 0-Back`,
+    fr: (l) => `Paiement: ${l}. 1-CashPlus 2-CMI 3-Virement 4-Stripe 0-Retour`,
+    en: (l) => `Payment: ${l}. 1-CashPlus 2-CMI 3-Bank transfer 4-Stripe 0-Back`,
   },
   myPlan: {
-    ar:(u,d)=>`📊 *اشتراكي*
-📦 ${u.plan==="pro"?"المحترف 🔵":u.plan==="basic"?"الأساسي 🟢":u.plan==="trial"?"تجريبي 🎁":"لا يوجد"}
-📅 ${d} يوم متبقي
-🧵 اليوم: ${u.files_today||0}
-📁 الإجمالي: ${u.files_total||0}`,
-    fr:(u,d)=>`📊 *Abonnement*
-📦 ${u.plan==="pro"?"Pro 🔵":u.plan==="basic"?"Basique 🟢":u.plan==="trial"?"Essai 🎁":"Aucun"}
-📅 ${d} jours restants
-🧵 Aujourd'hui: ${u.files_today||0}
-📁 Total: ${u.files_total||0}`,
-    en:(u,d)=>`📊 *Subscription*
-📦 ${u.plan==="pro"?"Pro 🔵":u.plan==="basic"?"Basic 🟢":u.plan==="trial"?"Trial 🎁":"None"}
-📅 ${d} days left
-🧵 Today: ${u.files_today||0}
-📁 Total: ${u.files_total||0}`,
+    ar: (u,d) => `Subscription: ${u.plan || "None"}. ${d} days left. Today: ${u.files_today||0}. Total: ${u.files_total||0}`,
+    fr: (u,d) => `Abonnement: ${u.plan || "Aucun"}. ${d} jours restants. Auj: ${u.files_today||0}. Total: ${u.files_total||0}`,
+    en: (u,d) => `Subscription: ${u.plan || "None"}. ${d} days left. Today: ${u.files_today||0}. Total: ${u.files_total||0}`,
   },
   activated: {
-    ar:(l)=>`✅ خطتك *${l}* مفعّلة! 🎉`,
-    fr:(l)=>`✅ Plan *${l}* activé! 🎉`,
-    en:(l)=>`✅ Plan *${l}* activated! 🎉`,
+    ar: (l) => `Plan ${l} activated!`,
+    fr: (l) => `Plan ${l} active!`,
+    en: (l) => `Plan ${l} activated!`,
   },
 };
 
@@ -395,11 +277,10 @@ async function analyzeImage(b64, mime) {
     const complexity = await detectComplexity(b64, mime);
     const modelKey   = complexity === "simple" ? "lite" : complexity === "complex" ? "pro" : "flash";
     const model      = CONFIG.GEMINI[modelKey];
-    console.log(`🤖 ${complexity} → ${model}`);
+    console.log(`AI: ${complexity} -> ${model}`);
     const r = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-      { contents:[{ parts:[{ inline_data:{mime_type:mime,data:b64} },{ text:`Expert embroidery digitizer. Return ONLY JSON:
-{"complexity":"simple|medium|complex","colors":["#hex"],"width_mm":80,"height_mm":80,"stitch_count":5000,"stitch_type":"satin|fill|run|mixed","description":"brief"}` }] }] },
+      { contents:[{ parts:[{ inline_data:{mime_type:mime,data:b64} },{ text:`Expert embroidery digitizer. Return ONLY JSON: {"complexity":"simple|medium|complex","colors":["#hex"],"width_mm":80,"height_mm":80,"stitch_count":5000,"stitch_type":"satin|fill|run|mixed","description":"brief"}` }] }] },
       { timeout: 20000 }
     );
     const result = JSON.parse(r.data.candidates[0].content.parts[0].text.replace(/```json|```/g,"").trim());
@@ -419,16 +300,7 @@ async function payCashplus(phone, plan, lang) {
   const amt  = CONFIG.PLANS[plan].price_mad;
   sess(phone).paymentCode = code;
   await db.query("INSERT INTO payments (phone,plan,amount_mad,method,reference) VALUES ($1,$2,$3,'cashplus',$4)", [cleanPhone(phone), plan, amt, String(code)]);
-  return { ar:`💵 *CashPlus*
-💰 ${amt} درهم
-🔑 *${code}*
-أرسل: *تم ${code}*`, fr:`💵 *CashPlus*
-💰 ${amt} MAD
-🔑 *${code}*
-Envoyez: *payé ${code}*`, en:`💵 *CashPlus*
-💰 ${amt} MAD
-🔑 *${code}*
-Send: *paid ${code}*` }[lang] || `💵 CashPlus: ${amt} MAD — Code: ${code}`;
+  return { ar:`CashPlus: ${amt} MAD. Code: ${code}. Send: paid ${code}`, fr:`CashPlus: ${amt} MAD. Code: ${code}. Envoyez: paye ${code}`, en:`CashPlus: ${amt} MAD. Code: ${code}. Send: paid ${code}` }[lang] || `CashPlus: ${amt} MAD - Code: ${code}`;
 }
 
 async function payCMI(phone, plan, lang) {
@@ -436,14 +308,8 @@ async function payCMI(phone, plan, lang) {
   const amt = CONFIG.PLANS[plan].price_mad;
   sess(phone).orderId = oid;
   await db.query("INSERT INTO payments (phone,plan,amount_mad,method,reference) VALUES ($1,$2,$3,'cmi',$4)", [cleanPhone(phone), plan, amt, oid]);
-  const url = `https://payment.cmi.co.ma/fim/est3Dgate?clientid=${CONFIG.CMI_MERCHANT_ID}&amount=${amt}.00¤cy=504&oid=${oid}&okUrl=${CONFIG.BASE_URL}/payment/cmi/success&callbackUrl=${CONFIG.BASE_URL}/payment/cmi/callback`;
-  return { ar:`💳 *CMI*
-💰 ${amt} درهم
-${url}`, fr:`💳 *CMI*
-💰 ${amt} MAD
-${url}`, en:`💳 *CMI*
-💰 ${amt} MAD
-${url}` }[lang] || url;
+  const url = `https://payment.cmi.co.ma/fim/est3Dgate?clientid=${CONFIG.CMI_MERCHANT_ID}&amount=${amt}.00&currency=504&oid=${oid}&okUrl=${CONFIG.BASE_URL}/payment/cmi/success&callbackUrl=${CONFIG.BASE_URL}/payment/cmi/callback`;
+  return { ar:`CMI: ${amt} MAD. ${url}`, fr:`CMI: ${amt} MAD. ${url}`, en:`CMI: ${amt} MAD. ${url}` }[lang] || url;
 }
 
 async function payTransfer(phone, plan, lang) {
@@ -452,31 +318,10 @@ async function payTransfer(phone, plan, lang) {
   sess(phone).transferRef = ref;
   await db.query("INSERT INTO payments (phone,plan,amount_mad,method,reference) VALUES ($1,$2,$3,'transfer',$4)", [cleanPhone(phone), plan, amt, ref]);
   return {
-    ar:`🏦 *تحويل بنكي*
-🏛️ Attijariwafa Bank - كنيترة
-👤 *M OUDILI ANASS*
-RIB: *007 330 0010509000302103 43*
-SWIFT: *BCMAMAMC*
-💰 ${amt} درهم
-📝 المرجع: *${ref}*
-أرسل صورة الإيصال`,
-    fr:`🏦 *Virement bancaire*
-🏛️ Attijariwafa Bank - Kénitra
-👤 *M OUDILI ANASS*
-RIB: *007 330 0010509000302103 43*
-SWIFT: *BCMAMAMC*
-💰 ${amt} MAD
-📝 Réf: *${ref}*
-Envoyez photo du reçu`,
-    en:`🏦 *Bank Transfer*
-🏛️ Attijariwafa Bank - Kenitra
-👤 *M OUDILI ANASS*
-RIB: *007 330 0010509000302103 43*
-SWIFT: *BCMAMAMC*
-💰 ${amt} MAD
-📝 Ref: *${ref}*
-Send receipt photo`,
-  }[lang] || `Bank transfer: ${amt} MAD — Ref: ${ref}`;
+    ar:`Bank transfer: Attijariwafa Bank Kenitra. M OUDILI ANASS. RIB: 007330001050900030210343. SWIFT: BCMAMAMC. ${amt} MAD. Ref: ${ref}. Send receipt photo`,
+    fr:`Virement: Attijariwafa Bank Kenitra. M OUDILI ANASS. RIB: 007330001050900030210343. SWIFT: BCMAMAMC. ${amt} MAD. Ref: ${ref}. Envoyez photo du recu`,
+    en:`Bank transfer: Attijariwafa Bank Kenitra. M OUDILI ANASS. RIB: 007330001050900030210343. SWIFT: BCMAMAMC. ${amt} MAD. Ref: ${ref}. Send receipt photo`,
+  }[lang] || `Bank transfer: ${amt} MAD - Ref: ${ref}`;
 }
 
 async function payStripe(phone, plan, lang) {
@@ -489,14 +334,11 @@ async function payStripe(phone, plan, lang) {
     cancel_url: `${CONFIG.BASE_URL}/payment/stripe/cancel`,
     metadata: { phone: cleanPhone(phone), plan },
   });
-  return { ar:`💳 *Stripe*
-${s.url}`, fr:`💳 *Stripe*
-${s.url}`, en:`💳 *Stripe*
-${s.url}` }[lang] || s.url;
+  return { ar:`Stripe: ${s.url}`, fr:`Stripe: ${s.url}`, en:`Stripe: ${s.url}` }[lang] || s.url;
 }
 
 // ============================================================
-// BAILEYS WHATSAPP — QR CODE EDITION
+// BAILEYS WHATSAPP
 // ============================================================
 let sock = null;
 let connectionState = "disconnected";
@@ -514,7 +356,6 @@ async function sendMsg(jid, text) {
 }
 
 async function initBaileys() {
-  // CLEAR CORRUPTED AUTH from previous failed attempts
   if (fs.existsSync(CONFIG.AUTH_DIR)) {
     try {
       console.log("Clearing previous auth state...");
@@ -523,7 +364,7 @@ async function initBaileys() {
       console.log("Auth clear error:", e.message);
     }
   }
-
+  
   if (!fs.existsSync(CONFIG.AUTH_DIR)) fs.mkdirSync(CONFIG.AUTH_DIR, { recursive: true });
 
   const { state, saveCreds } = await useMultiFileAuthState(CONFIG.AUTH_DIR);
@@ -551,8 +392,7 @@ async function initBaileys() {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log("Connection closed. Status:", statusCode, "Reconnect:", shouldReconnect);
-
-      // Always reconnect unless explicitly logged out
+      
       if (shouldReconnect || statusCode === 515 || statusCode === 411 || statusCode === 408) {
         console.log("Reconnecting in 5s...");
         setTimeout(initBaileys, 5000);
@@ -568,113 +408,378 @@ async function initBaileys() {
     }
   });
 
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
+    for (const msg of messages) {
+      if (msg.key.fromMe) continue;
+      if (msg.key.remoteJid?.includes("@g.us")) continue;
+      try {
+        await handleMessage(msg);
+      } catch(e) {
+        console.error("Message handler error:", e.message);
+      }
+    }
+  });
+}
+
 // ============================================================
-// WEB API ENDPOINTS (Added for Web Interface)
+// PROCESS AND DELIVER
+// ============================================================
+async function processAndDeliver(phone, user, msg) {
+  const lang = user.language || "fr";
+  await sendMsg(phone, m("processing", lang));
+
+  try {
+    let b64, mime;
+    const imgMsg = msg.message?.imageMessage || msg.message?.documentMessage;
+
+    if (imgMsg) {
+      const stream = await sock.downloadMediaMessage(msg, "buffer");
+      b64  = stream.toString("base64");
+      mime = imgMsg.mimetype || "image/jpeg";
+    } else {
+      throw new Error("No image found in message");
+    }
+
+    const analysis = await analyzeImage(b64, mime);
+
+    let files = null;
+    try {
+      const r = await axios.post(`${CONFIG.BASE_URL}/generate-embroidery`, { image_b64: b64, mime_type: mime, analysis, phone }, { timeout: 60000 });
+      files = r.data;
+    } catch(e) {
+      console.log("Python service not available:", e.message);
+    }
+
+    await recordConversion(phone, user.plan, files?.stitch_count || 0);
+    await sendMsg(phone, m("done", lang));
+
+    if (files?.dst_url) {
+      await sendMsg(phone, `DST: ${files.dst_url} PES: ${files.pes_url}`);
+    }
+
+    const modelLabel = analysis._model?.includes("lite") ? "Flash-Lite" : analysis._model?.includes("pro") ? "Pro" : "Flash";
+    const summary = {
+      ar:`Stitches: ~${(analysis.stitch_count||5000).toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${analysis.colors?.length||1} color | Gemini ${modelLabel}`,
+      fr:`Points: ~${(analysis.stitch_count||5000).toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${analysis.colors?.length||1} couleur | Gemini ${modelLabel}`,
+      en:`Stitches: ~${(analysis.stitch_count||5000).toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${analysis.colors?.length||1} color | Gemini ${modelLabel}`,
+    };
+    await sendMsg(phone, summary[lang]);
+    sess(phone).step = "menu";
+    await sendMsg(phone, m("menu", lang));
+
+  } catch(e) {
+    console.error("Deliver error:", e.message);
+    await sendMsg(phone, m("error", lang));
+  }
+}
+
+// ============================================================
+// MAIN MESSAGE HANDLER
+// ============================================================
+async function handleMessage(msg) {
+  const jid   = msg.key.remoteJid;
+  const phone = jid.replace("@s.whatsapp.net", "");
+  const body  = msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
+  const hasImage = !!(msg.message?.imageMessage || msg.message?.documentMessage);
+
+  const user = await getUser(phone);
+  const lang = user.language || "fr";
+  const s    = sess(phone);
+  const t    = body.trim();
+  const tl   = t.toLowerCase();
+
+  if (["0","menu","retour","back"].includes(tl)) { s.step="menu"; return sendMsg(jid, m("menu",lang)); }
+  if (["help","aide"].includes(tl)) return sendMsg(jid, m("help",lang));
+  if (["upgrade"].includes(tl)) { s.step="plans"; return sendMsg(jid, m("plans",lang)); }
+
+  switch(s.step) {
+    case "start":
+      await sendMsg(jid, MSG.welcome.fr);
+      s.step = "choose_language";
+      break;
+
+    case "choose_language":
+      if (["1","2","3"].includes(t)) {
+        const lmap = {"1":"ar","2":"fr","3":"en"};
+        await updateUser(phone, { language: lmap[t] });
+        s.step = "menu";
+        return sendMsg(jid, m("menu", lmap[t]));
+      }
+      await sendMsg(jid, MSG.welcome.fr);
+      break;
+
+    case "menu":
+      if (t==="1") {
+        const check = await canConvert(user);
+        if (!check.ok) {
+          if (check.reason==="limit") return sendMsg(jid, m("limitReached",lang));
+          s.step = "no_sub";
+          return sendMsg(jid, m("noSub",lang));
+        }
+        s.step = "waiting_image";
+        return sendMsg(jid, m("askImage",lang));
+      }
+      if (t==="2") {
+        const active = await isSubActive(user);
+        if (!active) { s.step="no_sub"; return sendMsg(jid, m("noSub",lang)); }
+        const days = Math.ceil((new Date(user.plan_end)-new Date())/86400000);
+        return sendMsg(jid, m("myPlan",lang,user,days));
+      }
+      if (t==="3") { s.step="plans"; return sendMsg(jid, m("plans",lang)); }
+      if (t==="4") { s.step="enter_code"; return sendMsg(jid, m("askCode",lang)); }
+      if (t==="5") return sendMsg(jid, m("help",lang));
+      await sendMsg(jid, m("menu",lang));
+      break;
+
+    case "no_sub":
+      if (t==="1") { s.step="plans"; return sendMsg(jid, m("plans",lang)); }
+      if (t==="2") { s.step="enter_code"; return sendMsg(jid, m("askCode",lang)); }
+      await sendMsg(jid, m("noSub",lang));
+      break;
+
+    case "enter_code": {
+      const result = await redeemCode(t, phone);
+      if (result.ok) {
+        s.step="menu";
+        await sendMsg(jid, m("codeOk",lang,result.days,result.plan));
+        return sendMsg(jid, m("menu",lang));
+      }
+      if (result.reason==="already_used") return sendMsg(jid, m("codeUsed",lang));
+      return sendMsg(jid, m("codeBad",lang));
+    }
+
+    case "plans":
+      if (t==="1") { s.selectedPlan="basic"; s.step="choose_payment"; return sendMsg(jid, m("payOpts",lang,CONFIG.PLANS.basic.label[lang])); }
+      if (t==="2") { s.selectedPlan="pro";   s.step="choose_payment"; return sendMsg(jid, m("payOpts",lang,CONFIG.PLANS.pro.label[lang])); }
+      if (t==="3") { s.step="enter_code"; return sendMsg(jid, m("askCode",lang)); }
+      await sendMsg(jid, m("plans",lang));
+      break;
+
+    case "choose_payment": {
+      const pl = s.selectedPlan;
+      let reply;
+      if (t==="1") { s.step="waiting_cashplus"; reply = await payCashplus(phone,pl,lang); }
+      else if (t==="2") { s.step="waiting_cmi"; reply = await payCMI(phone,pl,lang); }
+      else if (t==="3") { s.step="waiting_transfer"; reply = await payTransfer(phone,pl,lang); }
+      else if (t==="4") { s.step="waiting_stripe"; reply = await payStripe(phone,pl,lang); }
+      else reply = m("payOpts",lang,CONFIG.PLANS[pl].label[lang]);
+      await sendMsg(jid, reply);
+      break;
+    }
+
+    case "waiting_cashplus": {
+      const code = s.paymentCode?.toString();
+      if (t.includes(code) && (t.includes("paid")||t.includes("paye"))) {
+        await activatePlan(phone, s.selectedPlan);
+        await db.query("UPDATE payments SET status='confirmed' WHERE phone=$1 AND method='cashplus' AND status='pending'", [cleanPhone(phone)]);
+        s.step = "menu";
+        await sendMsg(jid, m("activated",lang,CONFIG.PLANS[s.selectedPlan].label[lang]));
+        return sendMsg(jid, m("menu",lang));
+      }
+      await sendMsg(jid, { ar:`Send: paid ${s.paymentCode}`, fr:`Envoyez: paye ${s.paymentCode}`, en:`Send: paid ${s.paymentCode}` }[lang]);
+      break;
+    }
+
+    case "waiting_transfer":
+      if (hasImage) {
+        await activatePlan(phone, s.selectedPlan);
+        await db.query("UPDATE payments SET status='confirmed' WHERE phone=$1 AND method='transfer' AND status='pending'", [cleanPhone(phone)]);
+        s.step = "menu";
+        await sendMsg(jid, m("activated",lang,CONFIG.PLANS[s.selectedPlan].label[lang]));
+        return sendMsg(jid, m("menu",lang));
+      }
+      break;
+
+    case "waiting_image":
+      if (hasImage) {
+        const freshUser = await getUser(phone);
+        return processAndDeliver(jid, freshUser, msg);
+      }
+      await sendMsg(jid, m("askImage",lang));
+      break;
+
+    default:
+      s.step = "menu";
+      await sendMsg(jid, m("menu",lang));
+  }
+}
+
+// ============================================================
+// EXPRESS ROUTES
 // ============================================================
 
-const multer = require("multer");
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+app.get("/web", (_, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
 
-// Store web conversion jobs
+app.get("/", (_, res) => {
+  res.send("Stichai Embroidery Bot v5.5 — <a href='/web'>Web Interface</a> — <a href='/health'>Health</a>");
+});
+
+app.get("/health", (_,res) => {
+  res.json({ 
+    status: "ok", 
+    uptime: process.uptime(), 
+    version: "5.5", 
+    whatsapp: connectionState,
+    timestamp: new Date().toISOString()
+  });
+});
+
+function adminAuth(req, res) {
+  const s = req.body?.secret || req.query?.secret;
+  if (s !== CONFIG.ADMIN_SECRET) { res.status(401).json({ error:"Unauthorized" }); return false; }
+  return true;
+}
+
+app.post("/admin/code", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const { plan="trial", days=7, maxUses=1, prefix="EMB" } = req.body;
+  const code = await createCode({ plan, days, maxUses, prefix });
+  res.json({ code, plan, days, maxUses });
+});
+
+app.post("/admin/codes/bulk", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const { count=10, plan="trial", days=7, maxUses=1, prefix="EMB" } = req.body;
+  const codes = [];
+  for (let i=0; i<count; i++) codes.push(await createCode({ plan, days, maxUses, prefix }));
+  res.json({ codes, count: codes.length });
+});
+
+app.post("/admin/send-code", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const { phone, plan="trial", days=7 } = req.body;
+  const code = await createCode({ plan, days, maxUses:1 });
+  const user = await getUser(phone);
+  const lang = user.language||"fr";
+  const t = {
+    ar:`Gift from Stichai! Code: ${code}. ${days} days - ${plan==="pro"?"Pro":"Basic"}`,
+    fr:`Cadeau de Stichai! Code: ${code}. ${days} jours - ${plan==="pro"?"Pro":"Basique"}`,
+    en:`Gift from Stichai! Code: ${code}. ${days} days - ${plan==="pro"?"Pro":"Basic"}`,
+  };
+  await sendMsg(`${cleanPhone(phone)}@s.whatsapp.net`, t[lang]||t.fr);
+  res.json({ success:true, code, phone });
+});
+
+app.get("/admin/codes", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const r = await db.query("SELECT * FROM trial_codes ORDER BY created_at DESC LIMIT 100");
+  res.json(r.rows);
+});
+
+app.get("/admin/stats", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const [users,revenue,conversions,codes] = await Promise.all([
+    db.query(`SELECT COUNT(*) total, COUNT(CASE WHEN plan='basic' AND plan_end>NOW() THEN 1 END) basic, COUNT(CASE WHEN plan='pro' AND plan_end>NOW() THEN 1 END) pro, COUNT(CASE WHEN plan='trial' AND plan_end>NOW() THEN 1 END) trial FROM users`),
+    db.query("SELECT SUM(amount_mad) total_mad, COUNT(*) total_payments FROM payments WHERE status='confirmed'"),
+    db.query("SELECT COUNT(*) total, SUM(stitch_count) total_stitches FROM conversions"),
+    db.query("SELECT COUNT(*) total, SUM(used_count) used FROM trial_codes WHERE active=TRUE"),
+  ]);
+  res.json({ users:users.rows[0], revenue:revenue.rows[0], conversions:conversions.rows[0], trial_codes:codes.rows[0] });
+});
+
+app.post("/payment/stripe/callback", express.raw({ type:"application/json" }), async (req, res) => {
+  const stripe = require("stripe")(CONFIG.STRIPE_SECRET_KEY);
+  try {
+    const event = stripe.webhooks.constructEvent(req.body, req.headers["stripe-signature"], CONFIG.STRIPE_WEBHOOK_SECRET);
+    if (event.type === "checkout.session.completed") {
+      const { phone, plan } = event.data.object.metadata;
+      await activatePlan(phone, plan);
+      await db.query("UPDATE payments SET status='confirmed' WHERE phone=$1 AND method='stripe' AND status='pending'", [phone]);
+      const user = await getUser(phone);
+      await sendMsg(`${phone}@s.whatsapp.net`, m("activated", user.language||"fr", CONFIG.PLANS[plan].label[user.language||"fr"]));
+      await sendMsg(`${phone}@s.whatsapp.net`, m("menu", user.language||"fr"));
+    }
+    res.json({ received: true });
+  } catch(e) { res.status(400).send(e.message); }
+});
+
+app.post("/payment/cmi/callback", async (req, res) => {
+  const { oid, Response } = req.body;
+  if (Response === "Approved") {
+    const r = await db.query("SELECT * FROM payments WHERE reference=$1", [oid]);
+    if (r.rows.length) {
+      const { phone, plan } = r.rows[0];
+      await activatePlan(phone, plan);
+      await db.query("UPDATE payments SET status='confirmed' WHERE reference=$1", [oid]);
+      const user = await getUser(phone);
+      await sendMsg(`${phone}@s.whatsapp.net`, m("activated", user.language||"fr", CONFIG.PLANS[plan].label[user.language||"fr"]));
+    }
+  }
+  res.send("ACTION=POSTAUTH");
+});
+
+app.get("/payment/stripe/success", (_, res) =>
+  res.send(`<html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#f0fdf4"><h1 style="color:#16a34a">Payment Successful!</h1><p>Check WhatsApp - your subscription is now active!</p></body></html>`)
+);
+
+// ============================================================
+// WEB API
+// ============================================================
+
 const webJobs = {};
 
 app.post("/api/convert", upload.single("image"), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No image uploaded" });
-    }
+    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
 
     const settings = JSON.parse(req.body.settings || "{}");
     const phone = req.body.phone || "web_" + Date.now();
-
-    // Create job
     const jobId = "job_" + Date.now();
-    webJobs[jobId] = {
-      status: "processing",
-      progress: 0,
-      result: null,
-      error: null,
-      phone: phone,
-      settings: settings
-    };
+    
+    webJobs[jobId] = { status: "processing", progress: 0, result: null, error: null, phone, settings };
 
-    // Process in background
     processWebJob(jobId, req.file, settings, phone);
 
-    res.json({ 
-      jobId: jobId, 
-      status: "processing",
-      message: "Conversion started. Check /api/status/" + jobId
-    });
+    res.json({ jobId, status: "processing", check: `/api/status/${jobId}` });
 
   } catch(e) {
-    console.error("API convert error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-app.get("/api/status/:jobId", async (req, res) => {
+app.get("/api/status/:jobId", (req, res) => {
   const job = webJobs[req.params.jobId];
-  if (!job) {
-    return res.status(404).json({ error: "Job not found" });
-  }
+  if (!job) return res.status(404).json({ error: "Job not found" });
   res.json(job);
 });
 
-app.get("/api/download/:jobId/:format", async (req, res) => {
+app.get("/api/download/:jobId/:format", (req, res) => {
   const job = webJobs[req.params.jobId];
-  if (!job || !job.result) {
-    return res.status(404).json({ error: "File not ready" });
-  }
-
-  const format = req.params.format;
-  const fileUrl = job.result[format + "_url"];
-
-  if (!fileUrl) {
-    return res.status(404).json({ error: "Format not available" });
-  }
-
-  res.redirect(fileUrl);
+  if (!job || !job.result) return res.status(404).json({ error: "File not ready" });
+  const url = job.result[req.params.format + "_url"];
+  if (!url) return res.status(404).json({ error: "Format not available" });
+  res.redirect(url);
 });
 
 async function processWebJob(jobId, file, settings, phone) {
   try {
     const job = webJobs[jobId];
-
-    // Convert file to base64
     const b64 = file.buffer.toString("base64");
     const mime = file.mimetype || "image/jpeg";
-
+    
     job.progress = 20;
-
-    // Analyze with Gemini
     const analysis = await analyzeImage(b64, mime);
-
-    // Override with user settings
+    
     if (settings.width) analysis.width_mm = parseInt(settings.width);
     if (settings.height) analysis.height_mm = parseInt(settings.height);
-    if (settings.maxColors) analysis.colors = analysis.colors.slice(0, parseInt(settings.maxColors));
-
+    
     job.progress = 60;
-
-    // Generate files (placeholder - implement actual generation)
+    
     let files = null;
     try {
       const r = await axios.post(`${CONFIG.BASE_URL}/generate-embroidery`, { 
-        image_b64: b64, 
-        mime_type: mime, 
-        analysis, 
-        phone,
-        settings 
+        image_b64: b64, mime_type: mime, analysis, phone, settings 
       }, { timeout: 120000 });
       files = r.data;
     } catch(e) {
       console.log("Generation service not available:", e.message);
     }
-
+    
     job.progress = 90;
-
-    // Store result
+    
     job.result = {
       stitch_count: files?.stitch_count || analysis.stitch_count || 5000,
       colors: analysis.colors?.length || 1,
@@ -687,25 +792,55 @@ async function processWebJob(jobId, file, settings, phone) {
       vp3_url: files?.vp3_url || null,
       estimated_time: Math.ceil((analysis.stitch_count || 5000) / 300) + "m"
     };
-
+    
     job.status = "completed";
     job.progress = 100;
-
-    // Send WhatsApp notification if phone provided
+    
     if (phone && !phone.startsWith("web_")) {
-      await sendMsg(phone, `Your embroidery file is ready! Stitches: ${job.result.stitch_count}. Download at: ${CONFIG.BASE_URL}/api/download/${jobId}/dst`);
+      await sendMsg(phone, `Your file is ready! ${job.result.stitch_count} stitches. Download: ${CONFIG.BASE_URL}/api/download/${jobId}/dst`);
     }
-
+    
   } catch(e) {
-    console.error("Web job error:", e.message);
     webJobs[jobId].status = "failed";
     webJobs[jobId].error = e.message;
   }
 }
 
-// Serve web app
-app.get("/web", (_, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
+app.post("/generate-embroidery", async (req, res) => {
+  const { analysis } = req.body;
+  res.json({
+    stitch_count: analysis?.stitch_count || 5000,
+    dst_url: null,
+    pes_url: null,
+    jef_url: null,
+    exp_url: null,
+    vp3_url: null,
+    note: "Stub endpoint - implement actual embroidery generation"
+  });
 });
 
-  sock.e
+// ============================================================
+// BOOT
+// ============================================================
+const PORT = process.env.PORT || 3000;
+
+(async () => {
+  try {
+    const server = app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Stichai Bot v5.5 on port ${PORT}`);
+      console.log(`URL: ${CONFIG.BASE_URL}`);
+    });
+
+    initDB().catch(err => {
+      console.error("DB init failed:", err.message);
+    });
+
+    initBaileys().catch(err => {
+      console.error("Baileys init error:", err.message);
+    });
+
+  } catch (err) {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  }
+})();
