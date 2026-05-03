@@ -1141,10 +1141,30 @@
                         previewData = status.result;
                         
                         if (enablePreview) {
-                            const mockColors = ['#e53935', '#1e88e5', '#43a047', '#fdd835', '#333333', '#ffffff'];
-                            const actualColors = mockColors.slice(0, Math.min(status.result.colors || 6, mockColors.length));
-                            
-                            generateStitchPreview(actualColors, status.result.width_mm, status.result.height_mm, settings.stitchType);
+                            // ✅ NEW: Get real analysis from your backend
+let analysis = null;
+try {
+    const analyzeRes = await fetch('/api/analyze-image', { 
+        method: 'POST', 
+        body: formData 
+    });
+    analysis = await analyzeRes.json();
+} catch(e) {
+    console.log("Analysis failed, using fallback");
+}
+
+const actualColors = analysis?.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
+const realStitchType = analysis?.suggested_stitch_type || settings.stitchType;
+
+// Update stats with real data
+document.getElementById('previewStitches').textContent = '~' + (analysis?.estimated_stitch_count || 12450).toLocaleString();
+document.getElementById('previewColors').textContent = actualColors.length;
+document.getElementById('previewTime').textContent = Math.ceil((analysis?.estimated_stitch_count || 12450) / 300) + 'm';
+document.getElementById('previewDensity').textContent = settings.density.charAt(0).toUpperCase() + settings.density.slice(1);
+
+// Generate improved preview
+generateRealStitchPreview(analysis, realStitchType);
+
                             updateColorPalette(actualColors);
                             updateDensityVisual(settings.density);
                             
