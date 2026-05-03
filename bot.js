@@ -1,5 +1,6 @@
 // ============================================================
-// 🧵 STICHAI EMBROIDERY BOT v5.1 — WhatsApp Business Ready
+// 🧵 STICHAI EMBROIDERY BOT v5.2 — QR Code Edition
+// Baileys + Full Feature Set
 // ============================================================
 
 global.crypto = require("crypto");
@@ -334,11 +335,10 @@ async function payStripe(phone, plan, lang) {
 }
 
 // ============================================================
-// BAILEYS WHATSAPP — BUSINESS PAIRING CODE
+// BAILEYS WHATSAPP — QR CODE EDITION
 // ============================================================
 let sock = null;
 let connectionState = "disconnected";
-let pairingCode = null;
 let qrShown = false;
 
 async function sendMsg(jid, text) {
@@ -362,37 +362,20 @@ async function initBaileys() {
     version,
     auth: state,
     logger: pino({ level: "warn" }),
-    printQRInTerminal: false,
-    browser: ["Chrome (Linux)", "", ""],
-    mobilePlatform: "android",
+    printQRInTerminal: true,
+    browser: ["Stichai Bot", "Chrome", "120.0.0"],
   });
 
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
-    if (connection === "connecting" && !sock.authState.creds.registered && !pairingCode) {
-      try {
-        const phoneNumber = CONFIG.ADMIN_PHONE.replace(/\D/g, "");
-        const code = await sock.requestPairingCode(phoneNumber);
-        pairingCode = code;
-        console.log("PAIRING CODE: " + code);
-        console.log("1. Open WhatsApp Business");
-        console.log("2. Settings > Linked Devices");
-        console.log("3. Link a Device > Link with phone number");
-        console.log("4. Enter code: " + code);
-      } catch (e) {
-        console.error("Pairing code error:", e.message);
-      }
-    }
-
-    if (qr && !qrShown && !pairingCode) {
+    if (qr && !qrShown) {
       qrShown = true;
-      console.log("QR code available - use pairing code for Business");
+      console.log("QR CODE AVAILABLE - Scan with WhatsApp");
     }
 
     if (connection === "close") {
       connectionState = "disconnected";
-      pairingCode = null;
       qrShown = false;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
@@ -647,7 +630,7 @@ app.get("/payment/stripe/success", (_, res) =>
 );
 
 app.get("/", (_, res) => {
-  try { res.sendFile(path.join(__dirname, "index.html")); } catch { res.send("🧵 Stichai Embroidery Bot v5.1"); }
+  try { res.sendFile(path.join(__dirname, "index.html")); } catch { res.send("🧵 Stichai Embroidery Bot v5.2"); }
 });
 
 function adminAuth(req, res) {
@@ -707,9 +690,8 @@ app.get("/health", (_,res) => {
   res.json({ 
     status: "ok", 
     uptime: process.uptime(), 
-    version: "5.1", 
+    version: "5.2", 
     whatsapp: connectionState,
-    pairingCode: pairingCode || null,
     timestamp: new Date().toISOString()
   });
 });
@@ -751,7 +733,7 @@ const PORT = process.env.PORT || 3000;
 (async () => {
   try {
     const server = app.listen(PORT, "0.0.0.0", () => {
-      console.log(`🧵 Stichai Bot v5.1 on port ${PORT}`);
+      console.log(`🧵 Stichai Bot v5.2 on port ${PORT}`);
       console.log(`🌐 ${CONFIG.BASE_URL}`);
     });
 
