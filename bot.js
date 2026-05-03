@@ -568,4 +568,144 @@ async function initBaileys() {
     }
   });
 
+// ============================================================
+// WEB API ENDPOINTS (Added for Web Interface)
+// ============================================================
+
+const multer = require("multer");
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+// Store web conversion jobs
+const webJobs = {};
+
+app.post("/api/convert", upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No image uploaded" });
+    }
+
+    const settings = JSON.parse(req.body.settings || "{}");
+    const phone = req.body.phone || "web_" + Date.now();
+
+    // Create job
+    const jobId = "job_" + Date.now();
+    webJobs[jobId] = {
+      status: "processing",
+      progress: 0,
+      result: null,
+      error: null,
+      phone: phone,
+      settings: settings
+    };
+
+    // Process in background
+    processWebJob(jobId, req.file, settings, phone);
+
+    res.json({ 
+      jobId: jobId, 
+      status: "processing",
+      message: "Conversion started. Check /api/status/" + jobId
+    });
+
+  } catch(e) {
+    console.error("API convert error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/status/:jobId", async (req, res) => {
+  const job = webJobs[req.params.jobId];
+  if (!job) {
+    return res.status(404).json({ error: "Job not found" });
+  }
+  res.json(job);
+});
+
+app.get("/api/download/:jobId/:format", async (req, res) => {
+  const job = webJobs[req.params.jobId];
+  if (!job || !job.result) {
+    return res.status(404).json({ error: "File not ready" });
+  }
+
+  const format = req.params.format;
+  const fileUrl = job.result[format + "_url"];
+
+  if (!fileUrl) {
+    return res.status(404).json({ error: "Format not available" });
+  }
+
+  res.redirect(fileUrl);
+});
+
+async function processWebJob(jobId, file, settings, phone) {
+  try {
+    const job = webJobs[jobId];
+
+    // Convert file to base64
+    const b64 = file.buffer.toString("base64");
+    const mime = file.mimetype || "image/jpeg";
+
+    job.progress = 20;
+
+    // Analyze with Gemini
+    const analysis = await analyzeImage(b64, mime);
+
+    // Override with user settings
+    if (settings.width) analysis.width_mm = parseInt(settings.width);
+    if (settings.height) analysis.height_mm = parseInt(settings.height);
+    if (settings.maxColors) analysis.colors = analysis.colors.slice(0, parseInt(settings.maxColors));
+
+    job.progress = 60;
+
+    // Generate files (placeholder - implement actual generation)
+    let files = null;
+    try {
+      const r = await axios.post(`${CONFIG.BASE_URL}/generate-embroidery`, { 
+        image_b64: b64, 
+        mime_type: mime, 
+        analysis, 
+        phone,
+        settings 
+      }, { timeout: 120000 });
+      files = r.data;
+    } catch(e) {
+      console.log("Generation service not available:", e.message);
+    }
+
+    job.progress = 90;
+
+    // Store result
+    job.result = {
+      stitch_count: files?.stitch_count || analysis.stitch_count || 5000,
+      colors: analysis.colors?.length || 1,
+      width_mm: analysis.width_mm,
+      height_mm: analysis.height_mm,
+      dst_url: files?.dst_url || null,
+      pes_url: files?.pes_url || null,
+      jef_url: files?.jef_url || null,
+      exp_url: files?.exp_url || null,
+      vp3_url: files?.vp3_url || null,
+      estimated_time: Math.ceil((analysis.stitch_count || 5000) / 300) + "m"
+    };
+
+    job.status = "completed";
+    job.progress = 100;
+
+    // Send WhatsApp notification if phone provided
+    if (phone && !phone.startsWith("web_")) {
+      await sendMsg(phone, `Your embroidery file is ready! Stitches: ${job.result.stitch_count}. Download at: ${CONFIG.BASE_URL}/api/download/${jobId}/dst`);
+    }
+
+  } catch(e) {
+    console.error("Web job error:", e.message);
+    webJobs[jobId].status = "failed";
+    webJobs[jobId].error = e.message;
+  }
+}
+
+// Serve web app
+app.get("/web", (_, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
   sock.e
