@@ -14,7 +14,6 @@ const pino = require("pino");
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
-const sharp = require("sharp");
 
 const app = express();
 app.use(express.json());
@@ -623,14 +622,10 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image uploaded" });
     
-    // Resize to 1024px max (Gemini's sweet spot for detail vs size)
-    const resizedBuffer = await sharp(req.file.buffer)
-      .resize(1024, 1024, { fit: "inside", withoutEnlargement: true })
-      .jpeg({ quality: 90, progressive: true })
-      .toBuffer();
-    
-    const b64 = resizedBuffer.toString("base64");
-    const mime = "image/jpeg";
+    // USE this instead:
+const b64 = req.file.buffer.toString("base64");
+const mime = req.file.mimetype || "image/jpeg";
+
     
     const geminiRes = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.GEMINI.flash}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,

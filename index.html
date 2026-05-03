@@ -931,21 +931,44 @@
         }
 
         function handleFile(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            uploadedFile = file;
-            
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const img = document.getElementById('previewImg');
-                img.src = e.target.result;
-                img.style.display = 'block';
-                document.getElementById('uploadPrompt').style.display = 'none';
-                document.getElementById('dropZone').classList.add('has-image');
-                document.getElementById('previewOriginal').src = e.target.result;
-            };
-            reader.readAsDataURL(file);
-        }
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    // Resize in browser before storing
+    resizeImageForUpload(file, 1024, (resizedBlob) => {
+        uploadedFile = new File([resizedBlob], file.name, { type: 'image/jpeg' });
+        
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const img = document.getElementById('previewImg');
+            img.src = e.target.result;
+            img.style.display = 'block';
+            document.getElementById('uploadPrompt').style.display = 'none';
+            document.getElementById('dropZone').classList.add('has-image');
+            document.getElementById('previewOriginal').src = e.target.result;
+        };
+        reader.readAsDataURL(uploadedFile);
+    });
+}
+
+function resizeImageForUpload(file, maxWidth, callback) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const scale = Math.min(maxWidth / img.width, maxWidth / img.height, 1);
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            canvas.toBlob(callback, 'image/jpeg', 0.9);
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
 
         document.querySelectorAll('.radio-group').forEach(group => {
             group.addEventListener('click', (e) => {
