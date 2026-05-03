@@ -609,9 +609,7 @@ async function handleMessage(msg) {
 // EXPRESS ROUTES
 // ============================================================
 
-app.get(/web", (_, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
+
 
 app.get("/", (_, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
