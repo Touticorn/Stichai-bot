@@ -615,8 +615,50 @@ async function handleMessage(msg) {
 // GEMINI IMAGE ANALYSIS (Secure - uses Railway env var)
 // ============================================================
 // ============================================================
-// GEMINI IMAGE ANALYSIS (Resized for quality + speed)
+// GEMINI IMAGE ANALYSIS (Secure - uses Railway env var)
 // ============================================================
+
+app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+    
+    const b64 = req.file.buffer.toString("base64");
+    const mime = req.file.mimetype || "image/jpeg";
+    
+    const geminiRes = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.GEMINI.flash}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      {
+        contents: [{
+          parts: [
+            { inline_data: { mime_type: mime, data: b64 } },
+            { text: `Expert embroidery digitizer. Analyze this design and return ONLY JSON:
+            {
+              "complexity": "simple|medium|complex",
+              "dominant_colors": ["#hex1", "#hex2", ...],
+              "suggested_stitch_type": "satin|fill|running|mixed",
+              "estimated_stitch_count": number,
+              "width_mm": 80,
+              "height_mm": 80,
+              "has_text": true|false,
+              "has_logo": true|false,
+              "description": "brief description"
+            }` }
+          ]
+        }]
+      },
+      { timeout: 25000 }
+    );
+    
+    const text = geminiRes.data.candidates[0].content.parts[0].text;
+    const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
+    
+    res.json(analysis);
+    
+  } catch(e) {
+    console.error("Gemini analysis error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   try {
