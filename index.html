@@ -1165,37 +1165,18 @@ function resizeImageForUpload(file, maxWidth, callback) {
                         previewData = status.result;
                         
                         if (enablePreview) {
-                            // ✅ NEW: Get real analysis from your backend
-let analysis = null;
-try {
-    const analyzeRes = await fetch('/api/analyze-image', { 
-        method: 'POST', 
-        body: formData 
-    });
-    analysis = await analyzeRes.json();
-} catch(e) {
-    console.log("Analysis failed, using fallback");
-}
-
-const actualColors = analysis?.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
-const realStitchType = analysis?.suggested_stitch_type || settings.stitchType;
-
-// Update stats with real data
-document.getElementById('previewStitches').textContent = '~' + (analysis?.estimated_stitch_count || 12450).toLocaleString();
-document.getElementById('previewColors').textContent = actualColors.length;
-document.getElementById('previewTime').textContent = Math.ceil((analysis?.estimated_stitch_count || 12450) / 300) + 'm';
-document.getElementById('previewDensity').textContent = settings.density.charAt(0).toUpperCase() + settings.density.slice(1);
-
-// Generate improved preview
-generateRealStitchPreview(analysis, realStitchType);
-
+                            const analysis = status.result;
+                            const actualColors = analysis?.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
+                            const realStitchType = analysis?.suggested_stitch_type || settings.stitchType;
+                            
+                            document.getElementById('previewStitches').textContent = '~' + (analysis?.estimated_stitch_count || analysis?.stitch_count || 12450).toLocaleString();
+                            document.getElementById('previewColors').textContent = actualColors.length;
+                            document.getElementById('previewTime').textContent = analysis?.estimated_time || (Math.ceil((analysis?.stitch_count || 12450) / 300) + 'm');
+                            document.getElementById('previewDensity').textContent = settings.density.charAt(0).toUpperCase() + settings.density.slice(1);
+                            
+                            generateRealStitchPreview(analysis, realStitchType);
                             updateColorPalette(actualColors);
                             updateDensityVisual(settings.density);
-                            
-                            document.getElementById('previewStitches').textContent = '~' + (status.result.stitch_count || 12450).toLocaleString();
-                            document.getElementById('previewColors').textContent = status.result.colors || 6;
-                            document.getElementById('previewTime').textContent = status.result.estimated_time || '45m';
-                            document.getElementById('previewDensity').textContent = settings.density.charAt(0).toUpperCase() + settings.density.slice(1);
                             
                             previewSection.classList.add('active');
                         }
@@ -1203,6 +1184,15 @@ generateRealStitchPreview(analysis, realStitchType);
                         btn.textContent = TRANSLATIONS[currentLang].submitBtn;
                         btn.disabled = false;
                         progressBar.classList.remove('active');
+                    }
+                    
+                    if (status.status === 'failed') {
+                        clearInterval(pollInterval);
+                        clearInterval(interval);
+                        btn.textContent = TRANSLATIONS[currentLang].submitBtn;
+                        btn.disabled = false;
+                        progressBar.classList.remove('active');
+                        alert('Error: ' + (status.error || 'Job failed'));
                     }
                 }, 2000);
 
