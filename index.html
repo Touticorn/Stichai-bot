@@ -637,10 +637,12 @@
             <h2 style="color:#667eea;margin-bottom:15px" data-i18n="previewTitle">👁️ Stitch Preview</h2>
             
             <div class="preview-grid">
-                <div class="preview-box">
-                    <h3 data-i18n="original">Original Design</h3>
-                    <img id="previewOriginal" style="max-width:100%;max-height:200px;border-radius:8px;">
-                </div>
+<div class="preview-box">
+    <h3 data-i18n="simulation">Stitch Simulation</h3>
+    <img id="stitchPreview" style="max-width:100%; max-height:300px; border-radius:8px; display:none;">
+    <canvas id="stitchCanvas" width="300" height="300" style="display:none;"></canvas>
+</div>
+
                 <div class="preview-box">
                     <h3 data-i18n="simulation">Stitch Simulation</h3>
                     <canvas id="stitchCanvas" width="300" height="300"></canvas>
@@ -1142,7 +1144,18 @@ async function submitOrder() {
             method: 'POST', 
             body: formData 
         });
-        
+        // Display Gemini-generated preview
+if (analysis.preview_image) {
+    document.getElementById('stitchPreview').src = analysis.preview_image;
+    document.getElementById('stitchPreview').style.display = 'block';
+    document.getElementById('stitchCanvas').style.display = 'none';
+} else {
+    // Fallback to canvas if no image generated
+    generateStitchPreview(colors, analysis.width_mm || 80, analysis.height_mm || 80, stitchType);
+    document.getElementById('stitchPreview').style.display = 'none';
+    document.getElementById('stitchCanvas').style.display = 'block';
+}
+
         clearInterval(progressInterval);
         
         if (!response.ok) {
