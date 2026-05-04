@@ -638,8 +638,16 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
       { timeout: 30000 }
     );
     
-    const text = analyzeRes.data.candidates[0].content.parts[0].text;
-    const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
+    const analyzeCandidate = analyzeRes.data?.candidates?.[0];
+    const analyzePart = analyzeCandidate?.content?.parts?.[0];
+    const text = analyzePart?.text || "{}";
+    let analysis = {};
+    try {
+      analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
+    } catch(e) {
+      console.log("JSON parse failed, using defaults");
+      analysis = { complexity: "medium", dominant_colors: ["#c41e3a", "#ffd700", "#ffffff"], suggested_stitch_type: "fill", estimated_stitch_count: 5000, width_mm: 80, height_mm: 80 };
+    }
     
     // STEP 2: Generate stitch preview image
     const previewRes = await axios.post(
