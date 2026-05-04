@@ -43,10 +43,11 @@ const CONFIG = {
   },
 
   GEMINI: {
-    lite:  "gemini-2.5-flash-lite-preview-06-17",
-    flash: "gemini-2.5-flash",
-    pro:   "gemini-2.5-pro",
-  },
+    lite:  "gemini-3.1-flash-lite-preview",
+    flash: "gemini-3-flash-preview",
+    pro:   "gemini-3.1-pro-preview",
+},
+
 };
 
 // ============================================================
@@ -266,7 +267,7 @@ async function detectComplexity(b64, mime) {
   try {
     const r = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.GEMINI.lite}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-      { contents:[{ parts:[{ inline_data:{mime_type:mime,data:b64} },{ text:`ONE word only: "simple", "medium", or "complex"` }] }] },
+      { contents:[{ parts:[{ inlineData:{mimeType:mime,data:b64} },{ text:`ONE word only: "simple", "medium", or "complex"` }] }] },
       { timeout: 10000 }
     );
     const w = r.data.candidates[0].content.parts[0].text.trim().toLowerCase();
@@ -282,7 +283,7 @@ async function analyzeImage(b64, mime) {
     console.log(`AI: ${complexity} -> ${model}`);
     const r = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-      { contents:[{ parts:[{ inline_data:{mime_type:mime,data:b64} },{ text:`Expert embroidery digitizer. Return ONLY JSON: {"complexity":"simple|medium|complex","colors":["#hex"],"width_mm":80,"height_mm":80,"stitch_count":5000,"stitch_type":"satin|fill|run|mixed","description":"brief"}` }] }] },
+      { contents:[{ parts:[{ inlineData:{mimeType:mime,data:b64} },{ text:`Expert embroidery digitizer. Return ONLY JSON: {"complexity":"simple|medium|complex","colors":["#hex"],"width_mm":80,"height_mm":80,"stitch_count":5000,"stitch_type":"satin|fill|run|mixed","description":"brief"}` }] }] },
       { timeout: 20000 }
     );
     const result = JSON.parse(r.data.candidates[0].content.parts[0].text.replace(/```json|```/g,"").trim());
@@ -447,7 +448,7 @@ async function processAndDeliver(phone, user, msg) {
 
     let files = null;
     try {
-      const r = await axios.post(`${CONFIG.BASE_URL}/generate-embroidery`, { image_b64: b64, mime_type: mime, analysis, phone }, { timeout: 60000 });
+      const r = await axios.post(`${CONFIG.BASE_URL}/generate-embroidery`, { image_b64: b64, mimeType: mime, analysis, phone }, { timeout: 60000 });
       files = r.data;
     } catch(e) {
       console.log("Python service not available:", e.message);
@@ -610,10 +611,10 @@ async function handleMessage(msg) {
 // ============================================================
 // EXPRESS ROUTES
 // ============================================================
-
 // ============================================================
 // GEMINI IMAGE ANALYSIS (Secure - uses Railway env var)
 // ============================================================
+<<<<<<< HEAD
 // ============================================================
 // GEMINI IMAGE ANALYSIS (Secure - uses Railway env var)
 // ============================================================
@@ -625,12 +626,21 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     const b64 = req.file.buffer.toString("base64");
     const mime = req.file.mimetype || "image/jpeg";
     
+=======
+
+app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No image" });
+    const b64 = req.file.buffer.toString("base64");
+    const mime = req.file.mimetype || "image/jpeg";
+>>>>>>> fba35509823937b9c55aee7d49898dd5209ddcdb
     const geminiRes = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.GEMINI.flash}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
       {
         contents: [{
           parts: [
-            { inline_data: { mime_type: mime, data: b64 } },
+            { inlineData: { mimeType: mime, data: b64 } },
+<<<<<<< HEAD
             { text: `Expert embroidery digitizer. Analyze this design and return ONLY JSON:
             {
               "complexity": "simple|medium|complex",
@@ -660,12 +670,46 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   }
 });
 
+=======
+            { text: "Expert embroidery digitizer. Return ONLY JSON: {complexity:simple|medium|complex,dominant_colors:[#hex1,#hex2],suggested_stitch_type:satin|fill|running|mixed,estimated_stitch_count:5000,width_mm:80,height_mm:80,has_text:false,has_logo:false,description:brief}" }
+       res.status(500).json({ error: e.message, details: e.response?.data });
+            }
+>>>>>>> fba35509823937b9c55aee7d49898dd5209ddcdb
 
 app.get("/", (_, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
 app.get("/api", (_, res) => {
+<<<<<<< HEAD
+=======
+  res.send("Stichai API v5.5 — <a href='/'>Web Interface</a> — <a href='/health'>Health</a>");
+});
+
+app.get("/health", (_,res) => {
+  res.json({ 
+    status: "ok", 
+    uptime: process.uptime(), 
+    version: "5.5", 
+    whatsapp: connectionState,
+    timestamp: new Date().toISOString()
+  });
+});
+
+    );
+    const text = geminiRes.data.candidates[0].content.parts[0].text;
+    const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
+    res.json(analysis);
+  } catch(e) {
+    console.error("Gemini error:", e.message);
+    if (e.response) {
+      console.error("Status:", e.response.status);
+      console.error("Data:", JSON.stringify(e.response.data));
+    }
+    res.status(500).json({ error: e.message, details: e.response?.data });
+  }
+});
+>>>>>>> fba35509823937b9c55aee7d49898dd5209ddcdb
   res.send("Stichai API v5.5 — <a href='/'>Web Interface</a> — <a href='/health'>Health</a>");
 });
 
@@ -677,8 +721,6 @@ app.get("/health", (_,res) => {
     version: "5.5", 
     whatsapp: connectionState,
     timestamp: new Date().toISOString()
-  });
-});
 
 function adminAuth(req, res) {
   const s = req.body?.secret || req.query?.secret;
@@ -824,7 +866,7 @@ async function processWebJob(jobId, file, settings, phone) {
     let files = null;
     try {
       const r = await axios.post(`${CONFIG.BASE_URL}/generate-embroidery`, { 
-        image_b64: b64, mime_type: mime, analysis, phone, settings 
+        image_b64: b64, mimeType: mime, analysis, phone, settings 
       }, { timeout: 120000 });
       files = r.data;
     } catch(e) {
