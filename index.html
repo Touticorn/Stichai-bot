@@ -1149,6 +1149,7 @@ function resizeImageForUpload(file, maxWidth, callback) {
 
                 const response = await fetch('/api/analyze-image', { method: 'POST', body: formData });
 
+
                 const data = await response.json();
 
                 if (data.error) throw new Error(data.error);
