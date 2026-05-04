@@ -624,48 +624,29 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     const b64 = req.file.buffer.toString("base64");
     const mime = req.file.mimetype || "image/jpeg";
     
-    // STEP 1: Analyze the image (safe fallback)
-    let analysis = { 
-      complexity: "medium", 
-      dominant_colors: ["#c41e3a", "#ffd700", "#ffffff"], 
-      suggested_stitch_type: "fill", 
-      estimated_stitch_count: 5000, 
-      width_mm: 80, 
-      height_mm: 80,
-      has_text: false,
-      has_logo: false,
-      description: "Embroidery design"
-    };
+    const analyzeRes = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      {
+        contents: [{
+          parts: [
+            { inlineData: { mimeType: mime, data: b64 } },
+            { text: "Expert embroidery digitizer. Analyze this design and return ONLY JSON: {complexity:simple|medium|complex,dominant_colors:[#hex1,#hex2],suggested_stitch_type:satin|fill|running|mixed,estimated_stitch_count:number,width_mm:80,height_mm:80,has_text:boolean,has_logo:boolean,description:brief}" }
+          ]
+        }]
+      },
+      { timeout: 30000 }
+    );
     
+    const analyzeCandidate = analyzeRes.data?.candidates?.[0];
+    const analyzePart = analyzeCandidate?.content?.parts?.[0];
+    const text = analyzePart?.text || "{}";
+    let analysis = {};
     try {
-      const analyzeRes = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-        {
-          contents: [{
-            parts: [
-              { inlineData: { mimeType: mime, data: b64 } },
-              { text: "Expert embroidery digitizer. Analyze this design and return ONLY JSON: {complexity:simple|medium|complex,dominant_colors:[#hex1,#hex2],suggested_stitch_type:satin|fill|running|mixed,estimated_stitch_count:number,width_mm:80,height_mm:80,has_text:boolean,has_logo:boolean,description:brief}" }
-            ]
-          }]
-        },
-        { timeout: 30000 }
-      );
-      
-      const analyzeCandidate = analyzeRes.data?.candidates?.[0];
-      const analyzePart = analyzeCandidate?.content?.parts?.[0];
-      const text = analyzePart?.text || "{}";
-      
-      try {
-        const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-        analysis = { ...analysis, ...parsed };
-      } catch(jsonErr) {
-        console.log("JSON parse failed:", jsonErr.message);
-      }
-    } catch(analyzeErr) {
-      console.log("Analysis failed:", analyzeErr.message);
+      analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
+    } catch(e) {
+      console.log("JSON parse failed:", e.message);
     }
     
-    // STEP 2: Try to generate preview image (completely optional)
     let previewImage = null;
     try {
       const previewRes = await axios.post(
@@ -689,72 +670,8 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
           break;
         }
       }
-    } catch(previewErr) {
-      console.log("Preview generation skipped:", previewErr.message);
-    }
-    
-    res.json({
-      ...analysis,
-      preview_image: previewImage
-    });
-    
-  } catch(e) {
-    console.error("Fatal error:", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-    
-    const b64 = req.file.buffer.toString("base64");
-    const mime = req.file.mimetype || "image/jpeg";
-    
-    // STEP 1: Analyze the image
-    const analyzeRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-      {
-        contents: [{
-          parts: [
-            { inlineData: { mimeType: mime, data: b64 } },
-            { text: "Expert embroidery digitizer. Analyze this design and return ONLY JSON: {complexity:simple|medium|complex,dominant_colors:[#hex1,#hex2],suggested_stitch_type:satin|fill|running|mixed,estimated_stitch_count:number,width_mm:80,height_mm:80,has_text:boolean,has_logo:boolean,description:brief}" }
-          ]
-        }]
-      },
-      { timeout: 30000 }
-    );
-    
-    const analyzeCandidate = analyzeRes.data?.candidates?.[0];
-    const analyzePart = analyzeCandidate?.content?.parts?.[0];
-    const text = analyzePart?.text || "{}";
-    let analysis = {};
-    try {
-      analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
     } catch(e) {
-      console.log("JSON parse failed, using defaults");
-      analysis = { complexity: "medium", dominant_colors: ["#c41e3a", "#ffd700", "#ffffff"], suggested_stitch_type: "fill", estimated_stitch_count: 5000, width_mm: 80, height_mm: 80 };
-    }
-    
-    // STEP 2: Generate stitch preview image
-    const previewRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-      {
-        contents: [{
-          parts: [
-            { inlineData: { mimeType: mime, data: b64 } },
-            { text: `Generate an embroidery stitch preview of this design. Show how it would look stitched on fabric. Use these thread colors: ${analysis.dominant_colors?.join(', ') || 'red, gold, white'}. Return ONLY the image.` }
-          ]
-        }]
-      },
-      { timeout: 45000 }
-    );
-    
-    // Extract generated image if available
-    const parts = previewRes.data.candidates[0].content.parts;
-    let previewImage = null;
-    
-    for (const part of parts) {
-      if (part.inlineData) {
-        previewImage = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-        break;
-      }
+      console.log("Preview generation skipped:", e.message);
     }
     
     res.json({
@@ -766,31 +683,7 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     console.error("Gemini error:", e.message);
     res.status(500).json({ error: e.message });
   }
-});
-
-
-app.get("/", (_, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
-
-app.get("/api", (_, res) => {
-  res.send("Stichai API v5.6 — <a href='/'>Web Interface</a> — <a href='/health'>Health</a>");
-});
-
-
-app.get("/health", (_,res) => {
-  res.json({ 
-    status: "ok", 
-    uptime: process.uptime(), 
-    version: "5.5", 
-    whatsapp: connectionState,
-    timestamp: new Date().toISOString()
-  });
-});
-
-function adminAuth(req, res) {
-  const s = req.body?.secret || req.query?.secret;
-  if (s !== CONFIG.ADMIN_SECRET) { res.status(401).json({ error:"Unauthorized" }); return false; }
+}); return false; }
   return true;
 }
 
