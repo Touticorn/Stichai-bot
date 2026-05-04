@@ -626,23 +626,8 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
           parts: [
             { inline_data: { mime_type: mime, data: b64 } },
             { text: "Expert embroidery digitizer. Return ONLY JSON: {complexity:simple|medium|complex,dominant_colors:[#hex1,#hex2],suggested_stitch_type:satin|fill|running|mixed,estimated_stitch_count:5000,width_mm:80,height_mm:80,has_text:false,has_logo:false,description:brief}" }
-          ]
-        }]
-      },
-      { timeout: 20000 }
-    );
-    const text = geminiRes.data.candidates[0].content.parts[0].text;
-    const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
-    res.json(analysis);
-  } catch(e) {
-    console.error("Gemini error:", e.message);
-    if (e.response) {
-      console.error("Status:", e.response.status);
-      console.error("Data:", JSON.stringify(e.response.data));
-    }
-    res.status(500).json({ error: e.message, details: e.response?.data });
-  }
-});
+       res.status(500).json({ error: e.message, details: e.response?.data });
+            }
 
 app.get("/", (_, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
@@ -652,22 +637,16 @@ app.get("/api", (_, res) => {
   res.send("Stichai API v5.5 — <a href='/'>Web Interface</a> — <a href='/health'>Health</a>");
 });
 
-app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: "No image" });
-    const b64 = req.file.buffer.toString("base64");
-    const mime = req.file.mimetype || "image/jpeg";
-    const geminiRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.GEMINI.flash}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-      {
-        contents: [{
-          parts: [
-            { inline_data: { mime_type: mime, data: b64 } },
-            { text: "Expert embroidery digitizer. Return ONLY JSON: {complexity:simple|medium|complex,dominant_colors:[#hex1,#hex2],suggested_stitch_type:satin|fill|running|mixed,estimated_stitch_count:5000,width_mm:80,height_mm:80,has_text:false,has_logo:false,description:brief}" }
-          ]
-        }]
-      },
-      { timeout: 20000 }
+app.get("/health", (_,res) => {
+  res.json({ 
+    status: "ok", 
+    uptime: process.uptime(), 
+    version: "5.5", 
+    whatsapp: connectionState,
+    timestamp: new Date().toISOString()
+  });
+});
+
     );
     const text = geminiRes.data.candidates[0].content.parts[0].text;
     const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
