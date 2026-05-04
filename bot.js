@@ -618,44 +618,29 @@ async function handleMessage(msg) {
 // GEMINI IMAGE ANALYSIS (Secure - uses Railway env var)
 // ============================================================
 
+const webJobs = {};
+
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image uploaded" });
-    
+
     const b64 = req.file.buffer.toString("base64");
-    const mime = req.file.mimeType || "image/jpeg";
-    
-    const geminiRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.GEMINI.flash}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-      {
-        contents: [{
-          parts: [
-            { inline_data: { mime_type: mime, data: b64 } },
-            { text: `Expert embroidery digitizer. Analyze this design and return ONLY JSON:
-            {
-              "complexity": "simple|medium|complex",
-              "dominant_colors": ["#hex1", "#hex2"],
-              "suggested_stitch_type": "satin|fill|running|mixed",
-              "estimated_stitch_count": number,
-              "width_mm": 80,
-              "height_mm": 80,
-              "has_text": true|false,
-              "has_logo": true|false,
-              "description": "brief description"
-            }` }
-          ]
-        }]
-      },
-      { timeout: 25000 }
-    );
-    
-    const text = geminiRes.data.candidates[0].content.parts[0].text;
-    const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
-    
-    res.json(analysis);
-    
+    const mime = req.file.mimetype || "image/jpeg";
+
+    const settings = req.body.settings ? JSON.parse(req.body.settings) : {};
+    const phone = req.body.phone || "web_" + Date.now();
+    const jobId = "job_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+
+    webJobs[jobId] = { status: "processing", progress: 0, result: null, error: null, phone, settings };
+
+    // Run job in background
+    processWebJob(jobId, req.file, settings, phone);
+
+    // Return jobId immediately so frontend can poll
+    res.json({ jobId, status: "processing", check: `/api/status/${jobId}` });
+
   } catch(e) {
-    console.error("Gemini analysis error:", e.message);
+    console.error("analyze-image error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -666,37 +651,7 @@ app.get("/", (_, res) => {
 });
 
 app.get("/api", (_, res) => {
-  res.send("Stichai API v5.5 — <a href='/'>Web Interface</a> — <a href='/health'>Health</a>");
-});
-
-app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: "No image" });
-    const b64 = req.file.buffer.toString("base64");
-    const mime = req.file.mimetype || "image/jpeg";
-    const geminiRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.GEMINI.flash}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-      {
-        contents: [{
-          parts: [
-            { inlineData: { mimeType: mime, data: b64 } },
-            { text: "Expert embroidery digitizer. Return ONLY JSON: {complexity:simple|medium|complex,dominant_colors:[#hex1,#hex2],suggested_stitch_type:satin|fill|running|mixed,estimated_stitch_count:5000,width_mm:80,height_mm:80,has_text:false,has_logo:false,description:brief}" }
-          ]
-        }]
-      },
-      { timeout: 20000 }
-    );
-    const text = geminiRes.data.candidates[0].content.parts[0].text;
-    const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
-    res.json(analysis);
-  } catch(e) {
-    console.error("Gemini error:", e.message);
-    if (e.response) {
-      console.error("Status:", e.response.status);
-      console.error("Data:", JSON.stringify(e.response.data));
-    }
-    res.status(500).json({ error: e.message, details: e.response?.data });
-  }
+  res.send("Stichai API v5.6 — <a href='/'>Web Interface</a> — <a href='/health'>Health</a>");
 });
 
 
@@ -802,8 +757,6 @@ app.get("/payment/stripe/success", (_, res) =>
 // WEB API
 // ============================================================
 
-const webJobs = {};
-
 app.post("/api/convert", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image uploaded" });
@@ -865,9 +818,13 @@ async function processWebJob(jobId, file, settings, phone) {
     
     job.result = {
       stitch_count: files?.stitch_count || analysis.stitch_count || 5000,
+      estimated_stitch_count: files?.stitch_count || analysis.stitch_count || 5000,
       colors: analysis.colors?.length || 1,
+      dominant_colors: analysis.colors || ['#c41e3a', '#ffd700', '#ffffff'],
+      suggested_stitch_type: analysis.stitch_type || settings.stitchType || 'fill',
       width_mm: analysis.width_mm,
       height_mm: analysis.height_mm,
+      description: analysis.description || '',
       dst_url: files?.dst_url || null,
       pes_url: files?.pes_url || null,
       jef_url: files?.jef_url || null,
