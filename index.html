@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+-1<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1147,7 +1147,8 @@ function resizeImageForUpload(file, maxWidth, callback) {
                 formData.append('phone', '');
                 formData.append('preview', enablePreview);
 
-                const response = await fetch('/api/convert', { method: 'POST', body: formData });
+                const response = await fetch('/api/analyze-image', { method: 'POST', body: formData });
+
                 const data = await response.json();
 
                 if (data.error) throw new Error(data.error);
