@@ -1120,9 +1120,8 @@ async function submitOrder() {
     
     // Reset progress
     progressFill.style.width = '0%';
-    progressFill.textContent = '0%';
     
-    // Auto-scroll to bottom to show progress
+    // Auto-scroll to bottom
     setTimeout(() => {
         window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
     }, 100);
@@ -1137,13 +1136,58 @@ async function submitOrder() {
             progress += 5;
             if (progress > 90) progress = 90;
             progressFill.style.width = progress + '%';
-            progressFill.textContent = progress + '%';
         }, 1000);
 
         const response = await fetch('/api/analyze-image', { 
             method: 'POST', 
             body: formData 
         });
+        
+        clearInterval(progressInterval);
+        progressFill.style.width = '100%';
+        
+        if (!response.ok) {
+            throw new Error('Analysis failed: ' + response.status);
+        }
+        
+        const analysis = await response.json();
+
+        if (analysis.error) {
+            throw new Error(analysis.error);
+        }
+
+        const colors = analysis.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
+        const stitchType = analysis.suggested_stitch_type || 'auto';
+        
+        generateStitchPreview(colors, analysis.width_mm || 80, analysis.height_mm || 80, stitchType);
+        updateColorPalette(colors);
+        updateDensityVisual(document.querySelector('input[name="density"]:checked')?.value || 'medium');
+        
+        document.getElementById('previewStitches').textContent = '~' + (analysis.estimated_stitch_count || 5000).toLocaleString();
+        document.getElementById('previewColors').textContent = colors.length;
+        document.getElementById('previewTime').textContent = Math.ceil((analysis.estimated_stitch_count || 5000) / 300) + 'm';
+        document.getElementById('previewDensity').textContent = stitchType.charAt(0).toUpperCase() + stitchType.slice(1);
+        
+        previewSection.classList.add('active');
+        
+        // Auto-scroll to preview
+        setTimeout(() => {
+            previewSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+        
+    } catch(e) {
+        alert('Error: ' + e.message);
+        console.error(e);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = TRANSLATIONS[currentLang].submitBtn;
+        setTimeout(() => {
+            progressBar.classList.remove('active');
+            progressFill.style.width = '0%';
+        }, 2000);
+    }
+}
+	
         // Display Gemini-generated preview
 if (analysis.preview_image) {
     document.getElementById('stitchPreview').src = analysis.preview_image;
