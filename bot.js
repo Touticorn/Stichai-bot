@@ -283,7 +283,7 @@ async function analyzeImage(b64, mime) {
     const r = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
       { contents:[{ parts:[{ inline_data:{mime_type:mime,data:b64} },{ text:`Expert embroidery digitizer. Return ONLY JSON: {"complexity":"simple|medium|complex","colors":["#hex"],"width_mm":80,"height_mm":80,"stitch_count":5000,"stitch_type":"satin|fill|run|mixed","description":"brief"}` }] }] },
-      { timeout: 20000 }
+      { timeout: 80000 }
     );
     const result = JSON.parse(r.data.candidates[0].content.parts[0].text.replace(/```json|```/g,"").trim());
     result._model = model;
