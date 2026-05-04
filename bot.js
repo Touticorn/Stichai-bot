@@ -624,6 +624,89 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     const b64 = req.file.buffer.toString("base64");
     const mime = req.file.mimetype || "image/jpeg";
     
+    // STEP 1: Analyze the image (safe fallback)
+    let analysis = { 
+      complexity: "medium", 
+      dominant_colors: ["#c41e3a", "#ffd700", "#ffffff"], 
+      suggested_stitch_type: "fill", 
+      estimated_stitch_count: 5000, 
+      width_mm: 80, 
+      height_mm: 80,
+      has_text: false,
+      has_logo: false,
+      description: "Embroidery design"
+    };
+    
+    try {
+      const analyzeRes = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+        {
+          contents: [{
+            parts: [
+              { inlineData: { mimeType: mime, data: b64 } },
+              { text: "Expert embroidery digitizer. Analyze this design and return ONLY JSON: {complexity:simple|medium|complex,dominant_colors:[#hex1,#hex2],suggested_stitch_type:satin|fill|running|mixed,estimated_stitch_count:number,width_mm:80,height_mm:80,has_text:boolean,has_logo:boolean,description:brief}" }
+            ]
+          }]
+        },
+        { timeout: 30000 }
+      );
+      
+      const analyzeCandidate = analyzeRes.data?.candidates?.[0];
+      const analyzePart = analyzeCandidate?.content?.parts?.[0];
+      const text = analyzePart?.text || "{}";
+      
+      try {
+        const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+        analysis = { ...analysis, ...parsed };
+      } catch(jsonErr) {
+        console.log("JSON parse failed:", jsonErr.message);
+      }
+    } catch(analyzeErr) {
+      console.log("Analysis failed:", analyzeErr.message);
+    }
+    
+    // STEP 2: Try to generate preview image (completely optional)
+    let previewImage = null;
+    try {
+      const previewRes = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+        {
+          contents: [{
+            parts: [
+              { inlineData: { mimeType: mime, data: b64 } },
+              { text: `Generate an embroidery stitch preview of this design. Show how it would look stitched on fabric. Use these thread colors: ${analysis.dominant_colors?.join(', ') || 'red, gold, white'}. Return ONLY the image.` }
+            ]
+          }]
+        },
+        { timeout: 45000 }
+      );
+      
+      const candidate = previewRes.data?.candidates?.[0];
+      const parts = candidate?.content?.parts || [];
+      for (const part of parts) {
+        if (part?.inlineData) {
+          previewImage = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+          break;
+        }
+      }
+    } catch(previewErr) {
+      console.log("Preview generation skipped:", previewErr.message);
+    }
+    
+    res.json({
+      ...analysis,
+      preview_image: previewImage
+    });
+    
+  } catch(e) {
+    console.error("Fatal error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+    
+    const b64 = req.file.buffer.toString("base64");
+    const mime = req.file.mimetype || "image/jpeg";
+    
     // STEP 1: Analyze the image
     const analyzeRes = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
