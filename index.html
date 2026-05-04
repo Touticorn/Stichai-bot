@@ -1092,13 +1092,66 @@ function resizeImageForUpload(file, maxWidth, callback) {
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
-        async function submitOrder() {
-            if (!uploadedFile) {
-                alert(currentLang === 'fr' ? 'Veuillez télécharger une image!' : 
-                      currentLang === 'ar' ? 'الرجاء رفع صورة!' : 
-                      'Please upload an image first!');
-                return;
-            }
+       async function submitOrder() {
+    if (!uploadedFile) {
+        alert('Please upload an image first!');
+        return;
+    }
+
+    const btn = document.getElementById('submitBtn');
+    const progressBar = document.getElementById('progressBar');
+    const progressFill = document.getElementById('progressFill');
+    const previewSection = document.getElementById('previewSection');
+
+    btn.disabled = true;
+    btn.textContent = 'Analyzing...';
+    progressBar.classList.add('active');
+    previewSection.classList.remove('active');
+
+    try {
+        const formData = new FormData();
+        formData.append('image', uploadedFile);
+
+        const response = await fetch('/api/analyze-image', { 
+            method: 'POST', 
+            body: formData 
+        });
+        
+        if (!response.ok) {
+            throw new Error('Analysis failed: ' + response.status);
+        }
+        
+        const analysis = await response.json();
+
+        if (analysis.error) {
+            throw new Error(analysis.error);
+        }
+
+        // Update preview with analysis data
+        const colors = analysis.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
+        const stitchType = analysis.suggested_stitch_type || 'auto';
+        
+        generateStitchPreview(colors, analysis.width_mm || 80, analysis.height_mm || 80, stitchType);
+        updateColorPalette(colors);
+        updateDensityVisual(document.querySelector('input[name="density"]:checked')?.value || 'medium');
+        
+        document.getElementById('previewStitches').textContent = '~' + (analysis.estimated_stitch_count || 5000).toLocaleString();
+        document.getElementById('previewColors').textContent = colors.length;
+        document.getElementById('previewTime').textContent = Math.ceil((analysis.estimated_stitch_count || 5000) / 300) + 'm';
+        document.getElementById('previewDensity').textContent = stitchType.charAt(0).toUpperCase() + stitchType.slice(1);
+        
+        previewSection.classList.add('active');
+        
+    } catch(e) {
+        alert('Error: ' + e.message);
+        console.error(e);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = TRANSLATIONS[currentLang].submitBtn;
+        progressBar.classList.remove('active');
+    }
+}
+
 
             const btn = document.getElementById('submitBtn');
             const progressBar = document.getElementById('progressBar');
