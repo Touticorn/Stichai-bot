@@ -624,6 +624,7 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     const b64 = req.file.buffer.toString("base64");
     const mime = req.file.mimetype || "image/jpeg";
     
+    // STEP 1: Analyze the image
     const analyzeRes = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
       {
@@ -647,6 +648,7 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
       console.log("JSON parse failed:", e.message);
     }
     
+    // STEP 2: Try to generate stitch preview image (optional)
     let previewImage = null;
     try {
       const previewRes = await axios.post(
