@@ -683,7 +683,32 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     console.error("Gemini error:", e.message);
     res.status(500).json({ error: e.message });
   }
-}); return false; }
+});
+
+
+
+app.get("/", (_, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
+app.get("/api", (_, res) => {
+  res.send("Stichai API v5.6 — <a href='/'>Web Interface</a> — <a href='/health'>Health</a>");
+});
+
+
+app.get("/health", (_,res) => {
+  res.json({ 
+    status: "ok", 
+    uptime: process.uptime(), 
+    version: "5.5", 
+    whatsapp: connectionState,
+    timestamp: new Date().toISOString()
+  });
+});
+
+function adminAuth(req, res) {
+  const s = req.body?.secret || req.query?.secret;
+  if (s !== CONFIG.ADMIN_SECRET) { res.status(401).json({ error:"Unauthorized" }); return false; }
   return true;
 }
 
