@@ -1071,12 +1071,19 @@ async function submitOrder() {
         const colors = analysis.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
         
         // Show Gemini-generated preview, or fallback to original image
+        const previewOriginal = document.getElementById('previewOriginal');
+        const stitchPreview = document.getElementById('stitchPreview');
+        
         if (analysis.preview_image) {
-            document.getElementById('stitchPreview').src = analysis.preview_image;
+            stitchPreview.src = analysis.preview_image;
+        } else if (previewOriginal.src && previewOriginal.src !== '') {
+            stitchPreview.src = previewOriginal.src;
         } else {
-            document.getElementById('stitchPreview').src = document.getElementById('previewOriginal').src || '';
+            // No image available at all
+            stitchPreview.style.display = 'none';
+            stitchPreview.parentElement.querySelector('h3').textContent = 'Analysis Complete (No Preview)';
         }
-        document.getElementById('stitchPreview').style.display = 'block';
+        stitchPreview.style.display = 'block';
         
         updateColorPalette(colors);
         
