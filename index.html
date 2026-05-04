@@ -943,6 +943,7 @@
                 img.style.display = 'block';
                 document.getElementById('uploadPrompt').style.display = 'none';
                 document.getElementById('dropZone').classList.add('has-image');
+                document.getElementById('previewOriginal').src = e.target.result;
             };
             reader.readAsDataURL(file);
         }
