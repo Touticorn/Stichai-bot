@@ -927,3 +927,20 @@ const PORT = process.env.PORT || 3000;
     process.exit(1);
   }
 })();
+
+app.get("/api/test", async (req, res) => {
+  try {
+    const r = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.GEMINI.flash}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      { contents: [{ parts: [{ text: "hi" }] }] },
+      { timeout: 10000 }
+    );
+    res.json({ ok: true, text: r.data.candidates[0].content.parts[0].text });
+  } catch(e) {
+    res.status(500).json({ 
+      error: e.message, 
+      status: e.response?.status,
+      data: e.response?.data 
+    });
+  }
+});
