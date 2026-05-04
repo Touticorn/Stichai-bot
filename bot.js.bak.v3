@@ -290,7 +290,7 @@ async function analyzeImage(b64, mime) {
     return result;
   } catch(e) {
     console.error("Gemini:", e.message);
-    return { complexity:"medium", dominant_colors:["#000000"], width_mm:80, height_mm:80, estimated_stitch_count:5000, suggested_stitch_type:"fill", _model:CONFIG.GEMINI.flash };
+    return { complexity:"medium", colors:["#000000"], width_mm:80, height_mm:80, stitch_count:5000, stitch_type:"fill", _model:CONFIG.GEMINI.flash };
   }
 }
 
@@ -460,11 +460,11 @@ async function processAndDeliver(phone, user, msg) {
       await sendMsg(phone, `DST: ${files.dst_url} PES: ${files.pes_url}`);
     }
 
-    const modelLabel = analysis._model?.includes("pro") ? "Pro" : "Flash";
+    const modelLabel = analysis._model?.includes("lite") ? "Flash-Lite" : analysis._model?.includes("pro") ? "Pro" : "Flash";
     const summary = {
-      ar:`Stitches: ~${(analysis.estimated_stitch_count||5000).toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${analysis.dominant_colors?.length||1} color | Gemini ${modelLabel}`,
-      fr:`Points: ~${(analysis.estimated_stitch_count||5000).toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${analysis.dominant_colors?.length||1} couleur | Gemini ${modelLabel}`,
-      en:`Stitches: ~${(analysis.estimated_stitch_count||5000).toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${analysis.dominant_colors?.length||1} color | Gemini ${modelLabel}`,
+      ar:`Stitches: ~${(analysis.stitch_count||5000).toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${analysis.colors?.length||1} color | Gemini ${modelLabel}`,
+      fr:`Points: ~${(analysis.stitch_count||5000).toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${analysis.colors?.length||1} couleur | Gemini ${modelLabel}`,
+      en:`Stitches: ~${(analysis.stitch_count||5000).toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${analysis.colors?.length||1} color | Gemini ${modelLabel}`,
     };
     await sendMsg(phone, summary[lang]);
     sess(phone).step = "menu";
@@ -611,6 +611,9 @@ async function handleMessage(msg) {
 // EXPRESS ROUTES
 // ============================================================
 
+// ============================================================
+// GEMINI IMAGE ANALYSIS (Secure - uses Railway env var)
+// ============================================================
 // ============================================================
 // GEMINI IMAGE ANALYSIS (Secure - uses Railway env var)
 // ============================================================
@@ -849,11 +852,11 @@ async function processWebJob(jobId, file, settings, phone) {
     job.progress = 90;
     
     job.result = {
-      stitch_count: files?.stitch_count || analysis.estimated_stitch_count || 5000,
-      estimated_stitch_count: files?.stitch_count || analysis.estimated_stitch_count || 5000,
-      colors: analysis.dominant_colors?.length || 1,
-      dominant_colors: analysis.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'],
-      suggested_stitch_type: analysis.suggested_stitch_type || settings.stitchType || 'fill',
+      stitch_count: files?.stitch_count || analysis.stitch_count || 5000,
+      estimated_stitch_count: files?.stitch_count || analysis.stitch_count || 5000,
+      colors: analysis.colors?.length || 1,
+      dominant_colors: analysis.colors || ['#c41e3a', '#ffd700', '#ffffff'],
+      suggested_stitch_type: analysis.stitch_type || settings.stitchType || 'fill',
       width_mm: analysis.width_mm,
       height_mm: analysis.height_mm,
       description: analysis.description || '',
@@ -862,7 +865,7 @@ async function processWebJob(jobId, file, settings, phone) {
       jef_url: files?.jef_url || null,
       exp_url: files?.exp_url || null,
       vp3_url: files?.vp3_url || null,
-      estimated_time: Math.ceil((analysis.estimated_stitch_count || 5000) / 300) + "m"
+      estimated_time: Math.ceil((analysis.stitch_count || 5000) / 300) + "m"
     };
     
     job.status = "completed";

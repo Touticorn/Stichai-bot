@@ -208,6 +208,11 @@
             text-transform: uppercase;
             letter-spacing: 1px;
         }
+        #stitchCanvas {
+            max-width: 100%;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+        }
         .color-palette {
             display: flex;
             flex-wrap: wrap;
@@ -631,14 +636,11 @@
         <div class="preview-container" id="previewSection">
             <h2 style="color:#667eea;margin-bottom:15px" data-i18n="previewTitle">👁️ Stitch Preview</h2>
             
-            <div class="preview-grid">
-                <div class="preview-box">
-                    <h3 data-i18n="original">Original Design</h3>
-                    <img id="previewOriginal" style="max-width:100%; max-height:300px; border-radius:8px; display:none;">
-                </div>
+                        <div class="preview-grid">
                 <div class="preview-box">
                     <h3 data-i18n="simulation">Stitch Simulation</h3>
-                    <img id="stitchPreview" style="max-width:100%; max-height:300px; border-radius:8px; display:none; transition: transform 0.3s;">
+                    <img id="stitchPreview" style="max-width:100%; max-height:300px; border-radius:8px; display:none;">
+                    <canvas id="stitchCanvas" width="300" height="300" style="display:none; pointer-events: none;"></canvas>
                     <div class="zoom-controls">
                         <button class="zoom-btn" onclick="zoomPreview(0.8)">🔍-</button>
                         <button class="zoom-btn" onclick="zoomPreview(1.0)">⟲ Reset</button>
@@ -933,19 +935,43 @@
         }
 
         function handleFile(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            uploadedFile = file;
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const img = document.getElementById('previewImg');
-                img.src = e.target.result;
-                img.style.display = 'block';
-                document.getElementById('uploadPrompt').style.display = 'none';
-                document.getElementById('dropZone').classList.add('has-image');
-            };
-            reader.readAsDataURL(file);
-        }
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    // Resize in browser before storing
+    resizeImageForUpload(file, 512, (resizedBlob) => {
+        uploadedFile = new File([resizedBlob], file.name, { type: 'image/jpeg' });
+        
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const img = document.getElementById('previewImg');
+            img.src = e.target.result;
+            img.style.display = 'block';
+            document.getElementById('uploadPrompt').style.display = 'none';
+            document.getElementById('dropZone').classList.add('has-image');
+            document.getElementById('previewOriginal').src = e.target.result;
+        };
+        reader.readAsDataURL(uploadedFile);
+    });
+}
+
+function resizeImageForUpload(file, maxWidth, callback) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const scale = Math.min(maxWidth / img.width, maxWidth / img.height, 1);
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            canvas.toBlob(callback, 'image/jpeg', 0.9);
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
 
 
         document.querySelectorAll('.radio-group').forEach(group => {
@@ -1000,18 +1026,13 @@
 
         function zoomPreview(factor) {
             currentZoom *= factor;
-            const img = document.getElementById('stitchPreview');
-            img.style.transform = `scale(${currentZoom})`;
-            img.style.transformOrigin = 'center';
+            const canvas = document.getElementById('stitchCanvas');
+            canvas.style.transform = `scale(${currentZoom})`;
+            canvas.style.transformOrigin = 'center';
         }
 
         function regeneratePreview() {
             document.getElementById('previewSection').classList.remove('active');
-            document.getElementById('stitchPreview').style.display = 'none';
-            document.getElementById('stitchPreview').src = '';
-            document.getElementById('previewOriginal').style.display = 'none';
-            currentZoom = 1.0;
-            document.getElementById('stitchPreview').style.transform = 'scale(1)';
             document.getElementById('submitBtn').disabled = false;
             document.getElementById('submitBtn').textContent = TRANSLATIONS[currentLang].submitBtn;
             window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1070,13 +1091,15 @@ async function submitOrder() {
 
         const colors = analysis.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
         
-        // Show Gemini-generated preview, or fallback to original image
+        // Show image preview if available, otherwise show canvas
         if (analysis.preview_image) {
             document.getElementById('stitchPreview').src = analysis.preview_image;
+            document.getElementById('stitchPreview').style.display = 'block';
+            document.getElementById('stitchCanvas').style.display = 'none';
         } else {
-            document.getElementById('stitchPreview').src = document.getElementById('previewOriginal').src || '';
+            document.getElementById('stitchPreview').style.display = 'none';
+            document.getElementById('stitchCanvas').style.display = 'block';
         }
-        document.getElementById('stitchPreview').style.display = 'block';
         
         updateColorPalette(colors);
         

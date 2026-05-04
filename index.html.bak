@@ -208,6 +208,11 @@
             text-transform: uppercase;
             letter-spacing: 1px;
         }
+        #stitchCanvas {
+            max-width: 100%;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+        }
         .color-palette {
             display: flex;
             flex-wrap: wrap;
@@ -632,13 +637,15 @@
             <h2 style="color:#667eea;margin-bottom:15px" data-i18n="previewTitle">👁️ Stitch Preview</h2>
             
             <div class="preview-grid">
-                <div class="preview-box">
-                    <h3 data-i18n="original">Original Design</h3>
-                    <img id="previewOriginal" style="max-width:100%; max-height:300px; border-radius:8px; display:none;">
-                </div>
+<div class="preview-box">
+    <h3 data-i18n="simulation">Stitch Simulation</h3>
+    <img id="stitchPreview" style="max-width:100%; max-height:300px; border-radius:8px; display:none;">
+    <canvas id="stitchCanvas" width="300" height="300" style="display:none; pointer-events: none;"></canvas>
+</div>
+
                 <div class="preview-box">
                     <h3 data-i18n="simulation">Stitch Simulation</h3>
-                    <img id="stitchPreview" style="max-width:100%; max-height:300px; border-radius:8px; display:none; transition: transform 0.3s;">
+                    <canvas id="stitchCanvas" width="300" height="300"></canvas>
                     <div class="zoom-controls">
                         <button class="zoom-btn" onclick="zoomPreview(0.8)">🔍-</button>
                         <button class="zoom-btn" onclick="zoomPreview(1.0)">⟲ Reset</button>
@@ -933,19 +940,43 @@
         }
 
         function handleFile(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            uploadedFile = file;
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const img = document.getElementById('previewImg');
-                img.src = e.target.result;
-                img.style.display = 'block';
-                document.getElementById('uploadPrompt').style.display = 'none';
-                document.getElementById('dropZone').classList.add('has-image');
-            };
-            reader.readAsDataURL(file);
-        }
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    // Resize in browser before storing
+    resizeImageForUpload(file, 512, (resizedBlob) => {
+        uploadedFile = new File([resizedBlob], file.name, { type: 'image/jpeg' });
+        
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const img = document.getElementById('previewImg');
+            img.src = e.target.result;
+            img.style.display = 'block';
+            document.getElementById('uploadPrompt').style.display = 'none';
+            document.getElementById('dropZone').classList.add('has-image');
+            document.getElementById('previewOriginal').src = e.target.result;
+        };
+        reader.readAsDataURL(uploadedFile);
+    });
+}
+
+function resizeImageForUpload(file, maxWidth, callback) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const scale = Math.min(maxWidth / img.width, maxWidth / img.height, 1);
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            canvas.toBlob(callback, 'image/jpeg', 0.9);
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
 
 
         document.querySelectorAll('.radio-group').forEach(group => {
@@ -978,6 +1009,64 @@
         function getSelectedValue(name) {
             return document.querySelector(`input[name="${name}"]:checked`)?.value;
         }
+        function generateStitchPreview(colors, width, height, stitchType) {
+            const canvas = document.getElementById('stitchCanvas');
+            const ctx = canvas.getContext('2d');
+            
+            ctx.fillStyle = '#f5f5f5';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            ctx.fillStyle = '#fafafa';
+            for (let i = 0; i < canvas.width; i += 4) {
+                for (let j = 0; j < canvas.height; j += 4) {
+                    if (Math.random() > 0.7) ctx.fillRect(i, j, 1, 1);
+                }
+            }
+            
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const radius = Math.min(canvas.width, canvas.height) * 0.35;
+            
+            colors.forEach((color, idx) => {
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1.5;
+                ctx.globalAlpha = 0.8;
+                
+                if (stitchType === 'satin' || stitchType === 'auto') {
+                    ctx.beginPath();
+                    for (let i = 0; i < 20; i++) {
+                        const angle = (i / 20) * Math.PI * 2;
+                        const x = centerX + Math.cos(angle) * radius * (0.8 + idx * 0.1);
+                        const y = centerY + Math.sin(angle) * radius * (0.8 + idx * 0.1);
+                        if (i === 0) ctx.moveTo(x, y);
+                        else ctx.lineTo(x, y);
+                    }
+                    ctx.closePath();
+                    ctx.stroke();
+                } else if (stitchType === 'fill') {
+                    ctx.beginPath();
+                    for (let i = -radius; i < radius; i += 8) {
+                        ctx.moveTo(centerX + i, centerY - radius);
+                        ctx.lineTo(centerX + i, centerY + radius);
+                    }
+                    ctx.stroke();
+                } else if (stitchType === 'running') {
+                    ctx.setLineDash([5, 5]);
+                    ctx.beginPath();
+                    ctx.arc(centerX, centerY, radius * (0.5 + idx * 0.15), 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+            });
+            
+            ctx.globalAlpha = 0.1;
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.arc(centerX - radius*0.3, centerY - radius*0.3, radius*0.4, 0, Math.PI*2);
+            ctx.fill();
+            ctx.globalAlpha = 1.0;
+        }
+
         function updateColorPalette(colors) {
             const palette = document.getElementById('colorPalette');
             palette.innerHTML = '';
@@ -1000,18 +1089,13 @@
 
         function zoomPreview(factor) {
             currentZoom *= factor;
-            const img = document.getElementById('stitchPreview');
-            img.style.transform = `scale(${currentZoom})`;
-            img.style.transformOrigin = 'center';
+            const canvas = document.getElementById('stitchCanvas');
+            canvas.style.transform = `scale(${currentZoom})`;
+            canvas.style.transformOrigin = 'center';
         }
 
         function regeneratePreview() {
             document.getElementById('previewSection').classList.remove('active');
-            document.getElementById('stitchPreview').style.display = 'none';
-            document.getElementById('stitchPreview').src = '';
-            document.getElementById('previewOriginal').style.display = 'none';
-            currentZoom = 1.0;
-            document.getElementById('stitchPreview').style.transform = 'scale(1)';
             document.getElementById('submitBtn').disabled = false;
             document.getElementById('submitBtn').textContent = TRANSLATIONS[currentLang].submitBtn;
             window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1033,8 +1117,11 @@ async function submitOrder() {
     btn.textContent = 'Analyzing...';
     progressBar.classList.add('active');
     previewSection.classList.remove('active');
+    
+    // Reset progress
     progressFill.style.width = '0%';
-
+    
+    // Auto-scroll to bottom
     setTimeout(() => {
         window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
     }, 100);
@@ -1043,6 +1130,7 @@ async function submitOrder() {
         const formData = new FormData();
         formData.append('image', uploadedFile);
 
+        // Simulate progress while waiting
         let progress = 0;
         const progressInterval = setInterval(() => {
             progress += 5;
@@ -1069,23 +1157,20 @@ async function submitOrder() {
         }
 
         const colors = analysis.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
+        const stitchType = analysis.suggested_stitch_type || 'auto';
         
-        // Show Gemini-generated preview, or fallback to original image
-        if (analysis.preview_image) {
-            document.getElementById('stitchPreview').src = analysis.preview_image;
-        } else {
-            document.getElementById('stitchPreview').src = document.getElementById('previewOriginal').src || '';
-        }
-        document.getElementById('stitchPreview').style.display = 'block';
-        
+        generateStitchPreview(colors, analysis.width_mm || 80, analysis.height_mm || 80, stitchType);
         updateColorPalette(colors);
+        updateDensityVisual(document.querySelector('input[name="density"]:checked')?.value || 'medium');
         
         document.getElementById('previewStitches').textContent = '~' + (analysis.estimated_stitch_count || 5000).toLocaleString();
         document.getElementById('previewColors').textContent = colors.length;
         document.getElementById('previewTime').textContent = Math.ceil((analysis.estimated_stitch_count || 5000) / 300) + 'm';
+        document.getElementById('previewDensity').textContent = stitchType.charAt(0).toUpperCase() + stitchType.slice(1);
         
         previewSection.classList.add('active');
         
+        // Auto-scroll to preview
         setTimeout(() => {
             previewSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 300);
@@ -1102,8 +1187,68 @@ async function submitOrder() {
         }, 2000);
     }
 }
+	
+        // Display Gemini-generated preview
+if (analysis.preview_image) {
+    document.getElementById('stitchPreview').src = analysis.preview_image;
+    document.getElementById('stitchPreview').style.display = 'block';
+    document.getElementById('stitchCanvas').style.display = 'none';
+} else {
+    // Fallback to canvas if no image generated
+    generateStitchPreview(colors, analysis.width_mm || 80, analysis.height_mm || 80, stitchType);
+    document.getElementById('stitchPreview').style.display = 'none';
+    document.getElementById('stitchCanvas').style.display = 'block';
+}
 
-</script>
+        clearInterval(progressInterval);
+        
+        if (!response.ok) {
+            throw new Error('Analysis failed: ' + response.status);
+        }
+        
+        const analysis = await response.json();
+        progressFill.style.width = '100%';
+        progressFill.textContent = '100%';
+
+        if (analysis.error) {
+            throw new Error(analysis.error);
+        }
+
+        const colors = analysis.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
+        const stitchType = analysis.suggested_stitch_type || 'auto';
+        
+        generateStitchPreview(colors, analysis.width_mm || 80, analysis.height_mm || 80, stitchType);
+        updateColorPalette(colors);
+        updateDensityVisual(document.querySelector('input[name="density"]:checked')?.value || 'medium');
+        
+        document.getElementById('previewStitches').textContent = '~' + (analysis.estimated_stitch_count || 5000).toLocaleString();
+        document.getElementById('previewColors').textContent = colors.length;
+        document.getElementById('previewTime').textContent = Math.ceil((analysis.estimated_stitch_count || 5000) / 300) + 'm';
+        document.getElementById('previewDensity').textContent = stitchType.charAt(0).toUpperCase() + stitchType.slice(1);
+        
+        previewSection.classList.add('active');
+        
+        // Auto-scroll to preview section when done
+        setTimeout(() => {
+            previewSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+        
+    } catch(e) {
+        alert('Error: ' + e.message);
+        console.error(e);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = TRANSLATIONS[currentLang].submitBtn;
+        setTimeout(() => {
+            progressBar.classList.remove('active');
+            progressFill.style.width = '0%';
+            progressFill.textContent = '';
+        }, 2000);
+    }
+}
+
+
+    </script>
 </body>
 </html>
  
