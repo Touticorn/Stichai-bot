@@ -1084,6 +1084,7 @@ async function submitOrder() {
         document.getElementById('previewColors').textContent = colors.length;
         document.getElementById('previewTime').textContent = Math.ceil((analysis.estimated_stitch_count || 5000) / 300) + 'm';
         
+        document.getElementById('previewOriginal').style.display = 'block';
         previewSection.classList.add('active');
         
         setTimeout(() => {
