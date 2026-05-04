@@ -935,7 +935,7 @@
     if (!file) return;
     
     // Resize in browser before storing
-    resizeImageForUpload(file, 1024, (resizedBlob) => {
+    resizeImageForUpload(file, 512, (resizedBlob) => {
         uploadedFile = new File([resizedBlob], file.name, { type: 'image/jpeg' });
         
         const reader = new FileReader();
