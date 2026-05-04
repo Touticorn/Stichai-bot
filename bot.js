@@ -692,8 +692,6 @@ app.get("/health", (_,res) => {
     version: "5.5", 
     whatsapp: connectionState,
     timestamp: new Date().toISOString()
-  });
-});
 
 function adminAuth(req, res) {
   const s = req.body?.secret || req.query?.secret;
