@@ -165,12 +165,19 @@
             display: none;
         }
         .progress-bar.active { display: block; }
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #667eea, #764ba2);
-            width: 0%;
-            transition: width 0.5s;
-        }
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #667eea, #764ba2);
+    width: 0%;
+    transition: width 0.5s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
         .preview-container {
             display: none;
             background: #f8f9fa;
@@ -1091,120 +1098,99 @@ function resizeImageForUpload(file, maxWidth, callback) {
             document.getElementById('submitBtn').textContent = TRANSLATIONS[currentLang].submitBtn;
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
+async function submitOrder() {
+    if (!uploadedFile) {
+        alert(currentLang === 'fr' ? 'Veuillez télécharger une image!' : 
+              currentLang === 'ar' ? 'الرجاء رفع صورة!' : 
+              'Please upload an image first!');
+        return;
+    }
 
-        async function submitOrder() {
-            if (!uploadedFile) {
-                alert(currentLang === 'fr' ? 'Veuillez télécharger une image!' : 
-                      currentLang === 'ar' ? 'الرجاء رفع صورة!' : 
-                      'Please upload an image first!');
-                return;
-            }
+    const btn = document.getElementById('submitBtn');
+    const progressBar = document.getElementById('progressBar');
+    const progressFill = document.getElementById('progressFill');
+    const previewSection = document.getElementById('previewSection');
 
-            const btn = document.getElementById('submitBtn');
-            const progressBar = document.getElementById('progressBar');
-            const progressFill = document.getElementById('progressFill');
-            const previewSection = document.getElementById('previewSection');
-            const enablePreview = document.getElementById('enablePreview').checked;
+    btn.disabled = true;
+    btn.textContent = 'Analyzing...';
+    progressBar.classList.add('active');
+    previewSection.classList.remove('active');
+    
+    // Reset progress
+    progressFill.style.width = '0%';
+    progressFill.textContent = '0%';
+    
+    // Auto-scroll to bottom to show progress
+    setTimeout(() => {
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    }, 100);
 
-            btn.disabled = true;
-            btn.textContent = enablePreview ? 'Analyzing...' : 'Processing...';
-            progressBar.classList.add('active');
-            previewSection.classList.remove('active');
+    try {
+        const formData = new FormData();
+        formData.append('image', uploadedFile);
 
-            const settings = {
-                width: document.getElementById('width').value,
-                height: document.getElementById('height').value,
-                keepAspect: document.getElementById('keepAspect').checked,
-                hoopSize: document.getElementById('hoopSize').value,
-                format: document.getElementById('machineFormat').value,
-                stitchType: getSelectedValue('stitchType'),
-                density: getSelectedValue('density'),
-                maxColors: document.getElementById('maxColors').value,
-                minStitch: document.getElementById('minStitch').value,
-                fabric: getSelectedValue('fabric'),
-                puffFoam: document.getElementById('puffFoam').checked,
-                applique: document.getElementById('applique').checked,
-                gradient: document.getElementById('gradient').checked,
-                crossStitch: document.getElementById('crossStitch').checked,
-                chenille: document.getElementById('chenille').checked,
-                sequin: document.getElementById('sequin').checked,
-                threadBrand: document.getElementById('threadBrand').value,
-                notes: document.getElementById('notes').value,
-                language: currentLang
-            };
+        // Simulate progress while waiting
+        let progress = 0;
+        const progressInterval = setInterval(() => {
+            progress += 5;
+            if (progress > 90) progress = 90;
+            progressFill.style.width = progress + '%';
+            progressFill.textContent = progress + '%';
+        }, 1000);
 
-            let progress = 0;
-            const interval = setInterval(() => {
-                progress += enablePreview ? 3 : 5;
-                progressFill.style.width = progress + '%';
-                if (progress >= 95) clearInterval(interval);
-            }, enablePreview ? 400 : 300);
-
-            try {
-                const formData = new FormData();
-                formData.append('image', uploadedFile);
-                formData.append('settings', JSON.stringify(settings));
-                formData.append('phone', '');
-                formData.append('preview', enablePreview);
-
-                const response = await fetch('/api/analyze-image', { method: 'POST', body: formData });
-
-
-                const data = await response.json();
-
-                if (data.error) throw new Error(data.error);
-
-                const jobId = data.jobId;
-                const pollInterval = setInterval(async () => {
-                    const statusRes = await fetch(`/api/status/${jobId}`);
-                    const status = await statusRes.json();
-
-                    if (status.status === 'completed') {
-                        clearInterval(pollInterval);
-                        clearInterval(interval);
-                        
-                        previewData = status.result;
-                        
-                        if (enablePreview) {
-                            const analysis = status.result;
-                            const actualColors = analysis?.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
-                            const realStitchType = analysis?.suggested_stitch_type || settings.stitchType;
-                            
-                            document.getElementById('previewStitches').textContent = '~' + (analysis?.estimated_stitch_count || analysis?.stitch_count || 12450).toLocaleString();
-                            document.getElementById('previewColors').textContent = actualColors.length;
-                            document.getElementById('previewTime').textContent = analysis?.estimated_time || (Math.ceil((analysis?.stitch_count || 12450) / 300) + 'm');
-                            document.getElementById('previewDensity').textContent = settings.density.charAt(0).toUpperCase() + settings.density.slice(1);
-                            
-                            generateRealStitchPreview(analysis, realStitchType);
-                            updateColorPalette(actualColors);
-                            updateDensityVisual(settings.density);
-                            
-                            previewSection.classList.add('active');
-                        }
-                        
-                        btn.textContent = TRANSLATIONS[currentLang].submitBtn;
-                        btn.disabled = false;
-                        progressBar.classList.remove('active');
-                    }
-                    
-                    if (status.status === 'failed') {
-                        clearInterval(pollInterval);
-                        clearInterval(interval);
-                        btn.textContent = TRANSLATIONS[currentLang].submitBtn;
-                        btn.disabled = false;
-                        progressBar.classList.remove('active');
-                        alert('Error: ' + (status.error || 'Job failed'));
-                    }
-                }, 2000);
-
-            } catch(e) {
-                clearInterval(interval);
-                btn.textContent = TRANSLATIONS[currentLang].submitBtn;
-                btn.disabled = false;
-                progressBar.classList.remove('active');
-                alert('Error: ' + e.message);
-            }
+        const response = await fetch('/api/analyze-image', { 
+            method: 'POST', 
+            body: formData 
+        });
+        
+        clearInterval(progressInterval);
+        
+        if (!response.ok) {
+            throw new Error('Analysis failed: ' + response.status);
         }
+        
+        const analysis = await response.json();
+        progressFill.style.width = '100%';
+        progressFill.textContent = '100%';
+
+        if (analysis.error) {
+            throw new Error(analysis.error);
+        }
+
+        const colors = analysis.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
+        const stitchType = analysis.suggested_stitch_type || 'auto';
+        
+        generateStitchPreview(colors, analysis.width_mm || 80, analysis.height_mm || 80, stitchType);
+        updateColorPalette(colors);
+        updateDensityVisual(document.querySelector('input[name="density"]:checked')?.value || 'medium');
+        
+        document.getElementById('previewStitches').textContent = '~' + (analysis.estimated_stitch_count || 5000).toLocaleString();
+        document.getElementById('previewColors').textContent = colors.length;
+        document.getElementById('previewTime').textContent = Math.ceil((analysis.estimated_stitch_count || 5000) / 300) + 'm';
+        document.getElementById('previewDensity').textContent = stitchType.charAt(0).toUpperCase() + stitchType.slice(1);
+        
+        previewSection.classList.add('active');
+        
+        // Auto-scroll to preview section when done
+        setTimeout(() => {
+            previewSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+        
+    } catch(e) {
+        alert('Error: ' + e.message);
+        console.error(e);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = TRANSLATIONS[currentLang].submitBtn;
+        setTimeout(() => {
+            progressBar.classList.remove('active');
+            progressFill.style.width = '0%';
+            progressFill.textContent = '';
+        }, 2000);
+    }
+}
+
+
     </script>
 </body>
 </html>
