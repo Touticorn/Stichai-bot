@@ -622,25 +622,60 @@ const webJobs = {};
 
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
-
+    if (!req.file) return res.status(400).json({ error: "No image" });
+    
     const b64 = req.file.buffer.toString("base64");
     const mime = req.file.mimetype || "image/jpeg";
-
-    const settings = req.body.settings ? JSON.parse(req.body.settings) : {};
-    const phone = req.body.phone || "web_" + Date.now();
-    const jobId = "job_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
-
-    webJobs[jobId] = { status: "processing", progress: 0, result: null, error: null, phone, settings };
-
-    // Run job in background
-    processWebJob(jobId, req.file, settings, phone);
-
-    // Return jobId immediately so frontend can poll
-    res.json({ jobId, status: "processing", check: `/api/status/${jobId}` });
-
+    
+    // STEP 1: Analyze the image
+    const analyzeRes = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-preview:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      {
+        contents: [{
+          parts: [
+            { inlineData: { mimeType: mime, data: b64 } },
+            { text: "Expert embroidery digitizer. Analyze this design and return ONLY JSON: {complexity:simple|medium|complex,dominant_colors:[#hex1,#hex2],suggested_stitch_type:satin|fill|running|mixed,estimated_stitch_count:number,width_mm:80,height_mm:80,has_text:boolean,has_logo:boolean,description:brief}" }
+          ]
+        }]
+      },
+      { timeout: 30000 }
+    );
+    
+    const text = analyzeRes.data.candidates[0].content.parts[0].text;
+    const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
+    
+    // STEP 2: Generate stitch preview image
+    const previewRes = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-preview:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      {
+        contents: [{
+          parts: [
+            { inlineData: { mimeType: mime, data: b64 } },
+            { text: `Generate an embroidery stitch preview of this design. Show how it would look stitched on fabric. Use these thread colors: ${analysis.dominant_colors?.join(', ') || 'red, gold, white'}. Return ONLY the image.` }
+          ]
+        }]
+      },
+      { timeout: 45000 }
+    );
+    
+    // Extract generated image if available
+    const parts = previewRes.data.candidates[0].content.parts;
+    let previewImage = null;
+    
+    for (const part of parts) {
+      if (part.inlineData) {
+        previewImage = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+        break;
+      }
+    }
+    
+    res.json({
+      ...analysis,
+      preview_image: previewImage
+    });
+    
   } catch(e) {
-    console.error("analyze-image error:", e.message);
+    console.error("Gemini error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
