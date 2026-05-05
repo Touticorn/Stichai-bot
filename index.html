@@ -3,299 +3,247 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Stichai v6.3</title>
+<title>Stichai — AI Embroidery Digitizer</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:system-ui,sans-serif;background:linear-gradient(135deg,#667eea,#764ba2);min-height:100vh;color:#333}
-.container{max-width:1200px;margin:0 auto;padding:20px}
-.header{text-align:center;padding:40px;color:#fff}
-.header h1{font-size:2.5rem}
-.stage{background:#fff;border-radius:16px;padding:40px;margin:20px 0}
-.drop-zone{border:3px dashed #667eea;border-radius:12px;padding:60px;text-align:center;cursor:pointer}
-.drop-zone:hover{border-color:#764ba2;background:#f8f7ff}
-#previewImg,#cleanedImg{max-width:100%;max-height:250px;border-radius:8px;display:none;margin:10px auto}
-.preview-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:20px 0}
-.preview-box{text-align:center;background:#fafafa;border-radius:12px;padding:20px}
-.preview-box h3{margin-bottom:10px;color:#555}
-.preview-box img{max-width:100%;border-radius:8px}
-.submit-btn{padding:16px 40px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:12px;font-size:1.1rem;font-weight:600;cursor:pointer;display:block;margin:20px auto}
-.submit-btn:disabled{opacity:.6}
-.hidden{display:none !important}
-canvas{max-width:100%;border:1px solid #e0e0e0;background:#f5f0e8}
-.stats{display:flex;gap:15px;justify-content:center;margin:20px 0}
-.stat{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:15px 25px;border-radius:12px;text-align:center}
-.stat .val{font-size:1.5rem;font-weight:700}
-.colors{display:flex;gap:10px;justify-content:center;margin:20px 0}
-.c{width:40px;height:40px;border-radius:50%;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.15)}
-.download-btn{display:inline-block;padding:16px 40px;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;border:none;border-radius:12px;font-size:1.1rem;font-weight:600;cursor:pointer;text-decoration:none}
-.footer{text-align:center;padding:40px;color:#fff;opacity:.8}
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #f3f0ea; color: #2c2c2c;
+  }
+  header {
+    background: #1a1a2e; color: #fff; padding: 18px 24px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: 1px; }
+  .badge {
+    background: #e94560; color: #fff; padding: 4px 10px; border-radius: 12px;
+    font-size: 12px; font-weight: 600;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 24px; }
+  .card {
+    background: #fff; border-radius: 16px; padding: 24px; margin-bottom: 20px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  }
+  .dropzone {
+    border: 2px dashed #c7c7c7; border-radius: 12px; padding: 48px 24px;
+    text-align: center; cursor: pointer; transition: border-color .2s;
+  }
+  .dropzone:hover, .dropzone.dragover { border-color: #e94560; }
+  .dropzone input { display: none; }
+  .btn {
+    display: inline-block; background: #e94560; color: #fff; border: none;
+    padding: 12px 28px; border-radius: 8px; font-size: 15px; cursor: pointer;
+    font-weight: 600; transition: background .2s;
+  }
+  .btn:hover { background: #d13650; }
+  .btn:disabled { background: #aaa; cursor: not-allowed; }
+  .btn-secondary { background: #16213e; }
+  .btn-secondary:hover { background: #0f1a30; }
+  .preview-wrap {
+    position: relative; width: 100%; max-width: 600px; margin: 0 auto;
+    background: repeating-linear-gradient(45deg, #e8e4da 0, #e8e4da 2px, #f5f0e8 2px, #f5f0e8 8px);
+    border: 1px solid #d4cfc5; border-radius: 12px; overflow: hidden;
+  }
+  canvas { display: block; width: 100%; height: auto; }
+  .controls {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 16px;
+  }
+  select {
+    padding: 10px 14px; border-radius: 8px; border: 1px solid #ccc;
+    font-size: 14px; background: #fff;
+  }
+  .meta { font-size: 13px; color: #666; margin-top: 8px; }
+  .shapes {
+    display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 12px; border-radius: 20px; font-size: 12px;
+    background: #f0f0f0; border: 1px solid #ddd;
+  }
+  .chip span { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .error { color: #c0392b; background: #fdecea; padding: 12px; border-radius: 8px; margin-top: 12px; }
 </style>
 </head>
 <body>
+<header>
+  <h1>STICHAI</h1>
+  <div class="badge">AI Embroidery</div>
+</header>
+
 <div class="container">
-<div class="header"><h1>Stichai</h1><p>Step 1: Clean Design &nbsp;&rarr;&nbsp; Step 2: Generate Stitches</p></div>
+  <!-- Upload -->
+  <div class="card">
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="fileInput" accept="image/*">
+      <p><strong>Drop a photo here</strong> or click to choose</p>
+      <p class="meta">JPG, PNG — max 10 MB</p>
+    </div>
+    <div style="text-align:center; margin-top:16px;">
+      <button class="btn" id="generateBtn" disabled>Generate stitches</button>
+    </div>
+    <div id="status"></div>
+  </div>
 
-<!-- STAGE 1 -->
-<div class="stage" id="stage1">
-<div class="drop-zone" onclick="document.getElementById('fileInput').click()">
-<div id="uploadPrompt">
-<svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="#667eea" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-<p style="margin-top:15px;font-size:1.1rem">Drop your design here or click to upload</p>
-<p style="margin-top:5px;font-size:.9rem;color:#888">We'll remove shadows and flatten colors first</p>
-</div>
-<img id="previewImg" alt="Preview">
-</div>
-<input type="file" id="fileInput" accept="image/*" style="display:none" onchange="handleFile(event)">
-</div>
-
-<!-- STAGE 2 -->
-<div class="stage hidden" id="stage2">
-<h2 style="text-align:center;margin-bottom:20px">Step 1: Cleaned Design</h2>
-<div class="preview-grid">
-<div class="preview-box"><h3>Original</h3><img id="originalCompare"></div>
-<div class="preview-box"><h3>Cleaned (No Shadows)</h3><img id="cleanedImg"></div>
-</div>
-<p style="text-align:center;color:#666;margin:20px">Does the cleaned version capture your design?</p>
-<button class="submit-btn" id="nextBtn" onclick="goToStage3()">Yes — Generate Stitches</button>
-</div>
-
-<!-- STAGE 3 -->
-<div class="stage hidden" id="stage3">
-<h2 style="text-align:center;margin-bottom:20px">Step 2: Stitch Plan</h2>
-<div style="max-width:300px;margin:0 auto 20px">
-<select id="fileType" style="width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px">
-<option value="dst">DST (Tajima)</option>
-<option value="pes">PES (Brother)</option>
-<option value="jef">JEF (Janome)</option>
-<option value="exp">EXP (Melco)</option>
-<option value="vp3">VP3 (Husqvarna)</option>
-</select>
-</div>
-<div class="preview-grid">
-<div class="preview-box"><h3>Stitch Simulation</h3><canvas id="stitchCanvas" width="300" height="300"></canvas></div>
-<div class="preview-box" style="text-align:left"><h3>Design Info</h3>
-<div id="info"></div>
-<div class="stats" id="stats"></div>
-<div class="colors" id="colors"></div>
-</div>
-</div>
-<div style="text-align:center;margin-top:30px">
-<a href="#" class="download-btn" onclick="downloadFile();return false;">Download <span id="fmt">DST</span> File</a>
-</div>
-<button class="submit-btn" onclick="resetAll()" style="background:#f0f0f0;color:#333">Start Over</button>
-</div>
-
-<div class="footer"><p>Stichai v6.3 — 2-Stage Embroidery</p></div>
+  <!-- Preview -->
+  <div class="card" id="resultCard" style="display:none;">
+    <h3 style="margin-top:0;">Stitch Preview</h3>
+    <div class="preview-wrap">
+      <canvas id="stitchCanvas" width="600" height="600"></canvas>
+    </div>
+    <div class="shapes" id="shapes"></div>
+    <div class="controls">
+      <select id="formatSel">
+        <option value="dst">DST (Tajima)</option>
+        <option value="pes">PES (Brother)</option>
+        <option value="jef">JEF (Janome)</option>
+        <option value="exp">EXP (Melco)</option>
+        <option value="vp3">VP3 (Husqvarna)</option>
+      </select>
+      <button class="btn btn-secondary" id="downloadBtn">Download file</button>
+    </div>
+    <div class="meta" id="meta"></div>
+  </div>
 </div>
 
 <script>
-let uploadedFile=null,currentJobId=null;
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const generateBtn = document.getElementById('generateBtn');
+  const statusEl = document.getElementById('status');
+  const resultCard = document.getElementById('resultCard');
+  const canvas = document.getElementById('stitchCanvas');
+  const ctx = canvas.getContext('2d');
+  const shapesEl = document.getElementById('shapes');
+  const formatSel = document.getElementById('formatSel');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const metaEl = document.getElementById('meta');
 
-function handleFile(e){
-const f=e.target.files[0];
-if(!f)return;
-uploadedFile=f;
-const r=new FileReader();
-r.onload=function(e){
-document.getElementById('previewImg').src=e.target.result;
-document.getElementById('previewImg').style.display='block';
-document.getElementById('uploadPrompt').style.display='none';
-document.getElementById('originalCompare').src=e.target.result;
-cleanImage();
-};
-r.readAsDataURL(f);
-}
+  let currentFile = null;
+  let currentId = null;
 
-async function cleanImage(){
-const btn=document.createElement('div');
-btn.textContent='Cleaning photo (removing shadows)...';
-btn.style='text-align:center;padding:20px;color:#667eea';
-document.getElementById('stage1').appendChild(btn);
+  dropzone.addEventListener('click', () => fileInput.click());
+  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+  dropzone.addEventListener('drop', e => {
+    e.preventDefault(); dropzone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', e => { if (e.target.files.length) handleFile(e.target.files[0]); });
 
-try{
-const fd=new FormData();
-fd.append('image',uploadedFile);
-const res=await fetch('/api/clean-image',{method:'POST',body:fd});
-const data=await res.json();
+  function handleFile(file) {
+    currentFile = file;
+    generateBtn.disabled = false;
+    statusEl.innerHTML = `<p style="color:#27ae60;">Ready: <strong>${file.name}</strong></p>`;
+  }
 
-if(data.success&&data.data){
-document.getElementById('cleanedImg').src='data:'+data.mimeType+';base64,'+data.data;
-}else{
-document.getElementById('cleanedImg').src=document.getElementById('originalCompare').src;
-}
-document.getElementById('cleanedImg').style.display='block';
-document.getElementById('stage2').classList.remove('hidden');
-document.getElementById('stage1').classList.add('hidden');
-window.scrollTo({top:document.getElementById('stage2').offsetTop,behavior:'smooth'});
-}catch(e){
-console.error(e);
-alert('Clean failed, using original');
-document.getElementById('cleanedImg').src=document.getElementById('originalCompare').src;
-document.getElementById('cleanedImg').style.display='block';
-document.getElementById('stage2').classList.remove('hidden');
-}
-if(btn.parentNode)btn.parentNode.removeChild(btn);
-}
+  generateBtn.addEventListener('click', async () => {
+    if (!currentFile) return;
+    generateBtn.disabled = true;
+    statusEl.innerHTML = '<p>Analyzing image and generating stitches…</p>';
 
-async function goToStage3(){
-const btn=document.getElementById('nextBtn');
-btn.disabled=true;
-btn.textContent='Generating...';
+    const form = new FormData();
+    form.append('image', currentFile);
 
-try{
-const fd=new FormData();
-fd.append('image',uploadedFile);
-fd.append('settings',JSON.stringify({fileType:document.getElementById('fileType').value}));
-fd.append('phone','web_'+Date.now());
+    try {
+      const res = await fetch('/generate-embroidery', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Server error');
 
-const res=await fetch('/api/convert',{method:'POST',body:fd});
-const data=await res.json();
-if(data.error)throw new Error(data.error);
+      currentId = data.id;
+      metaEl.textContent = `${data.stitchCount.toLocaleString()} stitches · Design ${data.designSize.w}×${data.designSize.h} units`;
 
-const r=data.result||{};
-currentJobId=data.jobId;
+      // Build color chips
+      shapesEl.innerHTML = '';
+      const seen = new Set();
+      for (const s of data.shapes || []) {
+        if (seen.has(s.color)) continue;
+        seen.add(s.color);
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        chip.innerHTML = `<span style="background:${s.color}"></span> ${s.type}`;
+        shapesEl.appendChild(chip);
+      }
 
-// Stats
-document.getElementById('stats').innerHTML=
-'<div class="stat"><div class="val">~'+(r.stitch_count||0).toLocaleString()+'</div><div>Stitches</div></div>'+
-'<div class="stat"><div class="val">'+(r.dominant_colors||[]).length+'</div><div>Colors</div></div>'+
-'<div class="stat"><div class="val">'+(r.width_mm||80)+'x'+(r.height_mm||80)+'</div><div>mm</div></div>';
+      // Fetch preview data and render
+      const pRes = await fetch(data.previewUrl);
+      const pData = await pRes.json();
+      renderCanvas(pData);
 
-// Colors
-const cp=document.getElementById('colors');
-cp.innerHTML='';
-(r.dominant_colors||[]).forEach(function(c){
-const d=document.createElement('div');
-d.className='c';
-d.style.background=c;
-cp.appendChild(d);
-});
+      resultCard.style.display = 'block';
+      statusEl.innerHTML = '<p style="color:#27ae60;">Done! Preview below.</p>';
+    } catch (e) {
+      statusEl.innerHTML = `<div class="error">${e.message}</div>`;
+      generateBtn.disabled = false;
+    }
+  });
 
-// Regions info
-const info=document.getElementById('info');
-info.innerHTML='';
-(r.regions||[]).forEach(function(reg){
-const d=document.createElement('div');
-d.style='padding:8px 0;border-bottom:1px solid #eee';
-d.innerHTML='<span style="display:inline-block;width:16px;height:16px;background:'+reg.color+';border-radius:3px;vertical-align:middle;margin-right:8px"></span>'+
-(reg.label||reg.type)+' — '+(reg.stitch_type||'fill');
-info.appendChild(d);
-});
+  downloadBtn.addEventListener('click', () => {
+    if (!currentId) return;
+    const fmt = formatSel.value;
+    window.location = `/download/${currentId}/${fmt}`;
+  });
 
-// Format label
-const names={dst:'DST',pes:'PES',jef:'JEF',exp:'EXP',vp3:'VP3'};
-document.getElementById('fmt').textContent=names[document.getElementById('fileType').value]||'DST';
+  function renderCanvas(data) {
+    const W = canvas.width;
+    const H = canvas.height;
+    const { stitches, designW, designH, shapes } = data;
 
-// Render canvas
-if(r.stitch_data){
-renderCanvas(r.stitch_data,r.regions);
-document.getElementById('stitchCanvas').style.display='block';
-}
+    // Fabric background
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#f5f0e8';
+    ctx.fillRect(0, 0, W, H);
 
-document.getElementById('stage3').classList.remove('hidden');
-document.getElementById('stage2').classList.add('hidden');
-window.scrollTo({top:document.getElementById('stage3').offsetTop,behavior:'smooth'});
-}catch(e){
-alert('Error: '+e.message);
-console.error(e);
-}finally{
-btn.disabled=false;
-btn.textContent='Yes — Generate Stitches';
-}
-}
+    // Subtle grid
+    ctx.strokeStyle = 'rgba(0,0,0,0.04)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < W; i += 20) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,H); ctx.stroke(); }
+    for (let i = 0; i < H; i += 20) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(W,i); ctx.stroke(); }
 
-function renderCanvas(data,regions){
-const c=document.getElementById('stitchCanvas');
-if(!c||!data)return;
-const ctx=c.getContext('2d');
-const stitches=data.stitches||[];
-const w=data.width||240;
-const h=data.height||240;
-const colors=data.colors||['#000000'];
-c.width=w;
-c.height=h;
+    const scale = Math.min(W / (designW + 20), H / (designH + 20));
+    const offX = (W - designW * scale) / 2;
+    const offY = (H - designH * scale) / 2;
 
-// Fabric
-ctx.fillStyle='#f5f0e8';
-ctx.fillRect(0,0,w,h);
+    // Helper to transform coordinates
+    const tx = x => offX + x * scale;
+    const ty = y => offY + y * scale;
 
-// Region backgrounds (faint)
-if(regions){
-ctx.globalAlpha=0.08;
-regions.forEach(function(reg){
-const p=reg.position||{x:0,y:0,w:100,h:100};
-ctx.fillStyle=reg.color||'#ccc';
-ctx.fillRect((p.x/100)*w,(p.y/100)*h,(p.w/100)*w,(p.h/100)*h);
-});
-ctx.globalAlpha=1.0;
-}
+    // Draw shapes as filled regions (30% opacity)
+    for (const s of shapes || []) {
+      ctx.fillStyle = s.color || '#888';
+      ctx.globalAlpha = 0.25;
+      ctx.fillRect(tx(s.x), ty(s.y), (s.width || 10) * scale, (s.height || 10) * scale);
+      ctx.globalAlpha = 1.0;
+      ctx.strokeStyle = s.color || '#888';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(tx(s.x), ty(s.y), (s.width || 10) * scale, (s.height || 10) * scale);
+    }
 
-// Stitches
-let currentColor=null;
-let path=[];
-let drawn=0;
-const MAX=5000;
-for(let i=0;i<stitches.length&&drawn<MAX;i++){
-const s=stitches[i];
-if(s.type==='jump'){
-if(path.length>1)drawThread(ctx,path,currentColor||colors[0]);
-path=[{x:s.x,y:s.y}];
-currentColor=s.color;
-}else{
-if(!currentColor)currentColor=s.color;
-path.push({x:s.x,y:s.y});
-drawn++;
-}
-if(path.length>100||i===stitches.length-1){
-if(path.length>1)drawThread(ctx,path,currentColor||colors[0]);
-if(i<stitches.length-1)path=[path[path.length-1]];
-}
-}
+    // Group stitches by color and draw thread paths
+    const groups = [];
+    let current = null;
+    for (const st of stitches || []) {
+      if (!current || current.color !== st.color) {
+        current = { color: st.color, points: [] };
+        groups.push(current);
+      }
+      current.points.push({ x: tx(st.x), y: ty(st.y) });
+    }
 
-// Texture
-ctx.globalCompositeOperation='multiply';
-ctx.fillStyle='rgba(139,119,101,0.04)';
-for(let x=0;x<w;x+=3)ctx.fillRect(x,0,1,h);
-for(let y=0;y<h;y+=3)ctx.fillRect(0,y,w,1);
-ctx.globalCompositeOperation='source-over';
-}
-
-function drawThread(ctx,points,color){
-if(points.length<2)return;
-ctx.strokeStyle=color;
-ctx.lineWidth=1.8;
-ctx.lineCap='round';
-ctx.lineJoin='round';
-ctx.beginPath();
-ctx.moveTo(points[0].x,points[0].y);
-for(let i=1;i<points.length;i++)ctx.lineTo(points[i].x,points[i].y);
-ctx.stroke();
-}
-
-function downloadFile(){
-if(!currentJobId){alert('No file ready');return;}
-const a=document.createElement('a');
-a.href='/api/download/'+currentJobId;
-a.download='embroidery.'+(document.getElementById('fileType').value||'dst');
-document.body.appendChild(a);
-a.click();
-document.body.removeChild(a);
-}
-
-function resetAll(){
-document.getElementById('stage1').classList.remove('hidden');
-document.getElementById('stage2').classList.add('hidden');
-document.getElementById('stage3').classList.add('hidden');
-document.getElementById('uploadPrompt').style.display='block';
-document.getElementById('previewImg').style.display='none';
-document.getElementById('previewImg').src='';
-document.getElementById('cleanedImg').src='';
-document.getElementById('cleanedImg').style.display='none';
-document.getElementById('stitchCanvas').style.display='none';
-uploadedFile=null;
-currentJobId=null;
-window.scrollTo({top:0,behavior:'smooth'});
-}
+    for (const g of groups) {
+      ctx.beginPath();
+      ctx.strokeStyle = g.color;
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (let i = 0; i < g.points.length; i++) {
+        const p = g.points[i];
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+    }
+  }
 </script>
 </body>
 </html>
