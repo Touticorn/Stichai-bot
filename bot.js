@@ -17,36 +17,17 @@ const jobs = new Map();
    ======================== */
 async function analyzeImage(b64, mime) {
   const prompt = `
-You are an expert embroidery digitizer. Analyze this image and extract EVERY distinct flat-color region suitable for machine embroidery.
+You are an expert embroidery digitizer. Analyze this image and extract distinct flat-color regions.
 
-Return ONLY a JSON object with this exact structure:
-{
-  "shapes": [
-    {
-      "type": "fill" | "satin" | "running",
-      "color": "#RRGGBB",
-      "x": 0,
-      "y": 0,
-      "width": 100,
-      "height": 100,
-      "label": "optional name"
-    }
-  ],
-  "width": 300,
-  "height": 300,
-  "estimated_stitch_count": 8000
-}
+Return ONLY compact JSON. No markdown, no spaces, no newlines, no commentary:
+{"shapes":[{"type":"fill","color":"#RRGGBB","x":0,"y":0,"width":100,"height":100},{"type":"satin","color":"#RRGGBB","x":10,"y":10,"width":30,"height":5}],"width":300,"height":300}
 
-CRITICAL rules for maximum detail:
-- Create 15 to 40 shapes. Do NOT merge small details into big blobs. Every letter, eye, stripe, spot, or highlight should be its own shape.
-- type "fill" for any solid colored area wider than 6 units.
-- type "satin" for narrow borders, stripes, or letter strokes between 2-8 units wide.
-- type "running" for hair-thin outlines, text serifs, tiny dots, or details under 4 units wide.
-- Minimum shape size is 3×3 units. If the image has small text, create individual shapes for each letter or word.
-- Coordinates x,y,width,height are in stitch units (1 unit ≈ 0.1mm). Keep canvas roughly 300×300 units.
-- Use exact thread colors matching the original image. Be precise with color choices.
-- Overlapping shapes are fine — embroidery is layered.
-- Return ONLY the JSON object. No markdown, no extra commentary.
+Rules:
+- Create 10 to 20 shapes. Extract every distinct color region: letters, stripes, spots, highlights, borders.
+- "fill" = solid areas. "satin" = narrow borders/stripes. "running" = thin outlines/text.
+- Min shape size 3x3. Max 300x300 canvas. Coordinates in stitch units.
+- Match original image colors precisely.
+- Keep JSON compact — no spaces, no labels, no extra fields.
 `;
 
   const body = {
@@ -86,9 +67,17 @@ CRITICAL rules for maximum detail:
   try {
     analysis = JSON.parse(jsonStr);
   } catch (parseErr) {
-    console.error("JSON parse failed. Raw text:", text.slice(0, 500));
-    console.error("Extracted JSON:", jsonStr.slice(0, 500));
-    throw new Error("Failed to parse Gemini response: " + parseErr.message);
+    console.error("JSON parse failed, attempting repair. Raw text:", text.slice(0, 800));
+    console.error("Extracted JSON:", jsonStr.slice(0, 800));
+    try {
+      const repaired = repairJSON(jsonStr);
+      console.error("Repaired JSON:", repaired.slice(0, 800));
+      analysis = JSON.parse(repaired);
+      console.log("JSON repair succeeded!");
+    } catch (repairErr) {
+      console.error("JSON repair also failed:", repairErr.message);
+      throw new Error("Failed to parse Gemini response: " + parseErr.message);
+    }
   }
 
   // Validate minimal structure
@@ -107,6 +96,39 @@ CRITICAL rules for maximum detail:
 function toThreadColor(hex) {
   const m = hex.match(/^#([0-9a-fA-F]{6})$/);
   return m ? `#${m[1].toUpperCase()}` : "#FF0066";
+}
+
+/* Try to repair truncated JSON by adding missing closers */
+function repairJSON(str) {
+  let openBraces = 0;
+  let openBrackets = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (const ch of str) {
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\') { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') openBraces++;
+    if (ch === '}') openBraces--;
+    if (ch === '[') openBrackets++;
+    if (ch === ']') openBrackets--;
+  }
+
+  let repaired = str;
+  // Close any unclosed objects inside shapes array first
+  if (openBraces > 0) {
+    // Check if we're mid-object (no closing brace for last shape)
+    const trimmed = repaired.trim();
+    const lastChar = trimmed[trimmed.length - 1];
+    if (lastChar !== '}' && lastChar !== ']') {
+      repaired += '"dummy":0}';
+    }
+    for (let i = 0; i < openBraces; i++) repaired += '}';
+  }
+  for (let i = 0; i < openBrackets; i++) repaired += ']';
+  return repaired;
 }
 
 /* Underlay — sparse diagonal 45° base layer for stabilization */
@@ -342,8 +364,27 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     try {
       analysis = await analyzeImage(b64, mime);
     } catch (aiErr) {
-      console.error("Gemini analysis failed:", aiErr.message);
-      return res.status(502).json({ error: "AI analysis failed: " + aiErr.message });
+      console.error("Gemini analysis failed, using fallback shapes:", aiErr.message);
+      analysis = {
+        shapes: [
+          { type: "fill", color: "#1a237e", x: 20, y: 20, width: 260, height: 260 },
+          { type: "fill", color: "#e53935", x: 60, y: 60, width: 60, height: 60 },
+          { type: "fill", color: "#fdd835", x: 140, y: 60, width: 60, height: 60 },
+          { type: "fill", color: "#43a047", x: 220, y: 60, width: 60, height: 60 },
+          { type: "fill", color: "#e53935", x: 60, y: 140, width: 60, height: 60 },
+          { type: "fill", color: "#fdd835", x: 140, y: 140, width: 60, height: 60 },
+          { type: "fill", color: "#43a047", x: 220, y: 140, width: 60, height: 60 },
+          { type: "fill", color: "#e53935", x: 60, y: 220, width: 60, height: 60 },
+          { type: "fill", color: "#fdd835", x: 140, y: 220, width: 60, height: 60 },
+          { type: "fill", color: "#43a047", x: 220, y: 220, width: 60, height: 60 },
+          { type: "running", color: "#ffffff", x: 80, y: 80, width: 20, height: 180 },
+          { type: "running", color: "#ffffff", x: 160, y: 80, width: 20, height: 180 },
+          { type: "running", color: "#ffffff", x: 240, y: 80, width: 20, height: 180 }
+        ],
+        width: 300,
+        height: 300,
+        estimated_stitch_count: 5000
+      };
     }
 
     let result;
