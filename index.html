@@ -632,14 +632,10 @@
             <h2 style="color:#667eea;margin-bottom:15px" data-i18n="previewTitle">👁️ Stitch Preview</h2>
             
             <div class="preview-grid">
-<!-- In preview grid -->
-<div class="preview-box">
-    <h3>Stitch Simulation</h3>
-    <canvas id="stitchCanvas" width="240" height="240" 
-        style="max-width:100%; border-radius:8px; border:1px solid #e0e0e0; background:#f5f0e8;">
-    </canvas>
-</div>
-
+                <div class="preview-box">
+                    <h3 data-i18n="original">Original Design</h3>
+                    <img id="previewOriginal" style="max-width:100%; max-height:300px; border-radius:8px; display:none;">
+                </div>
                 <div class="preview-box">
                     <h3 data-i18n="simulation">Stitch Simulation</h3>
                     <img id="stitchPreview" style="max-width:100%; max-height:300px; border-radius:8px; display:none; transition: transform 0.3s;">
@@ -947,58 +943,9 @@
                 img.style.display = 'block';
                 document.getElementById('uploadPrompt').style.display = 'none';
                 document.getElementById('dropZone').classList.add('has-image');
-                document.getElementById('previewOriginal').src = e.target.result;
             };
             reader.readAsDataURL(file);
         }
-function renderStitchCanvas(stitchData) {
-    const canvas = document.getElementById('stitchCanvas');
-    const ctx = canvas.getContext('2d');
-    const { stitches, width, height, colors } = stitchData;
-    
-    canvas.width = width;
-    canvas.height = height;
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = '#f5f0e8'; // fabric color
-    ctx.fillRect(0, 0, width, height);
-    
-    // Draw stitches by color
-    let currentColor = null;
-    let path = [];
-    
-    stitches.forEach((s, i) => {
-        if (s.type === 'jump') {
-            if (path.length > 1) drawThread(ctx, path, currentColor);
-            path = [{x: s.x, y: s.y}];
-            currentColor = s.color;
-        } else {
-            path.push({x: s.x, y: s.y});
-        }
-        if (path.length > 50 || i === stitches.length-1) {
-            if (path.length > 1) drawThread(ctx, path, currentColor);
-            path = [path[path.length-1]];
-        }
-    });
-    
-    // Fabric weave overlay
-    ctx.globalCompositeOperation = 'multiply';
-    ctx.fillStyle = 'rgba(139,119,101,0.06)';
-    for (let i=0; i<width; i+=3) ctx.fillRect(i, 0, 1, height);
-    for (let i=0; i<height; i+=3) ctx.fillRect(0, i, width, 1);
-}
-
-function drawThread(ctx, points, color) {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.lineCap = 'round';
-    ctx.shadowColor = color;
-    ctx.shadowBlur = 0.3;
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let i=1; i<points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-}
 
 
         document.querySelectorAll('.radio-group').forEach(group => {
@@ -1058,6 +1005,63 @@ function drawThread(ctx, points, color) {
             img.style.transformOrigin = 'center';
         }
 
+        // Canvas Stitch Renderer
+        function renderStitchCanvas(stitchData, canvasId) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas || !stitchData) return;
+            const ctx = canvas.getContext('2d');
+            const stitches = stitchData.stitches || [];
+            const w = stitchData.width || 240;
+            const h = stitchData.height || 240;
+            const colors = stitchData.colors || ['#c41e3a'];
+            
+            canvas.width = w;
+            canvas.height = h;
+            ctx.clearRect(0, 0, w, h);
+            ctx.fillStyle = '#f5f0e8';
+            ctx.fillRect(0, 0, w, h);
+            
+            let currentColor = null;
+            let path = [];
+            
+            for (let i = 0; i < stitches.length; i++) {
+                const s = stitches[i];
+                if (s.type === 'jump') {
+                    if (path.length > 1) drawThread(ctx, path, currentColor);
+                    path = [{x: s.x, y: s.y}];
+                    currentColor = s.color;
+                } else {
+                    if (!currentColor) currentColor = s.color;
+                    path.push({x: s.x, y: s.y});
+                }
+                if (path.length > 50 || i === stitches.length - 1) {
+                    if (path.length > 1) drawThread(ctx, path, currentColor);
+                    path = path.length > 0 ? [path[path.length - 1]] : [];
+                }
+            }
+            
+            // Fabric texture
+            ctx.globalCompositeOperation = 'multiply';
+            ctx.fillStyle = 'rgba(139,119,101,0.06)';
+            for (let i = 0; i < w; i += 3) ctx.fillRect(i, 0, 1, h);
+            for (let i = 0; i < h; i += 3) ctx.fillRect(0, i, w, 1);
+            ctx.globalCompositeOperation = 'source-over';
+        }
+        
+        function drawThread(ctx, points, color) {
+            if (points.length < 2) return;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.5;
+            ctx.lineCap = 'round';
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 0.3;
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        }
+        
         function regeneratePreview() {
             document.getElementById('previewSection').classList.remove('active');
             document.getElementById('stitchPreview').style.display = 'none';
@@ -1120,27 +1124,16 @@ async function submitOrder() {
         if (analysis.error) {
             throw new Error(analysis.error);
         }
-// After getting analysis:
-if (analysis.stitch_data) {
-    renderStitchCanvas(analysis.stitch_data);
-}
 
         const colors = analysis.dominant_colors || ['#c41e3a', '#ffd700', '#ffffff'];
         
         // Show Gemini-generated preview, or fallback to original image
-        const previewOriginal = document.getElementById('previewOriginal');
-        const stitchPreview = document.getElementById('stitchPreview');
-        
         if (analysis.preview_image) {
-            stitchPreview.src = analysis.preview_image;
-        } else if (previewOriginal.src && previewOriginal.src !== '') {
-            stitchPreview.src = previewOriginal.src;
+            document.getElementById('stitchPreview').src = analysis.preview_image;
         } else {
-            // No image available at all
-            stitchPreview.style.display = 'none';
-            stitchPreview.parentElement.querySelector('h3').textContent = 'Analysis Complete (No Preview)';
+            document.getElementById('stitchPreview').src = document.getElementById('previewOriginal').src || '';
         }
-        stitchPreview.style.display = 'block';
+        document.getElementById('stitchPreview').style.display = 'block';
         
         updateColorPalette(colors);
         

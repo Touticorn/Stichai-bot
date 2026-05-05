@@ -617,68 +617,195 @@ async function handleMessage(msg) {
 
 const webJobs = {};
 
-// /api/analyze-image - returns stitch data instead of fake image
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
+    
     const b64 = req.file.buffer.toString("base64");
     const mime = req.file.mimetype || "image/jpeg";
     
-    // Analyze
+    // STEP 1: Analyze the image
     const analyzeRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-      { contents: [{ parts: [
-        { inlineData: { mimeType: mime, data: b64 } },
-        { text: "Embroidery digitizer. Return JSON: {dominant_colors:[#hex],estimated_stitch_count:number,width_mm,height_mm,suggested_stitch_type:satin|fill|running}" }
-      ]}]}, { timeout: 30000 });
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-preview:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      {
+        contents: [{
+          parts: [
+            { inlineData: { mimeType: mime, data: b64 } },
+            { text: "Expert embroidery digitizer. Analyze this design and return ONLY JSON: {complexity:simple|medium|complex,dominant_colors:[#hex1,#hex2],suggested_stitch_type:satin|fill|running|mixed,estimated_stitch_count:number,width_mm:80,height_mm:80,has_text:boolean,has_logo:boolean,description:brief}" }
+          ]
+        }]
+      },
+      { timeout: 30000 }
+    );
     
-    const text = analyzeRes.data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-    let analysis = {}; try { analysis = JSON.parse(text.replace(/```json|```/g,"").trim()); } catch(e){}
+    const text = analyzeRes.data.candidates[0].content.parts[0].text;
+    const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
     
-    // Generate stitch path data
-    const stitchData = generateStitchData(analysis);
-    res.json({ ...analysis, stitch_data: stitchData, preview_image: null });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+    // STEP 2: Generate stitch preview image
+    const previewRes = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-preview:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      {
+        contents: [{
+          parts: [
+            { inlineData: { mimeType: mime, data: b64 } },
+            { text: `Generate an embroidery stitch preview of this design. Show how it would look stitched on fabric. Use these thread colors: ${analysis.dominant_colors?.join(', ') || 'red, gold, white'}. Return ONLY the image.` }
+          ]
+        }]
+      },
+      { timeout: 45000 }
+    );
+    
+    // Extract generated image if available
+    const parts = previewRes.data.candidates[0].content.parts;
+    let previewImage = null;
+    
+    for (const part of parts) {
+      if (part.inlineData) {
+        previewImage = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+        break;
+      }
+    }
+    
+    res.json({
+      ...analysis,
+      preview_image: previewImage
+    });
+    
+  } catch(e) {
+    console.error("Gemini error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
-function generateStitchData(analysis) {
-  const colors = analysis.dominant_colors || ["#c41e3a","#ffd700","#ffffff"];
-  const count = analysis.estimated_stitch_count || 5000;
-  const w = (analysis.width_mm || 80) * 3;
-  const h = (analysis.height_mm || 80) * 3;
-  const stitches = [];
-  const rows = Math.min(Math.floor(count / w), 300);
-  
-  for (let r = 0; r < rows; r++) {
-    const color = colors[r % colors.length];
-    const y = (r / rows) * h;
-    stitches.push({ x: 0, y, color, type: "jump" });
-    for (let x = 0; x < w; x += 3) {
-      stitches.push({ x, y: y + Math.sin(x*0.1)*2, color, type: "stitch" });
-    }
-  }
-  return { stitches, width: w, height: h, colors };
+
+app.get("/", (_, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
+app.get("/api", (_, res) => {
+  res.send("Stichai API v5.6 — <a href='/'>Web Interface</a> — <a href='/health'>Health</a>");
+});
+
+
+app.get("/health", (_,res) => {
+  res.json({ 
+    status: "ok", 
+    uptime: process.uptime(), 
+    version: "5.5", 
+    whatsapp: connectionState,
+    timestamp: new Date().toISOString()
+  });
+});
+
+function adminAuth(req, res) {
+  const s = req.body?.secret || req.query?.secret;
+  if (s !== CONFIG.ADMIN_SECRET) { res.status(401).json({ error:"Unauthorized" }); return false; }
+  return true;
 }
 
-// /generate-embroidery - actually generates DST file
-app.post("/generate-embroidery", async (req, res) => {
+app.post("/admin/code", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const { plan="trial", days=7, maxUses=1, prefix="EMB" } = req.body;
+  const code = await createCode({ plan, days, maxUses, prefix });
+  res.json({ code, plan, days, maxUses });
+});
+
+app.post("/admin/codes/bulk", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const { count=10, plan="trial", days=7, maxUses=1, prefix="EMB" } = req.body;
+  const codes = [];
+  for (let i=0; i<count; i++) codes.push(await createCode({ plan, days, maxUses, prefix }));
+  res.json({ codes, count: codes.length });
+});
+
+app.post("/admin/send-code", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const { phone, plan="trial", days=7 } = req.body;
+  const code = await createCode({ plan, days, maxUses:1 });
+  const user = await getUser(phone);
+  const lang = user.language||"fr";
+  const t = {
+    ar:`Gift from Stichai! Code: ${code}. ${days} days - ${plan==="pro"?"Pro":"Basic"}`,
+    fr:`Cadeau de Stichai! Code: ${code}. ${days} jours - ${plan==="pro"?"Pro":"Basique"}`,
+    en:`Gift from Stichai! Code: ${code}. ${days} days - ${plan==="pro"?"Pro":"Basic"}`,
+  };
+  await sendMsg(`${cleanPhone(phone)}@s.whatsapp.net`, t[lang]||t.fr);
+  res.json({ success:true, code, phone });
+});
+
+app.get("/admin/codes", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const r = await db.query("SELECT * FROM trial_codes ORDER BY created_at DESC LIMIT 100");
+  res.json(r.rows);
+});
+
+app.get("/admin/stats", async (req,res) => {
+  if (!adminAuth(req,res)) return;
+  const [users,revenue,conversions,codes] = await Promise.all([
+    db.query(`SELECT COUNT(*) total, COUNT(CASE WHEN plan='basic' AND plan_end>NOW() THEN 1 END) basic, COUNT(CASE WHEN plan='pro' AND plan_end>NOW() THEN 1 END) pro, COUNT(CASE WHEN plan='trial' AND plan_end>NOW() THEN 1 END) trial FROM users`),
+    db.query("SELECT SUM(amount_mad) total_mad, COUNT(*) total_payments FROM payments WHERE status='confirmed'"),
+    db.query("SELECT COUNT(*) total, SUM(stitch_count) total_stitches FROM conversions"),
+    db.query("SELECT COUNT(*) total, SUM(used_count) used FROM trial_codes WHERE active=TRUE"),
+  ]);
+  res.json({ users:users.rows[0], revenue:revenue.rows[0], conversions:conversions.rows[0], trial_codes:codes.rows[0] });
+});
+
+app.post("/payment/stripe/callback", express.raw({ type:"application/json" }), async (req, res) => {
+  const stripe = require("stripe")(CONFIG.STRIPE_SECRET_KEY);
   try {
-    const { analysis, settings } = req.body;
-    const stitchData = generateStitchData(analysis);
-    const format = settings?.fileType || "dst";
+    const event = stripe.webhooks.constructEvent(req.body, req.headers["stripe-signature"], CONFIG.STRIPE_WEBHOOK_SECRET);
+    if (event.type === "checkout.session.completed") {
+      const { phone, plan } = event.data.object.metadata;
+      await activatePlan(phone, plan);
+      await db.query("UPDATE payments SET status='confirmed' WHERE phone=$1 AND method='stripe' AND status='pending'", [phone]);
+      const user = await getUser(phone);
+      await sendMsg(`${phone}@s.whatsapp.net`, m("activated", user.language||"fr", CONFIG.PLANS[plan].label[user.language||"fr"]));
+      await sendMsg(`${phone}@s.whatsapp.net`, m("menu", user.language||"fr"));
+    }
+    res.json({ received: true });
+  } catch(e) { res.status(400).send(e.message); }
+});
+
+app.post("/payment/cmi/callback", async (req, res) => {
+  const { oid, Response } = req.body;
+  if (Response === "Approved") {
+    const r = await db.query("SELECT * FROM payments WHERE reference=$1", [oid]);
+    if (r.rows.length) {
+      const { phone, plan } = r.rows[0];
+      await activatePlan(phone, plan);
+      await db.query("UPDATE payments SET status='confirmed' WHERE reference=$1", [oid]);
+      const user = await getUser(phone);
+      await sendMsg(`${phone}@s.whatsapp.net`, m("activated", user.language||"fr", CONFIG.PLANS[plan].label[user.language||"fr"]));
+    }
+  }
+  res.send("ACTION=POSTAUTH");
+});
+
+app.get("/payment/stripe/success", (_, res) =>
+  res.send(`<html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#f0fdf4"><h1 style="color:#16a34a">Payment Successful!</h1><p>Check WhatsApp - your subscription is now active!</p></body></html>`)
+);
+
+// ============================================================
+// WEB API
+// ============================================================
+
+app.post("/api/convert", upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+
+    const settings = JSON.parse(req.body.settings || "{}");
+    const phone = req.body.phone || "web_" + Date.now();
+    const jobId = "job_" + Date.now();
     
-    // For now: return stitch data + placeholder URL
-    // (Full DST encoder needs more work)
-    res.json({
-      stitch_count: stitchData.stitches.length,
-      dst_url: format === "dst" ? `/api/download/stub` : null,
-      pes_url: format === "pes" ? `/api/download/stub` : null,
-      jef_url: format === "jef" ? `/api/download/stub` : null,
-      exp_url: format === "exp" ? `/api/download/stub` : null,
-      vp3_url: format === "vp3" ? `/api/download/stub` : null,
-      stitch_data: stitchData
-    });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+    webJobs[jobId] = { status: "processing", progress: 0, result: null, error: null, phone, settings };
+
+    processWebJob(jobId, req.file, settings, phone);
+
+    res.json({ jobId, status: "processing", check: `/api/status/${jobId}` });
+
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get("/api/status/:jobId", (req, res) => {
@@ -751,7 +878,23 @@ async function processWebJob(jobId, file, settings, phone) {
   }
 }
 
-
+app.post("/generate-embroidery", async (req, res) => {
+  try {
+    const { analysis, settings } = req.body;
+    const stitchData = generateStitchData(analysis);
+    const format = settings?.fileType || "dst";
+    
+    res.json({
+      stitch_count: stitchData.stitches.length,
+      dst_url: format === "dst" ? `/api/download/stub` : null,
+      pes_url: format === "pes" ? `/api/download/stub` : null,
+      jef_url: format === "jef" ? `/api/download/stub` : null,
+      exp_url: format === "exp" ? `/api/download/stub` : null,
+      vp3_url: format === "vp3" ? `/api/download/stub` : null,
+      stitch_data: stitchData
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
 
 // ============================================================
 // BOOT
