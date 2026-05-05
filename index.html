@@ -205,7 +205,7 @@
   generateBtn.addEventListener('click', async () => {
     if (!currentFile) return;
     generateBtn.disabled = true;
-    statusEl.innerHTML = '<p>Analyzing photo, detecting colors, tracing pixel shapes…</p>';
+    statusEl.innerHTML = '<p>Preprocessing photo (denoise, contrast, color boost), detecting colors with AI, tracing pixel shapes in LAB color space…</p>';
 
     const form = new FormData();
     form.append('image', currentFile);
@@ -216,7 +216,12 @@
       if (!data.success) throw new Error(data.error || 'Server error');
 
       currentId = data.id;
-      metaEl.textContent = `${data.stitchCount.toLocaleString()} stitches · ${data.shapes.length} shapes · ${data.designSize.w}×${data.designSize.h} units`;
+      const det = data.detection || {};
+      const tags = [];
+      if (det.is_text) tags.push('text');
+      if (det.is_logo) tags.push('logo');
+      const tagStr = tags.length ? ` · ${tags.join('+')}` : '';
+      metaEl.textContent = `${data.stitchCount.toLocaleString()} stitches · ${data.shapes.length} shapes · ${data.designSize.w}×${data.designSize.h} units${tagStr} · ${det.method || 'pixel'}`;
 
       resultOriginalImg.src = currentImageDataUrl;
 
