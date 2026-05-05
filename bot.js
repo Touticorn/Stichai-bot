@@ -7,7 +7,7 @@ const app = express();
 
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MODEL = "gemini-2.5-flash";
+const MODEL = "gemini-3-flash-preview";
 const API_URL = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
 
 const jobs = new Map();
