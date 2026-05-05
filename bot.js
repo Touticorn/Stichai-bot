@@ -2,8 +2,6 @@
 // Stichai Bot v6.1 — Better prompts, polygon shapes, text-as-paths
 // ========================================================================
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
-const qrcode = require("qrcode-terminal");
 const express = require("express");
 const axios = require("axios");
 const NodeCache = require("node-cache");
@@ -33,7 +31,6 @@ app.use(express.json());
 const msgCache = new NodeCache({ stdTTL: 300 });
 const jobCache = new NodeCache({ stdTTL: 3600 });
 let db = null;
-let whSocket = null;
 
 async function initDB() {
   if (db) return;
@@ -66,7 +63,6 @@ async function addJob(phone, image, settings, status="pending") {
   return id;
 }
 
-async function initBaileys() {
   const authDir = "/app/.baileys_auth";
   try { fs.rmSync(authDir, { recursive: true }); } catch {}
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
@@ -557,7 +553,6 @@ app.get("/health", (req, res) => res.json({ status: "ok", version: "6.1" }));
 // ========================================================================
 // WHATSAPP
 // ========================================================================
-async function processMsg(phone, text, msg) {
   let user = await getUser(phone);
   if (!user) { await addUser(phone, phone, "en"); user = await getUser(phone); }
   const lang = user?.lang || "en";
@@ -582,11 +577,9 @@ async function processMsg(phone, text, msg) {
   }
 }
 
-async function downloadMedia(msg) {
   try { return await whSocket.downloadMediaMessage(msg); } catch { return null; }
 }
 
-async function processAndDeliver(phone, b64, analysis, settings) {
   const stitchData = generateStitches(analysis);
   const encoded = encodeFile(stitchData, settings.fileType || "dst");
   const jobId = "wa_" + Date.now().toString(36);
@@ -603,7 +596,6 @@ async function processAndDeliver(phone, b64, analysis, settings) {
   await addOrder(phone, b64, (analysis.dominant_colors || []).join(","), "completed", "", `${CONFIG.BASE_URL}/api/download/${jobId}`);
 }
 
-async function sendMsg(phone, text) {
   try {
     if (whSocket) await whSocket.sendMessage(phone + "@s.whatsapp.net", { text });
     else await axios.get(`${CONFIG.WEBHOOK}?phone=${encodeURIComponent(CONFIG.PHONE)}&text=${encodeURIComponent(text)}&apikey=1252877`);
@@ -621,7 +613,6 @@ const PORT = process.env.PORT || 8080;
       console.log(`URL: ${CONFIG.BASE_URL}`);
     });
     await initDB().catch(err => console.error("DB error:", err.message));
-    await initBaileys().catch(err => console.error("Baileys error:", err.message));
     process.on("SIGTERM", () => { server.close(); process.exit(0); });
   } catch(e) { console.error("Fatal:", e.message); process.exit(1); }
 })();
