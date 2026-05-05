@@ -626,7 +626,7 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     
     // STEP 1: Analyze the image
     const analyzeRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-preview:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
       {
         contents: [{
           parts: [
@@ -643,7 +643,7 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     
     // STEP 2: Generate stitch preview image
     const previewRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-preview:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
       {
         contents: [{
           parts: [
