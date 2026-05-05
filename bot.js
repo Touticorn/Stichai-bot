@@ -43,9 +43,9 @@ const CONFIG = {
   },
 
   GEMINI: {
-    lite:  "gemini-2.5-flash-lite-preview-06-17",
-    flash: "gemini-2.5-flash",
-    pro:   "gemini-2.5-pro",
+    lite:  "gemini-3.1-flash-preview",
+    flash: "gemini-3.1-flash-preview",
+    pro:   "gemini-3.1-pro-preview",
   },
 };
 
@@ -269,9 +269,7 @@ async function detectComplexity(b64, mime) {
       { contents:[{ parts:[{ inline_data:{mime_type:mime,data:b64} },{ text:`ONE word only: "simple", "medium", or "complex"` }] }] },
       { timeout: 10000 }
     );
-    const candidate = r.data?.candidates?.[0];
-    const part = candidate?.content?.parts?.[0];
-    const w = part?.text?.trim()?.toLowerCase() || "medium";
+    const w = r.data.candidates[0].content.parts[0].text.trim().toLowerCase();
     return w.includes("simple") ? "simple" : w.includes("complex") ? "complex" : "medium";
   } catch { return "medium"; }
 }
@@ -287,10 +285,7 @@ async function analyzeImage(b64, mime) {
       { contents:[{ parts:[{ inline_data:{mime_type:mime,data:b64} },{ text: "Analyze this image for embroidery. Return JSON with: dominant_colors (array of hex), suggested_stitch_type (satin/fill/running), estimated_stitch_count (number), width_mm, height_mm." }] }] },
       { timeout: 80000 }
     );
-    const candidate = r.data?.candidates?.[0];
-    const part = candidate?.content?.parts?.[0];
-    const text = part?.text || "{}";
-    const result = JSON.parse(text.replace(/```json|```/g,"").trim());
+    const result = JSON.parse(r.data.candidates[0].content.parts[0].text.replace(/```json|```/g,"").trim());
     result._model = model;
     return result;
   } catch(e) {
@@ -631,7 +626,7 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     
     // STEP 1: Analyze the image
     const analyzeRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-preview:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
       {
         contents: [{
           parts: [
@@ -643,19 +638,12 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
       { timeout: 30000 }
     );
     
-    const analyzeCandidate = analyzeRes.data?.candidates?.[0];
-    const analyzePart = analyzeCandidate?.content?.parts?.[0];
-    const text = analyzePart?.text || "{}";
-    let analysis = {};
-    try {
-      analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
-    } catch(e) {
-      console.log("JSON parse failed:", e.message);
-    }
+    const text = analyzeRes.data.candidates[0].content.parts[0].text;
+    const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
     
     // STEP 2: Generate stitch preview image
     const previewRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-preview:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
       {
         contents: [{
           parts: [
@@ -668,10 +656,10 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     );
     
     // Extract generated image if available
-    const parts = previewRes.data?.candidates?.[0]?.content?.parts || [];
+    const parts = previewRes.data.candidates[0].content.parts;
     let previewImage = null;
     
-    for (const part of (parts || [])) {
+    for (const part of parts) {
       if (part.inlineData) {
         previewImage = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
         break;
@@ -891,21 +879,16 @@ async function processWebJob(jobId, file, settings, phone) {
 }
 
 app.post("/generate-embroidery", async (req, res) => {
-  try {
-    const { analysis, settings } = req.body;
-    const stitchData = generateStitchData(analysis);
-    const format = settings?.fileType || "dst";
-    
-    res.json({
-      stitch_count: stitchData.stitches.length,
-      dst_url: format === "dst" ? `/api/download/stub` : null,
-      pes_url: format === "pes" ? `/api/download/stub` : null,
-      jef_url: format === "jef" ? `/api/download/stub` : null,
-      exp_url: format === "exp" ? `/api/download/stub` : null,
-      vp3_url: format === "vp3" ? `/api/download/stub` : null,
-      stitch_data: stitchData
-    });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+  const { analysis } = req.body;
+  res.json({
+    stitch_count: analysis?.stitch_count || 5000,
+    dst_url: null,
+    pes_url: null,
+    jef_url: null,
+    exp_url: null,
+    vp3_url: null,
+    note: "Stub endpoint - implement actual embroidery generation"
+  });
 });
 
 // ============================================================
