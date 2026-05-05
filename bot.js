@@ -83,22 +83,11 @@ async function geminiRequest(models, body, timeoutMs = 30000, retries = 2) {
 }
 
 /* ============================================================
-   ADAPTIVE procSize — high floor to preserve fine details
-   Original 1600px captured crown prongs, thin text strokes.
-   Floor raised to 1200 minimum. Epsilon & minComponent
-   also scale with procSize so small details survive.
+   PROC SIZE: restored to hardcoded 1600 — this captures fine
+   details like text serifs, crown prongs, thin strokes.
    ============================================================ */
 function pickProcSize(origW, origH, colorCount) {
-  const megapixels = (origW * origH) / 1e6;
-  const colorFactor = colorCount > 7 ? 0.85 : 1.0;
-  let size;
-  if (megapixels < 0.3)        size = 1200;
-  else if (megapixels < 1.0)   size = 1400;
-  else if (megapixels < 3.0)   size = 1600;
-  else if (megapixels < 6.0)   size = 1400;
-  else                          size = 1200;
-  size = Math.round(size * colorFactor);
-  return Math.min(1600, Math.max(1200, size));
+  return 1600;
 }
 
 /* ============================================================
@@ -238,9 +227,8 @@ async function extractShapesFromImage(buffer, colors) {
 
   const visited = new Uint8Array(pw * ph);
   const shapes = [];
-  // Scale min component size with procSize — at 1600px a 4px component
-  // is tiny detail (crown prong, text serif); at 1200px it's 3px.
-  const minComponentSize = Math.max(3, Math.round(4 * (procSize / 1600)));
+  // Hard floor of 6 pixels — captures crown prongs, accent dots, thin strokes
+  const minComponentSize = 6;
 
   for (let ci = 0; ci < labColors.length; ci++) {
     for (let y = 0; y < ph; y++) {
@@ -302,10 +290,8 @@ async function extractShapesFromImage(buffer, colors) {
 
         if (contour.length < 4) continue;
 
-        // Lower epsilon = keep more points on curves = finer detail
-        // 0.12 at 1600px captures tiny text serifs and crown prongs
-        const epsilon = 0.12 * (procSize / 1600);
-        const simplified = ramerDouglasPeucker(contour, epsilon);
+        // Preserve small detail curves — epsilon 0.25 keeps crown prong shapes
+        const simplified = ramerDouglasPeucker(contour, 0.25);
         const stitchScale = 300 / Math.max(pw, ph);
         const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
 
