@@ -17,7 +17,7 @@ const jobs = new Map();
    ======================== */
 async function analyzeImage(b64, mime) {
   const prompt = `
-You are an expert embroidery digitizer. Analyze this image and extract distinct flat-color regions suitable for machine embroidery.
+You are an expert embroidery digitizer. Analyze this image and extract EVERY distinct flat-color region suitable for machine embroidery.
 
 Return ONLY a JSON object with this exact structure:
 {
@@ -34,16 +34,18 @@ Return ONLY a JSON object with this exact structure:
   ],
   "width": 300,
   "height": 300,
-  "estimated_stitch_count": 5000
+  "estimated_stitch_count": 8000
 }
 
-Rules:
-- type "fill" for broad solid areas (will get underlay + contour fill)
-- type "satin" for narrow borders or stripes (zigzag satin stitches)
-- type "running" for thin outlines, text, or fine details (simple dashed line)
-- Coordinates x,y,width,height are in stitch units (1 unit ≈ 0.1mm). Keep design roughly 250×250 units for a typical patch.
-- Choose thread colors that match the image closely. Use standard embroidery thread hex colors.
-- Add 4–8 shapes covering the main elements.
+CRITICAL rules for maximum detail:
+- Create 20 to 50 shapes. Do NOT merge small details into big blobs. Every letter, eye, stripe, spot, or highlight should be its own shape.
+- type "fill" for any solid colored area wider than 6 units.
+- type "satin" for narrow borders, stripes, or letter strokes between 2-8 units wide.
+- type "running" for hair-thin outlines, text serifs, tiny dots, or details under 4 units wide.
+- Minimum shape size is 3×3 units. If the image has small text, create individual shapes for each letter or word.
+- Coordinates x,y,width,height are in stitch units (1 unit ≈ 0.1mm). Keep canvas roughly 300×300 units.
+- Use exact thread colors matching the original image. Be precise with color choices.
+- Overlapping shapes are fine — embroidery is layered.
 - No extra text outside the JSON.
 `;
 
@@ -77,7 +79,7 @@ function toThreadColor(hex) {
 /* Underlay — sparse diagonal 45° base layer for stabilization */
 function underlay(x, y, w, h, color) {
   const stitches = [];
-  const spacing = 8;
+  const spacing = 5;
   const len = Math.max(w, h) * 1.5;
   for (let i = -len; i < len; i += spacing) {
     const sx = x + i;
@@ -95,11 +97,11 @@ function underlay(x, y, w, h, color) {
 /* Contour fill — spiral inward serpentine rows */
 function contourFill(x, y, w, h, color) {
   const stitches = [];
-  const stitchLen = 3.5;
-  const rowSpacing = 4.0;
+  const stitchLen = 2.0;
+  const rowSpacing = 2.5;
   let cx = x, cy = y, cw = w, ch = h;
   let pass = 0;
-  while (cw > 6 && ch > 6) {
+  while (cw > 3 && ch > 3) {
     const rows = Math.max(1, Math.floor(ch / rowSpacing));
     for (let r = 0; r < rows; r++) {
       const ry = cy + r * rowSpacing + (pass % 2) * (rowSpacing * 0.5);
@@ -124,8 +126,7 @@ function contourFill(x, y, w, h, color) {
 /* Satin stitch — zigzag along a narrow shape */
 function satinStitch(x, y, w, h, color) {
   const stitches = [];
-  const zigzagWidth = 3.0;
-  const step = 2.5;
+  const step = 1.5;
   const isHorizontal = w >= h;
   if (isHorizontal) {
     const topY = y;
@@ -154,7 +155,7 @@ function satinStitch(x, y, w, h, color) {
 /* Running stitch — dashed outline around perimeter */
 function runningStitch(x, y, w, h, color) {
   const stitches = [];
-  const dash = 4.0;
+  const dash = 2.0;
   const perimeter = 2 * (w + h);
   const steps = Math.max(4, Math.floor(perimeter / dash));
   for (let i = 0; i <= steps; i++) {
@@ -198,8 +199,11 @@ function generateStitches(analysis) {
     if (type === "fill") {
       all.push(...underlay(x, y, w, h, color));
       all.push(...contourFill(x, y, w, h, color));
+      /* Crisp edge outline so the shape pops */
+      all.push(...runningStitch(x - 0.5, y - 0.5, w + 1, h + 1, color));
     } else if (type === "satin") {
       all.push(...satinStitch(x, y, w, h, color));
+      all.push(...runningStitch(x - 0.5, y - 0.5, w + 1, h + 1, color));
     } else if (type === "running") {
       all.push(...runningStitch(x, y, w, h, color));
     }

@@ -89,7 +89,7 @@
   <div class="card" id="resultCard" style="display:none;">
     <h3 style="margin-top:0;">Stitch Preview</h3>
     <div class="preview-wrap">
-      <canvas id="stitchCanvas" width="600" height="600"></canvas>
+      <canvas id="stitchCanvas" width="800" height="800"></canvas>
     </div>
     <div class="shapes" id="shapes"></div>
     <div class="controls">
@@ -185,20 +185,20 @@
   });
 
   function renderCanvas(data) {
-    const W = canvas.width;
-    const H = canvas.height;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = 800 * dpr;
+    canvas.height = 800 * dpr;
+    canvas.style.width = '100%';
+    canvas.style.height = 'auto';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const W = 800;
+    const H = 800;
     const { stitches, designW, designH, shapes } = data;
 
     // Fabric background
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = '#f5f0e8';
     ctx.fillRect(0, 0, W, H);
-
-    // Subtle grid
-    ctx.strokeStyle = 'rgba(0,0,0,0.04)';
-    ctx.lineWidth = 1;
-    for (let i = 0; i < W; i += 20) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,H); ctx.stroke(); }
-    for (let i = 0; i < H; i += 20) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(W,i); ctx.stroke(); }
 
     const scale = Math.min(W / (designW + 20), H / (designH + 20));
     const offX = (W - designW * scale) / 2;
@@ -208,14 +208,14 @@
     const tx = x => offX + x * scale;
     const ty = y => offY + y * scale;
 
-    // Draw shapes as filled regions (30% opacity)
+    // Draw shapes as filled regions (35% opacity)
     for (const s of shapes || []) {
       ctx.fillStyle = s.color || '#888';
-      ctx.globalAlpha = 0.25;
+      ctx.globalAlpha = 0.35;
       ctx.fillRect(tx(s.x), ty(s.y), (s.width || 10) * scale, (s.height || 10) * scale);
       ctx.globalAlpha = 1.0;
       ctx.strokeStyle = s.color || '#888';
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 0.6;
       ctx.strokeRect(tx(s.x), ty(s.y), (s.width || 10) * scale, (s.height || 10) * scale);
     }
 
@@ -231,9 +231,23 @@
     }
 
     for (const g of groups) {
+      // Glow/shadow for thread visibility
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+      ctx.lineWidth = 2.2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (let i = 0; i < g.points.length; i++) {
+        const p = g.points[i];
+        if (i === 0) ctx.moveTo(p.x + 0.5, p.y + 0.5);
+        else ctx.lineTo(p.x + 0.5, p.y + 0.5);
+      }
+      ctx.stroke();
+
+      // Actual thread
       ctx.beginPath();
       ctx.strokeStyle = g.color;
-      ctx.lineWidth = 1.6;
+      ctx.lineWidth = 1.0;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       for (let i = 0; i < g.points.length; i++) {
