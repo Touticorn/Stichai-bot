@@ -9,12 +9,34 @@ const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // ============================================================
-// GEMINI 3.1 Flash Lite — latest stable fast model
+// DUAL-MODEL SETUP
+// Flash  = fast color detection (called every request)
+// Pro    = smart shape extraction (fallback only)
 // ============================================================
-const MODEL = "gemini-3.1-flash-lite-preview";
-const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+const MODEL_FLASH = "gemini-2.5-flash";
+const MODEL_PRO   = "gemini-2.5-pro";
+const API_URL_FLASH = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_FLASH}:generateContent?key=${GEMINI_API_KEY}`;
+const API_URL_PRO   = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_PRO}:generateContent?key=${GEMINI_API_KEY}`;
 
 const jobs = new Map();
+
+/* ============================================================
+   ADAPTIVE procSize — scales with image complexity
+   Simple logos → 800, complex photos → up to 1200
+   Hard cap at 1200 for platform timeout safety (~25s max)
+   ============================================================ */
+function pickProcSize(origW, origH, colorCount) {
+  const megapixels = (origW * origH) / 1e6;
+  // More colors = more tracing passes needed = keep it smaller
+  const colorFactor = colorCount > 6 ? 0.75 : 1.0;
+  let size;
+  if (megapixels < 0.5)       size = 800;   // small source image
+  else if (megapixels < 2.0)  size = 1000;  // medium photo
+  else if (megapixels < 5.0)  size = 1000;  // large photo
+  else                         size = 1200;  // very large photo
+  size = Math.round(size * colorFactor);
+  return Math.min(1200, Math.max(600, size));
+}
 
 /* ============================================================
    IMPROVEMENT #1: PHOTO PREPROCESSING (sharp)
@@ -38,7 +60,7 @@ async function preprocessImage(buffer) {
 }
 
 /* ============================================================
-   STEP 1: COLOR DETECTION + classification (Gemini)
+   STEP 1: COLOR DETECTION + classification (Gemini 2.5 Flash)
    ============================================================ */
 async function detectColors(b64, mime) {
   const prompt = `You are analyzing a design for embroidery digitizing.
@@ -50,7 +72,7 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
     generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
   };
 
-  const res = await axios.post(API_URL, body, { timeout: 45000 });
+  const res = await axios.post(API_URL_FLASH, body, { timeout: 30000 });
   const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
   const jsonStr = text.replace(/```json|```/g, "").trim();
   const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
@@ -119,7 +141,7 @@ function ramerDouglasPeucker(points, epsilon) {
 }
 
 /* ============================================================
-   IMPROVEMENT #2: PIXEL TRACING at 1024px + LAB
+   IMPROVEMENT #2: PIXEL TRACING with adaptive procSize + LAB
    ============================================================ */
 async function extractShapesFromImage(buffer, colors) {
   const Jimp = require("jimp");
@@ -127,7 +149,10 @@ async function extractShapesFromImage(buffer, colors) {
   const image = await Jimp.read(buffer);
   const origW = image.bitmap.width, origH = image.bitmap.height;
 
-  const procSize = 600;  // reduced from 1600 for speed + platform timeout safety
+  // Adaptive: pick size based on source image megapixels + color count
+  const procSize = pickProcSize(origW, origH, colors.length);
+  console.log(`Adaptive procSize: ${procSize}px (source: ${origW}x${origH}, ${colors.length} colors)`);
+
   const scale = Math.min(procSize / origW, procSize / origH);
   const pw = Math.max(1, Math.round(origW * scale));
   const ph = Math.max(1, Math.round(origH * scale));
@@ -150,7 +175,6 @@ async function extractShapesFromImage(buffer, colors) {
         if (d < bestDist) { bestDist = d; bestIdx = c; }
       }
       // Wider threshold (35 in LAB) catches anti-aliased pixels on small details
-      // — letter strokes, crown prongs, tiny shapes. 35 ≈ "loosely similar"
       if (bestDist < 35) pixelColors[y * pw + x] = bestIdx;
     }
   }
@@ -158,7 +182,6 @@ async function extractShapesFromImage(buffer, colors) {
   const visited = new Uint8Array(pw * ph);
   const shapes = [];
   // Hard floor of 6 pixels — captures crown prongs, accent dots, thin strokes
-  // Removed adaptive scaling that was nuking small shapes on big images
   const minComponentSize = 6;
 
   for (let ci = 0; ci < labColors.length; ci++) {
@@ -257,7 +280,8 @@ async function extractShapesFromImage(buffer, colors) {
 }
 
 /* ============================================================
-   IMPROVEMENT #4 + #5: SMART GEMINI EXTRACTION
+   IMPROVEMENT #4 + #5: SMART GEMINI EXTRACTION (Gemini 2.5 Pro)
+   Only called as fallback — uses the smarter model
    ============================================================ */
 async function extractShapesWithGemini(b64, mime, hint = {}) {
   const isText = hint.is_text;
@@ -279,7 +303,8 @@ Coordinates 0-300. type:"fill" for solid areas, "satin" for thin lines/borders. 
     generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
   };
 
-  const res = await axios.post(API_URL, body, { timeout: 60000 });
+  // Use the PRO model for shape extraction (smarter but slower)
+  const res = await axios.post(API_URL_PRO, body, { timeout: 45000 });
   const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
   let jsonStr = text.replace(/```json|```/g, "").trim();
   const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
@@ -492,7 +517,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     const cleanB64 = cleanBuffer.toString("base64");
     const cleanMime = "image/png";
 
-    console.log("Detecting colors with Gemini 3.1...");
+    console.log("Detecting colors with Gemini 2.5 Flash...");
     const detection = await detectColors(cleanB64, cleanMime);
     const colors = detection.colors;
     console.log("Colors:", colors, "is_text:", detection.is_text, "is_logo:", detection.is_logo);
@@ -502,16 +527,17 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     try {
       shapes = await extractShapesFromImage(cleanBuffer, colors);
       if (shapes.length < 3 && detection.is_text) {
-        console.log("Few pixel shapes for text — supplementing with Gemini");
+        console.log("Few pixel shapes for text — supplementing with Gemini 2.5 Pro");
         const geminiShapes = await extractShapesWithGemini(cleanB64, cleanMime, detection);
         shapes = shapes.concat(geminiShapes);
         extractionMethod = "hybrid";
       }
     } catch (e) {
       console.error("Pixel extraction failed:", e.message);
+      console.log("Falling back to Gemini 2.5 Pro shape extraction...");
       shapes = await extractShapesWithGemini(cleanB64, cleanMime, detection);
       extractionMethod = "gemini";
-      console.log("Gemini fallback shapes:", shapes.length);
+      console.log("Gemini Pro fallback shapes:", shapes.length);
     }
 
     if (!shapes.length) return res.status(500).json({ error: "No shapes extracted" });
@@ -534,7 +560,6 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     });
   } catch (e) {
     console.error("\/generate-embroidery error:", e.message);
-    // Return 502 if it's a Gemini API error, 500 for everything else
     const statusCode = e.response?.status || 500;
     return res.status(statusCode >= 500 ? 502 : 500).json({ error: e.message });
   }
@@ -556,7 +581,7 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "6.2", model: MODEL }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "6.2", models: { flash: MODEL_FLASH, pro: MODEL_PRO } }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Stichai v6.2 running on port ${PORT} with model ${MODEL}`));
+app.listen(PORT, () => console.log(`Stichai v6.2 running on port ${PORT} — Flash: ${MODEL_FLASH}, Pro: ${MODEL_PRO}`));
