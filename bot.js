@@ -668,10 +668,10 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
     );
     
     // Extract generated image if available
-    const parts = previewRes.data.candidates[0].content.parts;
+    const parts = previewRes.data?.candidates?.[0]?.content?.parts || [];
     let previewImage = null;
     
-    for (const part of parts) {
+    for (const part of (parts || [])) {
       if (part.inlineData) {
         previewImage = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
         break;
