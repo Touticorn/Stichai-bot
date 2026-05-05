@@ -19,7 +19,7 @@
     background: #e94560; color: #fff; padding: 4px 10px; border-radius: 12px;
     font-size: 12px; font-weight: 600;
   }
-  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
   .card {
     background: #fff; border-radius: 16px; padding: 24px; margin-bottom: 20px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.06);
@@ -39,7 +39,7 @@
   .btn:disabled { background: #aaa; cursor: not-allowed; }
   .btn-secondary { background: #16213e; }
   .btn-secondary:hover { background: #0f1a30; }
-  .photo-wrap, .preview-wrap, .flat-wrap {
+  .photo-wrap, .preview-wrap {
     position: relative; width: 100%;
     border: 1px solid #d4cfc5; border-radius: 12px; overflow: hidden;
     background: #fff;
@@ -47,9 +47,9 @@
   .photo-wrap img { display: block; width: 100%; height: auto; }
   canvas { display: block; width: 100%; height: auto; }
   .compare-grid {
-    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
   }
-  @media (max-width: 900px) {
+  @media (max-width: 720px) {
     .compare-grid { grid-template-columns: 1fr; }
   }
   .compare-label {
@@ -65,30 +65,31 @@
     font-size: 14px; background: #fff;
   }
   .meta { font-size: 13px; color: #666; margin-top: 8px; }
-  .shapes {
-    display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px;
+  .colors-bar {
+    display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;
   }
-  .chip {
+  .color-dot {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 6px 12px; border-radius: 20px; font-size: 12px;
-    background: #f0f0f0; border: 1px solid #ddd;
+    padding: 4px 10px; border-radius: 16px; font-size: 11px; font-weight: 600;
+    background: #f5f5f5; border: 1px solid #ddd;
   }
-  .chip span { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .color-dot span {
+    width: 14px; height: 14px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,0.1);
+  }
   .error { color: #c0392b; background: #fdecea; padding: 12px; border-radius: 8px; margin-top: 12px; }
   .stage-label {
     font-size: 11px; font-weight: 700; color: #999;
     text-transform: uppercase; letter-spacing: 1px;
     margin-bottom: 12px;
   }
-  .extracted-shapes {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-    gap: 8px; margin-top: 12px;
+  .detail-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+    gap: 6px; margin-top: 12px;
   }
-  .shape-box {
-    border-radius: 8px; min-height: 60px;
+  .detail-chip {
+    border-radius: 6px; min-height: 40px;
     display: flex; align-items: flex-end; justify-content: center;
-    padding: 6px; font-size: 10px; font-weight: 600;
+    padding: 4px; font-size: 9px; font-weight: 600;
     color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.5);
     border: 1px solid rgba(0,0,0,0.1);
   }
@@ -123,23 +124,19 @@
     </div>
   </div>
 
-  <!-- Results -->
+  <!-- Results: Original vs Stitch Preview -->
   <div class="card" id="resultCard" style="display:none;">
-    <div class="stage-label">Results — Original · AI 2D extraction · Stitch preview</div>
+    <div class="stage-label">Results — Original photo vs Stitch preview</div>
     <div class="compare-grid">
       <div>
         <div class="compare-label">Original Photo</div>
         <div class="photo-wrap">
           <img id="resultOriginalImg" alt="Original" />
         </div>
-      </div>
-      <div>
-        <div class="compare-label">AI Extracted 2D Flat Design</div>
-        <div class="flat-wrap">
-          <canvas id="flatCanvas" width="600" height="600"></canvas>
-        </div>
-        <div class="compare-label" style="margin-top:12px;">Detected Shapes</div>
-        <div class="extracted-shapes" id="extractedShapes"></div>
+        <div class="compare-label" style="margin-top:16px;">Detected Colors</div>
+        <div class="colors-bar" id="colorsBar"></div>
+        <div class="compare-label" style="margin-top:12px;">Extracted Shapes</div>
+        <div class="detail-grid" id="detailGrid"></div>
       </div>
       <div>
         <div class="compare-label">Stitch Preview</div>
@@ -148,7 +145,6 @@
         </div>
       </div>
     </div>
-    <div class="shapes" id="shapes"></div>
     <div class="controls">
       <select id="formatSel">
         <option value="dst">DST (Tajima)</option>
@@ -172,12 +168,10 @@
   const resultCard = document.getElementById('resultCard');
   const originalImg = document.getElementById('originalImg');
   const resultOriginalImg = document.getElementById('resultOriginalImg');
-  const extractedShapesEl = document.getElementById('extractedShapes');
-  const flatCanvas = document.getElementById('flatCanvas');
-  const flatCtx = flatCanvas.getContext('2d');
-  const stitchCanvas = document.getElementById('stitchCanvas');
-  const stitchCtx = stitchCanvas.getContext('2d');
-  const shapesEl = document.getElementById('shapes');
+  const colorsBar = document.getElementById('colorsBar');
+  const detailGrid = document.getElementById('detailGrid');
+  const canvas = document.getElementById('stitchCanvas');
+  const ctx = canvas.getContext('2d');
   const formatSel = document.getElementById('formatSel');
   const downloadBtn = document.getElementById('downloadBtn');
   const metaEl = document.getElementById('meta');
@@ -199,7 +193,6 @@
     currentFile = file;
     generateBtn.disabled = false;
     statusEl.innerHTML = `<p style="color:#27ae60;">Ready: <strong>${file.name}</strong></p>`;
-
     const reader = new FileReader();
     reader.onload = e => {
       currentImageDataUrl = e.target.result;
@@ -209,26 +202,10 @@
     reader.readAsDataURL(file);
   }
 
-  // Normalize shapes: convert legacy x/y/width/height to polygon points
-  function normalizeShape(s) {
-    if (s.points && Array.isArray(s.points) && s.points.length >= 3) {
-      return s;
-    }
-    // Convert rectangle to polygon points
-    const x = s.x || 0;
-    const y = s.y || 0;
-    const w = s.width || 30;
-    const h = s.height || 30;
-    return {
-      ...s,
-      points: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
-    };
-  }
-
   generateBtn.addEventListener('click', async () => {
     if (!currentFile) return;
     generateBtn.disabled = true;
-    statusEl.innerHTML = '<p>Analyzing photo and generating shapes & stitches…</p>';
+    statusEl.innerHTML = '<p>Analyzing photo, detecting colors, tracing pixel shapes…</p>';
 
     const form = new FormData();
     form.append('image', currentFile);
@@ -238,48 +215,37 @@
       const data = await res.json();
       if (!data.success) throw new Error(data.error || 'Server error');
 
-      // Normalize all shapes to have polygon points
-      data.shapes = (data.shapes || []).map(normalizeShape);
-
       currentId = data.id;
       metaEl.textContent = `${data.stitchCount.toLocaleString()} stitches · ${data.shapes.length} shapes · ${data.designSize.w}×${data.designSize.h} units`;
 
       resultOriginalImg.src = currentImageDataUrl;
 
-      // Render 2D flat design from extracted shapes
-      renderFlatDesign(data.shapes, data.designSize.w, data.designSize.h);
-
-      // Show extracted shapes as colored boxes
-      extractedShapesEl.innerHTML = '';
-      for (const s of data.shapes || []) {
-        const box = document.createElement('div');
-        box.className = 'shape-box';
-        box.style.backgroundColor = s.color || '#888';
-        box.textContent = (s.type || 'shape') + ' (' + (s.points?.length || 0) + 'pts)';
-        extractedShapesEl.appendChild(box);
+      // Show detected colors
+      colorsBar.innerHTML = '';
+      for (const c of data.colors || []) {
+        const dot = document.createElement('div');
+        dot.className = 'color-dot';
+        dot.innerHTML = `<span style="background:${c}"></span> ${c}`;
+        colorsBar.appendChild(dot);
       }
 
-      // Build color chips
-      shapesEl.innerHTML = '';
-      const seen = new Set();
+      // Show shape detail chips
+      detailGrid.innerHTML = '';
       for (const s of data.shapes || []) {
-        if (seen.has(s.color)) continue;
-        seen.add(s.color);
         const chip = document.createElement('div');
-        chip.className = 'chip';
-        chip.innerHTML = `<span style="background:${s.color}"></span> ${s.type}`;
-        shapesEl.appendChild(chip);
+        chip.className = 'detail-chip';
+        chip.style.backgroundColor = s.color || '#888';
+        chip.textContent = `${s.type} · ${s.pointCount || (s.points?.length || 0)}pts`;
+        detailGrid.appendChild(chip);
       }
 
-      // Fetch stitch preview and render
+      // Fetch and render stitch preview
       const pRes = await fetch(data.previewUrl);
       const pData = await pRes.json();
-      // Normalize shapes in preview data too
-      if (pData.shapes) pData.shapes = pData.shapes.map(normalizeShape);
-      renderStitchCanvas(pData);
+      renderCanvas(pData);
 
       resultCard.style.display = 'block';
-      statusEl.innerHTML = '<p style="color:#27ae60;">Done! Compare the AI-extracted 2D design with the stitch preview.</p>';
+      statusEl.innerHTML = '<p style="color:#27ae60;">Done! Compare the original with the stitch preview. Each shape is traced from actual pixels.</p>';
     } catch (e) {
       statusEl.innerHTML = `<div class="error">${e.message}</div>`;
       generateBtn.disabled = false;
@@ -288,99 +254,43 @@
 
   downloadBtn.addEventListener('click', () => {
     if (!currentId) return;
-    const fmt = formatSel.value;
-    window.location = `/download/${currentId}/${fmt}`;
+    window.location = `/download/${currentId}/${formatSel.value}`;
   });
 
-  // Render the AI-extracted 2D flat design on canvas
-  function renderFlatDesign(shapes, designW, designH) {
+  function renderCanvas(data) {
     const dpr = window.devicePixelRatio || 1;
-    flatCanvas.width = 600 * dpr;
-    flatCanvas.height = 600 * dpr;
-    flatCanvas.style.width = '100%';
-    flatCanvas.style.height = 'auto';
-    flatCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const W = 600, H = 600;
-
-    flatCtx.clearRect(0, 0, W, H);
-    flatCtx.fillStyle = '#f5f0e8';
-    flatCtx.fillRect(0, 0, W, H);
-
-    const scale = Math.min(W / (designW + 20), H / (designH + 20));
-    const offX = (W - designW * scale) / 2;
-    const offY = (H - designH * scale) / 2;
-
-    const tx = x => offX + x * scale;
-    const ty = y => offY + y * scale;
-
-    // Draw each polygon shape filled
-    for (const s of shapes || []) {
-      const pts = s.points || [];
-      if (pts.length < 2) continue;
-
-      flatCtx.beginPath();
-      flatCtx.moveTo(tx(pts[0][0]), ty(pts[0][1]));
-      for (let i = 1; i < pts.length; i++) {
-        flatCtx.lineTo(tx(pts[i][0]), ty(pts[i][1]));
-      }
-      flatCtx.closePath();
-      flatCtx.fillStyle = s.color || '#888';
-      flatCtx.fill();
-      flatCtx.strokeStyle = 'rgba(0,0,0,0.2)';
-      flatCtx.lineWidth = 0.8;
-      flatCtx.stroke();
-    }
-
-    // Draw vertex dots for clarity
-    for (const s of shapes || []) {
-      const pts = s.points || [];
-      flatCtx.fillStyle = 'rgba(0,0,0,0.4)';
-      for (const [px, py] of pts) {
-        flatCtx.beginPath();
-        flatCtx.arc(tx(px), ty(py), 2, 0, Math.PI * 2);
-        flatCtx.fill();
-      }
-    }
-  }
-
-  // Render stitch preview
-  function renderStitchCanvas(data) {
-    const dpr = window.devicePixelRatio || 1;
-    stitchCanvas.width = 800 * dpr;
-    stitchCanvas.height = 800 * dpr;
-    stitchCanvas.style.width = '100%';
-    stitchCanvas.style.height = 'auto';
-    stitchCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    canvas.width = 800 * dpr;
+    canvas.height = 800 * dpr;
+    canvas.style.width = '100%';
+    canvas.style.height = 'auto';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const W = 800, H = 800;
     const { stitches, designW, designH, shapes } = data;
 
-    stitchCtx.clearRect(0, 0, W, H);
-    stitchCtx.fillStyle = '#f5f0e8';
-    stitchCtx.fillRect(0, 0, W, H);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#f5f0e8';
+    ctx.fillRect(0, 0, W, H);
 
     const scale = Math.min(W / (designW + 20), H / (designH + 20));
     const offX = (W - designW * scale) / 2;
     const offY = (H - designH * scale) / 2;
-
     const tx = x => offX + x * scale;
     const ty = y => offY + y * scale;
 
-    // Draw polygon outlines (light)
+    // Draw faint polygon outlines
     for (const s of shapes || []) {
       const pts = s.points || [];
       if (pts.length < 2) continue;
-      stitchCtx.beginPath();
-      stitchCtx.moveTo(tx(pts[0][0]), ty(pts[0][1]));
-      for (let i = 1; i < pts.length; i++) {
-        stitchCtx.lineTo(tx(pts[i][0]), ty(pts[i][1]));
-      }
-      stitchCtx.closePath();
-      stitchCtx.strokeStyle = 'rgba(0,0,0,0.08)';
-      stitchCtx.lineWidth = 0.5;
-      stitchCtx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(tx(pts[0][0]), ty(pts[0][1]));
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(tx(pts[i][0]), ty(pts[i][1]));
+      ctx.closePath();
+      ctx.strokeStyle = 'rgba(0,0,0,0.06)';
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
     }
 
-    // Draw actual stitches
+    // Draw stitches by color group
     const groups = [];
     let current = null;
     for (const st of stitches || []) {
@@ -392,29 +302,29 @@
     }
 
     for (const g of groups) {
-      stitchCtx.beginPath();
-      stitchCtx.strokeStyle = 'rgba(0,0,0,0.15)';
-      stitchCtx.lineWidth = 2.2;
-      stitchCtx.lineCap = 'round';
-      stitchCtx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+      ctx.lineWidth = 2.2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
       for (let i = 0; i < g.points.length; i++) {
         const p = g.points[i];
-        if (i === 0) stitchCtx.moveTo(p.x + 0.5, p.y + 0.5);
-        else stitchCtx.lineTo(p.x + 0.5, p.y + 0.5);
+        if (i === 0) ctx.moveTo(p.x + 0.5, p.y + 0.5);
+        else ctx.lineTo(p.x + 0.5, p.y + 0.5);
       }
-      stitchCtx.stroke();
+      ctx.stroke();
 
-      stitchCtx.beginPath();
-      stitchCtx.strokeStyle = g.color;
-      stitchCtx.lineWidth = 1.0;
-      stitchCtx.lineCap = 'round';
-      stitchCtx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.strokeStyle = g.color;
+      ctx.lineWidth = 1.0;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
       for (let i = 0; i < g.points.length; i++) {
         const p = g.points[i];
-        if (i === 0) stitchCtx.moveTo(p.x, p.y);
-        else stitchCtx.lineTo(p.x, p.y);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
       }
-      stitchCtx.stroke();
+      ctx.stroke();
     }
   }
 </script>
