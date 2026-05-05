@@ -411,9 +411,9 @@ function contourFillPolygon(points, color) {
   const stitchLen = 2.5, rowSpacing = 3.0;
   let inset = 0, pass = 0, maxPasses = 8;
 
-  // Transform points to rotated frame for clean line intersection
-  function toLocal(x, y) { return { x: x * cosA + y * sinA, y: -x * sinA + y * cosA }; }
-  function toGlobal(lx, ly) { return { x: lx * cosA - ly * sinA, y: lx * sinA + ly * cosA }; }
+  // Transform points to rotated frame — return arrays for array destructuring
+  function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
+  function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
 
   const localPts = points.map(([x, y]) => toLocal(x, y));
   const lBounds = polygonBounds(localPts);
@@ -440,8 +440,8 @@ function contourFillPolygon(points, color) {
         for (let s = 0; s <= steps; s++) {
           const t = s / steps;
           const lx = startX + (endX - startX) * t;
-          const g = toGlobal(lx, ry);
-          stitches.push({ x: Math.round(g.x), y: Math.round(g.y), color, type: "fill" });
+          const [gx, gy] = toGlobal(lx, ry);
+          stitches.push({ x: Math.round(gx), y: Math.round(gy), color, type: "fill" });
         }
       }
     }
