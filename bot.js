@@ -1,13 +1,11 @@
 // ========================================================================
-// Stichai Bot v6.0 — Hybrid Embroidery Digitization
-// Real stitch generation + binary file encoding + Canvas preview
+// Stichai Bot v6.1 — Better prompts, polygon shapes, text-as-paths
 // ========================================================================
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
 const qrcode = require("qrcode-terminal");
 const express = require("express");
 const axios = require("axios");
-const QRCode = require("qrcode");
 const NodeCache = require("node-cache");
 const FormData = require("form-data");
 const fs = require("fs");
@@ -15,9 +13,6 @@ const path = require("path");
 const os = require("os");
 const multer = require("multer");
 
-// ========================================================================
-// CONFIG
-// ========================================================================
 const CONFIG = {
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
   GEMINI: {
@@ -31,25 +26,15 @@ const CONFIG = {
   ADMIN_NUMBERS: (process.env.ADMIN_NUMBERS || "+212762609694,+971585048502").split(","),
 };
 
-// ========================================================================
-// EXPRESS + MULTER
-// ========================================================================
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 app.use(express.json());
 
-// ========================================================================
-// DB + CACHE
-// ========================================================================
 const msgCache = new NodeCache({ stdTTL: 300 });
 const jobCache = new NodeCache({ stdTTL: 3600 });
-
 let db = null;
 let whSocket = null;
 
-// ========================================================================
-// DB HELPERS
-// ========================================================================
 async function initDB() {
   if (db) return;
   const sqlite3 = await import("sqlite3").then(m=>m.default);
@@ -76,14 +61,11 @@ async function addOrder(phone, image, colors, status="pending", price="", file_u
 }
 async function addJob(phone, image, settings, status="pending") {
   const id = "job_" + Date.now().toString(36);
-  await db?.run("INSERT INTO jobs (id,phone,image,settings,status,created) VALUES (?,?,?,?,?)",
+  await db?.run("INSERT INTO jobs (id,phone,image,settings,created) VALUES (?,?,?,?,?)",
     [id,phone,image||"",JSON.stringify(settings||{}), new Date().toISOString()]);
   return id;
 }
 
-// ========================================================================
-// WHATSAPP BAILEYS
-// ========================================================================
 async function initBaileys() {
   const authDir = "/app/.baileys_auth";
   try { fs.rmSync(authDir, { recursive: true }); } catch {}
@@ -108,9 +90,6 @@ async function initBaileys() {
   });
 }
 
-// ========================================================================
-// LANGUAGE
-// ========================================================================
 const TRANSLATIONS = {
   en: { welcome:"Welcome!", upload:"Upload image", analyze:"Analyze", stitch:"Stitch", price:"Price", order:"Order", thanks:"Thank you!" },
   fr: { welcome:"Bienvenue!", upload:"Télécharger", analyze:"Analyser", stitch:"Point", price:"Prix", order:"Commander", thanks:"Merci!" },
@@ -120,7 +99,7 @@ function getLang(phone) { return "en"; }
 function t(phone, key) { return TRANSLATIONS[getLang(phone)]?.[key] || key; }
 
 // ========================================================================
-// GEMINI HELPERS
+// GEMINI — Better prompt for detailed shapes
 // ========================================================================
 async function detectComplexity(b64, mime) {
   try {
@@ -142,45 +121,70 @@ async function analyzeImage(b64, mime) {
     const modelKey = complexity === "simple" ? "lite" : complexity === "complex" ? "pro" : "flash";
     const model = CONFIG.GEMINI[modelKey];
 
-    const r = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-      { contents:[{ parts:[
-        { inline_data:{mime_type:mime,data:b64} },
-        { text:`You are an expert embroidery digitizer. Analyze this image and output ONLY valid JSON.
+    const prompt = `You are an expert embroidery digitizer. Analyze the image and output ONLY valid JSON.
+
+YOUR JOB: Convert this image into simplified embroidery shapes. You must describe EXACT shapes, not just bounding boxes.
 
 CRITICAL RULES:
-1. Output ONLY a JSON object. No markdown, no explanations.
-2. Simplify complex images to basic geometric shapes.
-3. Identify the dominant visual elements.
+1. Output ONLY a JSON object. No markdown, no code blocks, no explanations.
+2. Every shape must be a polygon — give actual corner coordinates (0-100 scale).
+3. TEXT must be converted to polygon shapes (letter outlines as filled shapes).
+4. LOGOS and ICONS must be traced as polygons.
+5. Gradients/shadows/photo effects: IGNORE. Use flat dominant colors only.
+6. Background: only include if it's a distinct design element (solid color blocks).
+7. Density: small text = running stitch, medium areas = satin, large areas = fill.
+8. Thread angle: specify stitch direction per shape (0=horizontal, 90=vertical, 45=diagonal).
 
-Required JSON structure:
+JSON Structure:
 {
   "complexity": "simple|medium|complex",
-  "dominant_colors": ["#RRGGBB", "#RRGGBB"],
+  "dominant_colors": ["#RRGGBB", "#RRGGBB", "#RRGGBB"],
   "suggested_stitch_type": "satin|fill|running|mixed",
   "estimated_stitch_count": number,
   "width_mm": number (50-200),
   "height_mm": number (50-200),
   "has_text": boolean,
   "has_logo": boolean,
-  "description": "brief description",
+  "description": "brief",
   "simplified_shapes": [
     {
-      "type": "rect|circle|polygon|text_path|line",
-      "label": "what this shape represents",
-      "bounds": {"x": 0, "y": 0, "w": 100, "h": 100},
+      "type": "polygon",
+      "label": "what this is (e.g. 'red body', 'gold stripe', 'letter W')",
+      "points": [[x1,y1], [x2,y2], [x3,y3], ...],
       "color": "#RRGGBB",
-      "stitch_type": "fill|satin|running"
+      "stitch_type": "fill|satin|running",
+      "thread_angle": number (0-180),
+      "density": "dense|normal|sparse"
     }
   ]
 }
 
-Shape simplification rules:
-- Photos → reduce to 2-5 dominant color regions
-- Text → one text_path shape
-- Logos → bounding shapes + outline
-- Gradients/shadows → IGNORE, use flat dominant color
-- Background → only include if it's a distinct design element` }
+POLYGON TRACING RULES:
+- Rectangles: 4 points
+- Triangles: 3 points  
+- Circles/ovals: 8-12 points around perimeter
+- Text letters: trace the OUTER EDGE as polygon points
+- Stripes/chevrons: trace exact points of the zigzag
+- Complex logos: break into 2-5 polygon parts
+
+Example for 'W' text:
+{
+  "type": "polygon",
+  "label": "letter W",
+  "points": [[10,10], [15,30], [20,10], [25,30], [30,10], [28,35], [23,15], [18,35], [12,35]],
+  "color": "#FFFFFF",
+  "stitch_type": "satin",
+  "thread_angle": 90,
+  "density": "dense"
+}
+
+Scale: Use 0-100 for both x and y (percentage of design width/height).`;
+
+    const r = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      { contents:[{ parts:[
+        { inline_data:{mime_type:mime,data:b64} },
+        { text: prompt }
       ] }] },
       { timeout: 80000 }
     );
@@ -198,18 +202,17 @@ Shape simplification rules:
 }
 
 // ========================================================================
-// STITCH ENGINE — Real coordinate generation
+// STITCH ENGINE — Polygon-based with angles and density
 // ========================================================================
 function generateStitches(analysis) {
   const shapes = analysis.simplified_shapes || [];
   const colors = analysis.dominant_colors || ["#c41e3a"];
-  const width = (analysis.width_mm || 80) * 3;  // 3px per mm
+  const width = (analysis.width_mm || 80) * 3;
   const height = (analysis.height_mm || 80) * 3;
   const allStitches = [];
-  let currentColor = colors[0];
 
-  // If no shapes provided, generate from dominant colors as fills
   if (shapes.length === 0) {
+    // Fallback: generate from dominant colors as fills
     const rows = Math.min(Math.floor((analysis.estimated_stitch_count || 5000) / width), 200);
     for (let r = 0; r < rows; r++) {
       const color = colors[r % colors.length];
@@ -222,109 +225,178 @@ function generateStitches(analysis) {
     return { stitches: allStitches, width, height, colors, scale: 3 };
   }
 
-  // Process each shape
+  // Process each polygon shape
   for (const shape of shapes) {
-    const color = shape.color || colors[shapes.indexOf(shape) % colors.length];
+    const color = shape.color || colors[0];
     const type = shape.stitch_type || "fill";
-    const b = shape.bounds || { x: 0, y: 0, w: width, h: height };
+    const angle = shape.thread_angle || 0;
+    const density = shape.density === "dense" ? 1.5 : shape.density === "sparse" ? 3 : 2;
+    const points = shape.points || [];
+
+    if (points.length < 2) continue;
+
+    // Scale points to canvas size
+    const scaledPoints = points.map(p => ({
+      x: (p[0] / 100) * width,
+      y: (p[1] / 100) * height
+    }));
 
     if (type === "fill") {
-      allStitches.push(...rectFill(b.x, b.y, b.w, b.h, color));
+      allStitches.push(...polygonFill(scaledPoints, color, angle, density));
     } else if (type === "satin") {
-      allStitches.push(...satinBorder(b.x, b.y, b.w, b.h, color));
+      allStitches.push(...polygonSatin(scaledPoints, color, angle, density));
     } else if (type === "running") {
-      allStitches.push(...runningOutline(b.x, b.y, b.w, b.h, color));
+      allStitches.push(...polygonRunning(scaledPoints, color));
     }
   }
 
   return { stitches: allStitches, width, height, colors, scale: 3 };
 }
 
-// Rectangle fill — horizontal rows
-function rectFill(x, y, w, h, color) {
+// Fill stitch inside polygon — scanline approach with thread angle
+function polygonFill(points, color, angle, spacing) {
   const stitches = [];
-  const spacing = 2; // 0.67mm between rows
-  const rows = Math.max(3, Math.floor(h / spacing));
+  if (points.length < 3) return stitches;
 
-  for (let r = 0; r < rows; r++) {
-    const rowY = y + (r / rows) * h;
-    stitches.push({ x, y: rowY, color, type: "jump" });
-    const step = 3;
-    for (let cx = x; cx <= x + w; cx += step) {
-      stitches.push({ x: cx, y: rowY, color, type: "stitch" });
+  // Find bounding box
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  }
+
+  const step = spacing || 2;
+  const rad = (angle * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+
+  // For angled fills, we rotate the scan direction
+  // Simple approach: scan horizontal rows, then rotate result
+  const rowCount = Math.floor((maxY - minY) / step);
+
+  for (let r = 0; r < rowCount; r++) {
+    const rowY = minY + r * step;
+
+    // Find all x intersections with polygon edges at this y
+    const intersections = [];
+    for (let i = 0; i < points.length; i++) {
+      const p1 = points[i];
+      const p2 = points[(i + 1) % points.length];
+      if ((p1.y <= rowY && p2.y > rowY) || (p1.y > rowY && p2.y <= rowY)) {
+        const t = (rowY - p1.y) / (p2.y - p1.y);
+        intersections.push(p1.x + t * (p2.x - p1.x));
+      }
+    }
+    intersections.sort((a, b) => a - b);
+
+    // Draw fill between pairs of intersections
+    for (let i = 0; i < intersections.length - 1; i += 2) {
+      const startX = intersections[i];
+      const endX = intersections[i + 1];
+      if (endX - startX < 1) continue;
+
+      // Apply angle rotation to row
+      stitches.push({ x: startX, y: rowY, color, type: "jump" });
+
+      if (angle === 0) {
+        // Horizontal fill
+        for (let x = startX; x <= endX; x += step) {
+          stitches.push({ x, y: rowY, color, type: "stitch" });
+        }
+      } else {
+        // Angled fill: offset x based on y to create diagonal
+        const offset = (rowY - minY) * Math.tan(rad);
+        for (let x = startX; x <= endX; x += step) {
+          stitches.push({ x: x + offset, y: rowY, color, type: "stitch" });
+        }
+      }
     }
   }
+
   return stitches;
 }
 
-// Satin zigzag — border between inner and outer
-function satinBorder(x, y, w, h, color) {
+// Satin stitch — zigzag between two offset polygon edges
+function polygonSatin(points, color, angle, density) {
   const stitches = [];
-  const inset = 2;
-  const outer = [
-    { x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }, { x, y }
-  ];
-  const inner = [
-    { x: x + inset, y: y + inset }, { x: x + w - inset, y: y + inset },
-    { x: x + w - inset, y: y + h - inset }, { x: x + inset, y: y + h - inset },
-    { x: x + inset, y: y + inset }
-  ];
-  const density = Math.max(10, Math.floor((w + h) * 2));
-  for (let i = 0; i < density; i++) {
-    const t = i / density;
-    const side = Math.floor(t * 4);
-    const st = (t * 4) - side;
-    const p1 = outer[side];
-    const p2 = outer[(side + 1) % 4];
-    const ox = p1.x + (p2.x - p1.x) * st;
-    const oy = p1.y + (p2.y - p1.y) * st;
-    const p3 = inner[side];
-    const p4 = inner[(side + 1) % 4];
-    const ix = p3.x + (p4.x - p3.x) * st;
-    const iy = p3.y + (p4.y - p3.y) * st;
-    if (i % 2 === 0) {
-      stitches.push({ x: ox, y: oy, color, type: i === 0 ? "jump" : "stitch" });
-      stitches.push({ x: ix, y: iy, color, type: "stitch" });
-    } else {
-      stitches.push({ x: ix, y: iy, color, type: "stitch" });
-      stitches.push({ x: ox, y: oy, color, type: "stitch" });
-    }
+  if (points.length < 3) return stitches;
+
+  const step = density || 1.5;
+  const perimeter = getPerimeter(points);
+  const stitchCount = Math.floor(perimeter / step);
+
+  for (let i = 0; i < stitchCount; i++) {
+    const t1 = (i / stitchCount);
+    const t2 = ((i + 0.5) / stitchCount);
+    const p1 = getPointOnPolygon(points, t1);
+    const p2 = getPointOnPolygon(points, t2);
+
+    if (i === 0) stitches.push({ x: p1.x, y: p1.y, color, type: "jump" });
+    stitches.push({ x: p1.x, y: p1.y, color, type: "stitch" });
+    stitches.push({ x: p2.x, y: p2.y, color, type: "stitch" });
   }
+
   return stitches;
 }
 
-// Running stitch — simple outline
-function runningOutline(x, y, w, h, color) {
+// Running stitch — follow polygon outline
+function polygonRunning(points, color) {
   const stitches = [];
-  const perimeter = 2 * (w + h);
-  const count = Math.max(20, Math.floor(perimeter / 2));
-  const points = [
-    { x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }, { x, y }
-  ];
+  if (points.length < 2) return stitches;
+
+  const totalDist = getPerimeter(points);
+  const step = 2; // 2px between running stitches
+  const count = Math.max(Math.floor(totalDist / step), points.length * 3);
+
   for (let i = 0; i < count; i++) {
-    const t = (i / count) * 4;
-    const side = Math.floor(t) % 4;
-    const st = t - Math.floor(t);
-    const p1 = points[side];
-    const p2 = points[(side + 1) % 4];
-    stitches.push({
-      x: p1.x + (p2.x - p1.x) * st,
-      y: p1.y + (p2.y - p1.y) * st,
-      color,
-      type: i === 0 ? "jump" : "stitch"
-    });
+    const t = i / count;
+    const p = getPointOnPolygon(points, t);
+    stitches.push({ x: p.x, y: p.y, color, type: i === 0 ? "jump" : "stitch" });
   }
+
   return stitches;
+}
+
+// Helper: get point along polygon perimeter
+function getPointOnPolygon(points, t) {
+  const totalDist = getPerimeter(points);
+  const targetDist = t * totalDist;
+  let dist = 0;
+
+  for (let i = 0; i < points.length; i++) {
+    const p1 = points[i];
+    const p2 = points[(i + 1) % points.length];
+    const segDist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    if (dist + segDist >= targetDist) {
+      const segT = (targetDist - dist) / segDist;
+      return {
+        x: p1.x + (p2.x - p1.x) * segT,
+        y: p1.y + (p2.y - p1.y) * segT
+      };
+    }
+    dist += segDist;
+  }
+  return points[points.length - 1];
+}
+
+// Helper: polygon perimeter
+function getPerimeter(points) {
+  let dist = 0;
+  for (let i = 0; i < points.length; i++) {
+    const p1 = points[i];
+    const p2 = points[(i + 1) % points.length];
+    dist += Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  }
+  return dist;
 }
 
 // ========================================================================
-// DST BINARY ENCODER — Real machine file
+// DST ENCODER
 // ========================================================================
 function encodeDST(stitchData) {
   const stitches = stitchData.stitches || [];
   const colors = stitchData.colors || ["#c41e3a"];
 
-  // Find bounds
   let minX = 0, maxX = 0, minY = 0, maxY = 0;
   for (const s of stitches) {
     minX = Math.min(minX, s.x); maxX = Math.max(maxX, s.x);
@@ -333,22 +405,15 @@ function encodeDST(stitchData) {
   const stitchCount = stitches.length;
   const colorCount = colors.length;
 
-  // Build header (512 bytes)
   const h = (label, len) => Buffer.from(label.padEnd(len, " "), "ascii");
   let header = Buffer.concat([
-    h("LA:Stichai", 20),
-    h("ST:" + stitchCount, 10),
-    h("CO:" + colorCount, 10),
-    h("+X:" + Math.abs(maxX), 10),
-    h("-X:" + Math.abs(minX), 10),
-    h("+Y:" + Math.abs(maxY), 10),
-    h("-Y:" + Math.abs(minY), 10),
-    h("AX:+", 10), h("AY:+", 10), h("MX:", 10), h("MY:", 10),
-    h("PD:******", 10),
-    Buffer.alloc(512 - 120) // pad to 512
+    h("LA:Stichai", 20), h("ST:" + stitchCount, 10), h("CO:" + colorCount, 10),
+    h("+X:" + Math.abs(maxX), 10), h("-X:" + Math.abs(minX), 10),
+    h("+Y:" + Math.abs(maxY), 10), h("-Y:" + Math.abs(minY), 10),
+    h("AX:+", 10), h("AY:+", 10), h("MX:", 10), h("MY:", 10), h("PD:******", 10),
+    Buffer.alloc(512 - 120)
   ]);
 
-  // Stitch records (3 bytes each)
   const records = [];
   let prevX = 0, prevY = 0;
   let currentColorIdx = 0;
@@ -356,60 +421,39 @@ function encodeDST(stitchData) {
   for (let i = 0; i < stitches.length; i++) {
     const s = stitches[i];
     const colorIdx = colors.indexOf(s.color);
-
-    // Color change
     if (colorIdx !== -1 && colorIdx !== currentColorIdx) {
       currentColorIdx = colorIdx;
       records.push(Buffer.from([0x00, 0x00, 0xC3]));
     }
 
-    // Jump or stitch
     const dx = Math.round(s.x - prevX);
     const dy = Math.round(s.y - prevY);
     prevX += dx; prevY += dy;
 
-    // DST uses signed bytes: -121 to +121 for normal, extend with special codes for larger
-    const encodeDelta = (d) => {
-      if (d >= -121 && d <= 121) return [d >= 0 ? d : 256 + d, false];
-      // Extended: use multiple steps (simplified — for small designs this works)
-      const steps = Math.ceil(Math.abs(d) / 121);
-      return [d >= 0 ? 121 : 135, true]; // 135 = -121 unsigned
-    };
-
-    const [yByte, yExt] = encodeDelta(dy);
-    const [xByte, xExt] = encodeDelta(dx);
+    const clamp = (v) => Math.max(-121, Math.min(121, v));
+    const yByte = clamp(dy) >= 0 ? clamp(dy) : 256 + clamp(dy);
+    const xByte = clamp(dx) >= 0 ? clamp(dx) : 256 + clamp(dx);
     const flags = s.type === "jump" ? 0x83 : 0x03;
-
     records.push(Buffer.from([yByte, xByte, flags]));
   }
 
-  // End
   records.push(Buffer.from([0x00, 0x00, 0xF3]));
-
   return Buffer.concat([header, ...records]);
 }
 
-// ========================================================================
-// PES/JEF/EXP/VP3 — For now: DST with extension mapped
-// Real format support can be added later
-// ========================================================================
 function encodeFile(stitchData, format) {
   if (format === "dst") return { data: encodeDST(stitchData), ext: "dst" };
-  // Other formats: return DST with mapped extension for now
-  // Users can use converter software, or we add pyembroidery later
   const formatMap = { pes: "pes", jef: "jef", exp: "exp", vp3: "vp3" };
   return { data: encodeDST(stitchData), ext: formatMap[format] || "dst" };
 }
 
 // ========================================================================
-// FILE SERVING
+// FILE STORE
 // ========================================================================
-const fileStore = new Map(); // jobId -> { buffer, ext, filename }
-
+const fileStore = new Map();
 function storeFile(jobId, buffer, ext) {
   const filename = `embroidery_${Date.now()}.${ext}`;
   fileStore.set(jobId, { buffer, ext, filename, created: Date.now() });
-  // Auto-cleanup after 1 hour
   setTimeout(() => fileStore.delete(jobId), 3600000);
   return filename;
 }
@@ -417,68 +461,50 @@ function storeFile(jobId, buffer, ext) {
 // ========================================================================
 // API ROUTES
 // ========================================================================
-
-// 1. Image Analysis → Returns shapes + stitch data
 app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
-
     const b64 = req.file.buffer.toString("base64");
     const mime = req.file.mimetype || "image/jpeg";
 
-    // Step 1: Gemini analyzes and returns simplified shapes
     const analysis = await analyzeImage(b64, mime);
-
-    // Step 2: Generate real stitch coordinates from shapes
     const stitchData = generateStitches(analysis);
 
-    res.json({
-      ...analysis,
-      stitch_data: stitchData,
-      preview_image: null  // No fake image — real stitch data instead
-    });
+    res.json({ ...analysis, stitch_data: stitchData, preview_image: null });
   } catch(e) {
     console.error("Analyze error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-// 2. Convert → Generate binary file
 app.post("/api/convert", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
-
     const b64 = req.file.buffer.toString("base64");
     const mime = req.file.mimetype || "image/jpeg";
     const settings = JSON.parse(req.body.settings || "{}");
     const format = settings.fileType || "dst";
     const phone = req.body.phone || "web_" + Date.now();
 
-    // Create job
     const jobId = await addJob(phone, b64, settings, "processing");
     jobCache.set(jobId, { status: "processing", progress: 10 });
 
-    // Analyze
     const analysis = await analyzeImage(b64, mime);
     jobCache.set(jobId, { status: "processing", progress: 40, analysis });
 
-    // Generate stitches
     const stitchData = generateStitches(analysis);
     jobCache.set(jobId, { status: "processing", progress: 70, stitchData });
 
-    // Encode file
     const encoded = encodeFile(stitchData, format);
     const filename = storeFile(jobId, encoded.data, encoded.ext);
 
-    // Build result
     const result = {
       stitch_count: stitchData.stitches.length,
       estimated_stitch_count: stitchData.stitches.length,
       colors: analysis.dominant_colors?.length || 1,
       dominant_colors: analysis.dominant_colors || ["#c41e3a"],
       suggested_stitch_type: analysis.suggested_stitch_type || "fill",
-      width_mm: analysis.width_mm,
-      height_mm: analysis.height_mm,
+      width_mm: analysis.width_mm, height_mm: analysis.height_mm,
       description: analysis.description || "",
       stitch_data: stitchData,
       dst_url: format === "dst" ? `${CONFIG.BASE_URL}/api/download/${jobId}` : null,
@@ -499,54 +525,37 @@ app.post("/api/convert", upload.single("image"), async (req, res) => {
   }
 });
 
-// 3. Job Status
 app.get("/api/status/:jobId", async (req, res) => {
   const cached = jobCache.get(req.params.jobId);
   if (cached) return res.json({ status: cached.status, progress: cached.progress, result: cached.result });
-
   const row = await db?.get("SELECT * FROM jobs WHERE id=?", [req.params.jobId]);
   if (!row) return res.status(404).json({ error: "Job not found" });
-
-  res.json({
-    status: row.status,
-    result: row.result ? JSON.parse(row.result) : null
-  });
+  res.json({ status: row.status, result: row.result ? JSON.parse(row.result) : null });
 });
 
-// 4. File Download
 app.get("/api/download/:jobId", (req, res) => {
   const file = fileStore.get(req.params.jobId);
   if (!file) return res.status(404).json({ error: "File expired" });
-
   res.setHeader("Content-Type", "application/octet-stream");
   res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
   res.send(file.buffer);
 });
 
-// 5. Gemini Test
 app.get("/api/test", async (req, res) => {
   try {
     const r = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.GEMINI.flash}:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
-      { contents: [{ parts: [{ text: "hi" }] }] },
-      { timeout: 10000 }
+      { contents: [{ parts: [{ text: "hi" }] }] }, { timeout: 10000 }
     );
     res.json({ ok: true, text: r.data?.candidates?.[0]?.content?.parts?.[0]?.text });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// 6. Static HTML
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
-
-// 7. Health
-app.get("/health", (req, res) => res.json({ status: "ok", version: "6.0" }));
+app.get("/", (req, res) => res.sendFile(path.join(__dirname, "index.html")));
+app.get("/health", (req, res) => res.json({ status: "ok", version: "6.1" }));
 
 // ========================================================================
-// WHATSAPP MESSAGE PROCESSING
+// WHATSAPP
 // ========================================================================
 async function processMsg(phone, text, msg) {
   let user = await getUser(phone);
@@ -574,10 +583,7 @@ async function processMsg(phone, text, msg) {
 }
 
 async function downloadMedia(msg) {
-  try {
-    const buffer = await whSocket.downloadMediaMessage(msg);
-    return buffer;
-  } catch { return null; }
+  try { return await whSocket.downloadMediaMessage(msg); } catch { return null; }
 }
 
 async function processAndDeliver(phone, b64, analysis, settings) {
@@ -586,66 +592,36 @@ async function processAndDeliver(phone, b64, analysis, settings) {
   const jobId = "wa_" + Date.now().toString(36);
   const filename = storeFile(jobId, encoded.data, encoded.ext);
 
-  const result = {
-    stitch_count: stitchData.stitches.length,
-    colors: analysis.dominant_colors?.length || 1,
-    estimated_time: Math.ceil(stitchData.stitches.length / 300) + "m"
-  };
-
+  const result = { stitch_count: stitchData.stitches.length, colors: analysis.dominant_colors?.length || 1, estimated_time: Math.ceil(stitchData.stitches.length / 300) + "m" };
   const modelLabel = analysis._model?.includes("pro") ? "Pro" : "Flash";
-  const summary = {
-    ar:`غرز: ~${result.stitch_count.toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${result.colors} ألوان | Gemini ${modelLabel}`,
-    fr:`Points: ~${result.stitch_count.toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${result.colors} couleurs | Gemini ${modelLabel}`,
-    en:`Stitches: ~${result.stitch_count.toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${result.colors} colors | Gemini ${modelLabel}`,
-  };
-
+  const summary = { ar:`غرز: ~${result.stitch_count.toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${result.colors} ألوان | Gemini ${modelLabel}`, fr:`Points: ~${result.stitch_count.toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${result.colors} couleurs | Gemini ${modelLabel}`, en:`Stitches: ~${result.stitch_count.toLocaleString()} | ${analysis.width_mm}x${analysis.height_mm}mm | ${result.colors} colors | Gemini ${modelLabel}` };
   const lang = (await getUser(phone))?.lang || "en";
   await sendMsg(phone, `✅ ${t(phone,"thanks")}\n${summary[lang] || summary.en}`);
-
-  // Send file via WhatsApp
   try {
-    const fileBuffer = encoded.data;
-    await whSocket.sendMessage(phone + "@s.whatsapp.net", {
-      document: fileBuffer,
-      fileName: filename,
-      mimetype: "application/octet-stream"
-    });
-  } catch(e) {
-    console.error("File send failed:", e.message);
-    await sendMsg(phone, `📎 Download: ${CONFIG.BASE_URL}/api/download/${jobId}`);
-  }
-
+    await whSocket.sendMessage(phone + "@s.whatsapp.net", { document: encoded.data, fileName: filename, mimetype: "application/octet-stream" });
+  } catch(e) { await sendMsg(phone, `📎 Download: ${CONFIG.BASE_URL}/api/download/${jobId}`); }
   await addOrder(phone, b64, (analysis.dominant_colors || []).join(","), "completed", "", `${CONFIG.BASE_URL}/api/download/${jobId}`);
 }
 
 async function sendMsg(phone, text) {
   try {
-    if (whSocket) {
-      await whSocket.sendMessage(phone + "@s.whatsapp.net", { text });
-    } else {
-      await axios.get(`${CONFIG.WEBHOOK}?phone=${encodeURIComponent(CONFIG.PHONE)}&text=${encodeURIComponent(text)}&apikey=1252877`);
-    }
+    if (whSocket) await whSocket.sendMessage(phone + "@s.whatsapp.net", { text });
+    else await axios.get(`${CONFIG.WEBHOOK}?phone=${encodeURIComponent(CONFIG.PHONE)}&text=${encodeURIComponent(text)}&apikey=1252877`);
   } catch(e) { console.error("Send error:", e.message); }
 }
 
 // ========================================================================
-// START SERVER
+// START
 // ========================================================================
 const PORT = process.env.PORT || 8080;
-
 (async () => {
   try {
     const server = app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Stichai Bot v6.0 on port ${PORT}`);
+      console.log(`Stichai Bot v6.1 on port ${PORT}`);
       console.log(`URL: ${CONFIG.BASE_URL}`);
     });
-
-    await initDB().catch(err => { console.error("DB error:", err.message); });
-    await initBaileys().catch(err => { console.error("Baileys error:", err.message); });
-
+    await initDB().catch(err => console.error("DB error:", err.message));
+    await initBaileys().catch(err => console.error("Baileys error:", err.message));
     process.on("SIGTERM", () => { server.close(); process.exit(0); });
-  } catch(e) {
-    console.error("Fatal:", e.message);
-    process.exit(1);
-  }
+  } catch(e) { console.error("Fatal:", e.message); process.exit(1); }
 })();
