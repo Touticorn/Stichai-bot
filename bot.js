@@ -269,7 +269,9 @@ async function detectComplexity(b64, mime) {
       { contents:[{ parts:[{ inline_data:{mime_type:mime,data:b64} },{ text:`ONE word only: "simple", "medium", or "complex"` }] }] },
       { timeout: 10000 }
     );
-    const w = r.data.candidates[0].content.parts[0].text.trim().toLowerCase();
+    const candidate = r.data?.candidates?.[0];
+    const part = candidate?.content?.parts?.[0];
+    const w = part?.text?.trim()?.toLowerCase() || "medium";
     return w.includes("simple") ? "simple" : w.includes("complex") ? "complex" : "medium";
   } catch { return "medium"; }
 }
@@ -285,7 +287,10 @@ async function analyzeImage(b64, mime) {
       { contents:[{ parts:[{ inline_data:{mime_type:mime,data:b64} },{ text: "Analyze this image for embroidery. Return JSON with: dominant_colors (array of hex), suggested_stitch_type (satin/fill/running), estimated_stitch_count (number), width_mm, height_mm." }] }] },
       { timeout: 80000 }
     );
-    const result = JSON.parse(r.data.candidates[0].content.parts[0].text.replace(/```json|```/g,"").trim());
+    const candidate = r.data?.candidates?.[0];
+    const part = candidate?.content?.parts?.[0];
+    const text = part?.text || "{}";
+    const result = JSON.parse(text.replace(/```json|```/g,"").trim());
     result._model = model;
     return result;
   } catch(e) {
@@ -638,8 +643,15 @@ app.post("/api/analyze-image", upload.single("image"), async (req, res) => {
       { timeout: 30000 }
     );
     
-    const text = analyzeRes.data.candidates[0].content.parts[0].text;
-    const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
+    const analyzeCandidate = analyzeRes.data?.candidates?.[0];
+    const analyzePart = analyzeCandidate?.content?.parts?.[0];
+    const text = analyzePart?.text || "{}";
+    let analysis = {};
+    try {
+      analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
+    } catch(e) {
+      console.log("JSON parse failed:", e.message);
+    }
     
     // STEP 2: Generate stitch preview image
     const previewRes = await axios.post(
