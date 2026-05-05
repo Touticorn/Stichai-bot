@@ -192,9 +192,8 @@ function ramerDouglasPeucker(points, epsilon) {
    PIXEL TRACING with adaptive procSize + LAB
    ============================================================ */
 async function extractShapesFromImage(buffer, colors) {
-  // Use sharp to get image dimensions and resize with nearest-neighbor
-  // (hard edges, no anti-aliasing). This prevents fuzzy edge pixels
-  // from fragmenting during LAB color matching.
+  // Use sharp for reliable pixel access. Default kernel is lanczos3
+  // (smooth downscale) — this matches Jimp bilinear, no pixel speckles.
   const meta = await sharp(buffer).metadata();
   const origW = meta.width, origH = meta.height;
 
@@ -205,12 +204,11 @@ async function extractShapesFromImage(buffer, colors) {
   const pw = Math.max(1, Math.round(origW * scale));
   const ph = Math.max(1, Math.round(origH * scale));
 
-  // nearest: hard edges, no anti-aliasing — critical for clean shape extraction
+  // Smooth resize (default lanczos3), no nearest-neighbor pixelation
   const raw = await sharp(buffer)
-    .resize(pw, ph, { kernel: sharp.kernel.nearest, fit: 'fill' })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  const data = raw.data; // RGBA buffer, 4 bytes per pixel
+    .resize(pw, ph, { fit: 'inside' })
+    .raw({ channels: 3 })
+    .toBuffer();
 
   const labColors = colors.map(c => rgbToLab(hexToRgb(c)));
   const pixelColors = new Int16Array(pw * ph);
@@ -218,10 +216,10 @@ async function extractShapesFromImage(buffer, colors) {
 
   for (let y = 0; y < ph; y++) {
     for (let x = 0; x < pw; x++) {
-      const idx = (y * pw + x) * 4;
-      const r = data[idx];
-      const g = data[idx + 1];
-      const b = data[idx + 2];
+      const idx = (y * pw + x) * 3;
+      const r = raw[idx];
+      const g = raw[idx + 1];
+      const b = raw[idx + 2];
       const pixLab = rgbToLab({ r, g, b });
       let bestIdx = 0, bestDist = Infinity;
       for (let c = 0; c < labColors.length; c++) {
