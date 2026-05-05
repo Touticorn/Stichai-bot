@@ -238,7 +238,7 @@ function runningStitch(x, y, w, h, color) {
    MAIN STITCH PIPELINE
    ======================== */
 function generateStitches(analysis) {
-  const all = [];
+  let all = [];
   const shapes = analysis.shapes || [];
   const designW = analysis.width || 300;
   const designH = analysis.height || 300;
@@ -252,20 +252,19 @@ function generateStitches(analysis) {
     const type = s.type || "fill";
 
     if (type === "fill") {
-      all.push(...underlay(x, y, w, h, color));
-      all.push(...contourFill(x, y, w, h, color));
-      /* Crisp edge outline so the shape pops */
-      all.push(...runningStitch(x - 0.5, y - 0.5, w + 1, h + 1, color));
+      all = all.concat(underlay(x, y, w, h, color));
+      all = all.concat(contourFill(x, y, w, h, color));
+      all = all.concat(runningStitch(x - 0.5, y - 0.5, w + 1, h + 1, color));
     } else if (type === "satin") {
-      all.push(...satinStitch(x, y, w, h, color));
-      all.push(...runningStitch(x - 0.5, y - 0.5, w + 1, h + 1, color));
+      all = all.concat(satinStitch(x, y, w, h, color));
+      all = all.concat(runningStitch(x - 0.5, y - 0.5, w + 1, h + 1, color));
     } else if (type === "running") {
-      all.push(...runningStitch(x, y, w, h, color));
+      all = all.concat(runningStitch(x, y, w, h, color));
     }
   }
 
   /* Global bounding box outline for stability */
-  all.push(...runningStitch(-2, -2, designW + 4, designH + 4, "#333333"));
+  all = all.concat(runningStitch(-2, -2, designW + 4, designH + 4, "#333333"));
 
   return { stitches: all, designW, designH, shapes };
 }
