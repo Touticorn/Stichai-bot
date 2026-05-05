@@ -7,7 +7,11 @@ const app = express();
 
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MODEL = "gemini-2.5-flash";
+
+// ============================================================
+// GEMINI 3.1 Flash Lite — latest stable fast model
+// ============================================================
+const MODEL = "gemini-3.1-flash-lite-preview";
 const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
 const jobs = new Map();
@@ -118,13 +122,12 @@ function ramerDouglasPeucker(points, epsilon) {
    IMPROVEMENT #2: PIXEL TRACING at 1024px + LAB
    ============================================================ */
 async function extractShapesFromImage(buffer, colors) {
-  const jimpModule = require("jimp");
-  const Jimp = jimpModule.Jimp || jimpModule;
+  const Jimp = require("jimp");
 
   const image = await Jimp.read(buffer);
   const origW = image.bitmap.width, origH = image.bitmap.height;
 
-  const procSize = 1600;
+  const procSize = 600;  // reduced from 1600 for speed + platform timeout safety
   const scale = Math.min(procSize / origW, procSize / origH);
   const pw = Math.max(1, Math.round(origW * scale));
   const ph = Math.max(1, Math.round(origH * scale));
@@ -482,12 +485,14 @@ app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "index.html")));
 app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
+    if (!GEMINI_API_KEY) return res.status(500).json({ error: "GEMINI_API_KEY not configured" });
 
     console.log("Preprocessing image...");
     const cleanBuffer = await preprocessImage(req.file.buffer);
     const cleanB64 = cleanBuffer.toString("base64");
     const cleanMime = "image/png";
 
+    console.log("Detecting colors with Gemini 3.1...");
     const detection = await detectColors(cleanB64, cleanMime);
     const colors = detection.colors;
     console.log("Colors:", colors, "is_text:", detection.is_text, "is_logo:", detection.is_logo);
@@ -528,8 +533,10 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
       shapes: result.shapes.map(s => ({ type: s.type, color: s.color, points: s.points, pointCount: s.points.length }))
     });
   } catch (e) {
-    console.error("/generate-embroidery error:", e.message);
-    return res.status(500).json({ error: e.message });
+    console.error("\/generate-embroidery error:", e.message);
+    // Return 502 if it's a Gemini API error, 500 for everything else
+    const statusCode = e.response?.status || 500;
+    return res.status(statusCode >= 500 ? 502 : 500).json({ error: e.message });
   }
 });
 
@@ -549,7 +556,7 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "6.1" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "6.2", model: MODEL }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Stichai v6.1 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Stichai v6.2 running on port ${PORT} with model ${MODEL}`));
