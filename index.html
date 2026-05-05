@@ -209,6 +209,22 @@
     reader.readAsDataURL(file);
   }
 
+  // Normalize shapes: convert legacy x/y/width/height to polygon points
+  function normalizeShape(s) {
+    if (s.points && Array.isArray(s.points) && s.points.length >= 3) {
+      return s;
+    }
+    // Convert rectangle to polygon points
+    const x = s.x || 0;
+    const y = s.y || 0;
+    const w = s.width || 30;
+    const h = s.height || 30;
+    return {
+      ...s,
+      points: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+    };
+  }
+
   generateBtn.addEventListener('click', async () => {
     if (!currentFile) return;
     generateBtn.disabled = true;
@@ -221,6 +237,9 @@
       const res = await fetch('/generate-embroidery', { method: 'POST', body: form });
       const data = await res.json();
       if (!data.success) throw new Error(data.error || 'Server error');
+
+      // Normalize all shapes to have polygon points
+      data.shapes = (data.shapes || []).map(normalizeShape);
 
       currentId = data.id;
       metaEl.textContent = `${data.stitchCount.toLocaleString()} stitches · ${data.shapes.length} shapes · ${data.designSize.w}×${data.designSize.h} units`;
@@ -255,6 +274,8 @@
       // Fetch stitch preview and render
       const pRes = await fetch(data.previewUrl);
       const pData = await pRes.json();
+      // Normalize shapes in preview data too
+      if (pData.shapes) pData.shapes = pData.shapes.map(normalizeShape);
       renderStitchCanvas(pData);
 
       resultCard.style.display = 'block';

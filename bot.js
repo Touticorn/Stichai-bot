@@ -41,26 +41,21 @@ function polygonBounds(points) {
    GEMINI ANALYSIS — polygon shapes
    ======================== */
 async function analyzeImage(b64, mime) {
-  const prompt = `You are an expert embroidery digitizer. I will show you a photo of a design.
+  const prompt = `You are an expert embroidery digitizer. Analyze this photo and extract the flat design as geometric polygons.
 
-Your task: ignore ALL photo artifacts (shadows, reflections, wrinkles, 3D depth, lighting, noise) and extract ONLY the underlying flat design as geometric shapes.
+CRITICAL: Return ONLY valid compact JSON. No markdown, no spaces, no extra text.
 
-Return ONLY compact JSON (no spaces, no markdown, no commentary):
-{"shapes":[{"type":"fill","color":"#RRGGBB","points":[[0,0],[100,0],[100,100],[0,100]]}],"width":300,"height":300}
+Format: {"shapes":[{"type":"fill","color":"#RRGGBB","points":[[x,y],[x,y],[x,y]]}],"width":300,"height":300}
 
-Shape rules:
-- Each shape is a polygon defined by "points": array of [x,y] coordinates
-- "type": "fill" for solid areas, "satin" for narrow borders, "running" for thin outlines
-- "fill" shapes should have 4+ points (rectangles, triangles, polygons, ovals-as-polygons)
-- "satin" shapes should have 2 points for lines, or 4 points for narrow strips
-- "running" shapes should trace exact outlines with many points for curves
-- Background = one large polygon covering the whole canvas
-- Text letters = each letter as its own polygon shape
-- Stripes/borders = narrow polygons following the stripe path
-- Use 8 to 20 shapes covering ALL visible design elements
-- Canvas is 300x300 units. Coordinates must stay within 0-300.
-- Use ONLY colors from the actual design. No invented colors.
-- Return ONLY the JSON object. No extra text.`;
+Rules:
+- 8 to 15 shapes max
+- "points" is array of [x,y] coordinates forming a closed polygon
+- type: fill=solid area, satin=narrow border, running=thin outline
+- Only use colors actually visible in the design
+- Background must be a shape too
+- Canvas 300x300. Keep coordinates within 0-300.
+- Every shape must have at least 3 points
+- Return ONLY the JSON. Nothing else.`;
 
   const body = {
     contents: [{
@@ -124,12 +119,17 @@ function repairJSON(str) {
     if (ch === ']') openBrackets--;
   }
   let repaired = str;
-  if (openBraces > 0) {
-    const trimmed = repaired.trim();
-    const lastChar = trimmed[trimmed.length - 1];
-    if (lastChar !== '}' && lastChar !== ']') repaired += '"d":0}';
-    for (let i = 0; i < openBraces; i++) repaired += '}';
+  // If mid-array element, close it
+  const trimmed = repaired.trim();
+  const lastChar = trimmed[trimmed.length - 1];
+  if (lastChar === ',') {
+    // Mid-array or mid-object, close the last element
+    repaired += '"x":0}';
+  } else if (lastChar !== '}' && lastChar !== ']') {
+    // Mid-value, close current key-value then close object
+    repaired += '0}';
   }
+  for (let i = 0; i < openBraces; i++) repaired += '}';
   for (let i = 0; i < openBrackets; i++) repaired += ']';
   return repaired;
 }
