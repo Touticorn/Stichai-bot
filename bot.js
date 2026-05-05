@@ -12,43 +12,55 @@ const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL
 const jobs = new Map();
 
 /* ========================
-   GEMINI ANALYSIS
-   Analyze photo directly — mentally flatten it
+   POINT IN POLYGON (ray casting)
+   ======================== */
+function pointInPolygon(x, y, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const xi = points[i][0], yi = points[i][1];
+    const xj = points[j][0], yj = points[j][1];
+    const intersect = ((yi > y) !== (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function polygonBounds(points) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of points) {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+}
+
+/* ========================
+   GEMINI ANALYSIS — polygon shapes
    ======================== */
 async function analyzeImage(b64, mime) {
-  const prompt = `You are an expert embroidery digitizer. I will show you a photo of a design (logo, text, artwork on fabric, packaging, etc.).
+  const prompt = `You are an expert embroidery digitizer. I will show you a photo of a design.
 
-Your task: mentally remove ALL photo artifacts and extract ONLY the underlying flat design.
-
-IMPORTANT — ignore these photo artifacts:
-- Shadows, highlights, reflections, glare
-- Fabric texture, wrinkles, folds
-- 3D depth, lighting gradients
-- Photo noise, blur, camera distortion
-- Background clutter not part of the design
-
-What to extract:
-- The actual design colors (red text, white background, gold stripe, etc.)
-- Every distinct flat-color region as a separate shape
-- Text elements as individual shapes
-- Borders, stripes, logos as separate shapes
+Your task: ignore ALL photo artifacts (shadows, reflections, wrinkles, 3D depth, lighting, noise) and extract ONLY the underlying flat design as geometric shapes.
 
 Return ONLY compact JSON (no spaces, no markdown, no commentary):
-{"shapes":[{"type":"fill","color":"#RRGGBB","x":0,"y":0,"width":100,"height":100}],"width":300,"height":300}
-
-CRITICAL color rules:
-- Use ONLY colors that exist in the actual DESIGN, not photo artifacts
-- The background of the design is a shape too
-- Match colors precisely — red should be red, not pink or orange
-- Do NOT invent colors that are not in the design
+{"shapes":[{"type":"fill","color":"#RRGGBB","points":[[0,0],[100,0],[100,100],[0,100]]}],"width":300,"height":300}
 
 Shape rules:
-- "fill" = broad solid areas (backgrounds, large text blocks, logos)
-- "satin" = narrow borders, stripes, thin strokes 2-8 units wide
-- "running" = tiny details, text serifs, outlines under 4 units
-- Create 12 to 25 shapes covering ALL design elements
-- Minimum shape 3x3 units. Canvas 300x300 max.
-- Each distinct color region = separate shape`;
+- Each shape is a polygon defined by "points": array of [x,y] coordinates
+- "type": "fill" for solid areas, "satin" for narrow borders, "running" for thin outlines
+- "fill" shapes should have 4+ points (rectangles, triangles, polygons, ovals-as-polygons)
+- "satin" shapes should have 2 points for lines, or 4 points for narrow strips
+- "running" shapes should trace exact outlines with many points for curves
+- Background = one large polygon covering the whole canvas
+- Text letters = each letter as its own polygon shape
+- Stripes/borders = narrow polygons following the stripe path
+- Use 8 to 20 shapes covering ALL visible design elements
+- Canvas is 300x300 units. Coordinates must stay within 0-300.
+- Use ONLY colors from the actual design. No invented colors.
+- Return ONLY the JSON object. No extra text.`;
 
   const body = {
     contents: [{
@@ -88,6 +100,14 @@ Shape rules:
     throw new Error("Missing shapes array");
   }
 
+  // Normalize points to arrays
+  for (const s of analysis.shapes) {
+    if (!s.points || !Array.isArray(s.points)) {
+      s.points = [[0,0], [10,0], [10,10], [0,10]];
+    }
+    s.points = s.points.map(p => Array.isArray(p) ? p : [p.x || 0, p.y || 0]);
+  }
+
   return analysis;
 }
 
@@ -115,95 +135,157 @@ function repairJSON(str) {
 }
 
 /* ========================
-   STITCH GENERATION ENGINE
+   STITCH GENERATION — polygon-based
    ======================== */
 function toThreadColor(hex) {
   const m = hex.match(/^#([0-9a-fA-F]{6})$/);
   return m ? `#${m[1].toUpperCase()}` : "#FF0066";
 }
 
-function underlay(x, y, w, h, color) {
+function underlayPolygon(points, color) {
   const stitches = [];
-  const spacing = 5;
-  const len = Math.max(w, h) * 1.5;
+  const bounds = polygonBounds(points);
+  const spacing = 6;
+  const len = Math.max(bounds.width, bounds.height) * 1.5;
+  const baseX = bounds.minX, baseY = bounds.minY;
+
   for (let i = -len; i < len; i += spacing) {
-    const sx = x + i, sy = y - i;
-    const ex = sx + len * 0.7, ey = sy + len * 0.7;
-    if (ex > x + w || ey > y + h) continue;
-    if (sx < x || sy < y) continue;
-    stitches.push({ x: Math.round(sx), y: Math.round(sy), color, type: "underlay" });
-    stitches.push({ x: Math.round(ex), y: Math.round(ey), color, type: "underlay" });
+    const sx = baseX + i;
+    const sy = baseY - i;
+    const ex = sx + len * 0.7;
+    const ey = sy + len * 0.7;
+
+    // Test center of segment
+    const mx = (sx + ex) / 2;
+    const my = (sy + ey) / 2;
+    if (pointInPolygon(mx, my, points)) {
+      stitches.push({ x: Math.round(sx), y: Math.round(sy), color, type: "underlay" });
+      stitches.push({ x: Math.round(ex), y: Math.round(ey), color, type: "underlay" });
+    }
   }
   return stitches;
 }
 
-function contourFill(x, y, w, h, color) {
+function contourFillPolygon(points, color) {
   const stitches = [];
-  const stitchLen = 2.0;
-  const rowSpacing = 2.5;
-  let cx = x, cy = y, cw = w, ch = h;
+  const bounds = polygonBounds(points);
+  const stitchLen = 2.5;
+  const rowSpacing = 3.0;
+
+  let inset = 0;
   let pass = 0;
-  while (cw > 3 && ch > 3) {
-    const rows = Math.max(1, Math.floor(ch / rowSpacing));
-    for (let r = 0; r < rows; r++) {
-      const ry = cy + r * rowSpacing + (pass % 2) * (rowSpacing * 0.5);
-      if (ry > cy + ch) break;
-      const dir = r % 2 === 0 ? 1 : -1;
-      const startX = dir === 1 ? cx : cx + cw;
-      const endX = dir === 1 ? cx + cw : cx;
-      const steps = Math.max(1, Math.floor(cw / stitchLen));
-      for (let s = 0; s <= steps; s++) {
-        const t = s / steps;
-        const ix = startX + (endX - startX) * t;
-        stitches.push({ x: Math.round(ix), y: Math.round(ry), color, type: "fill" });
+  const maxPasses = 8;
+
+  while (inset < Math.min(bounds.width, bounds.height) / 2 && pass < maxPasses) {
+    const yStart = bounds.minY + inset;
+    const yEnd = bounds.maxY - inset;
+    const xStart = bounds.minX + inset;
+    const xEnd = bounds.maxX - inset;
+
+    for (let y = yStart; y < yEnd; y += rowSpacing) {
+      const ry = y + (pass % 2) * (rowSpacing * 0.5);
+      if (ry > yEnd) break;
+
+      // Find intersections of this horizontal line with polygon edges
+      const intersections = [];
+      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const [x1, y1] = points[i];
+        const [x2, y2] = points[j];
+        if ((y1 <= ry && y2 > ry) || (y2 <= ry && y1 > ry)) {
+          const t = (ry - y1) / (y2 - y1);
+          const ix = x1 + t * (x2 - x1);
+          intersections.push(ix);
+        }
+      }
+      intersections.sort((a, b) => a - b);
+
+      // Draw segments between pairs of intersections
+      for (let k = 0; k + 1 < intersections.length; k += 2) {
+        const segStart = Math.max(intersections[k], xStart);
+        const segEnd = Math.min(intersections[k + 1], xEnd);
+        if (segEnd <= segStart) continue;
+
+        const steps = Math.max(1, Math.floor((segEnd - segStart) / stitchLen));
+        const dir = (Math.floor(y / rowSpacing) % 2 === 0) ? 1 : -1;
+        const startX = dir === 1 ? segStart : segEnd;
+        const endX = dir === 1 ? segEnd : segStart;
+
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const ix = startX + (endX - startX) * t;
+          stitches.push({ x: Math.round(ix), y: Math.round(ry), color, type: "fill" });
+        }
       }
     }
-    const inset = rowSpacing * 1.2;
-    cx += inset; cy += inset; cw -= inset * 2; ch -= inset * 2;
+    inset += rowSpacing * 1.5;
     pass++;
   }
   return stitches;
 }
 
-function satinStitch(x, y, w, h, color) {
+function satinPolygon(points, color) {
   const stitches = [];
+  const bounds = polygonBounds(points);
   const step = 1.5;
-  const isHorizontal = w >= h;
+  const isHorizontal = bounds.width >= bounds.height;
+
   if (isHorizontal) {
-    const topY = y, botY = y + h;
-    const steps = Math.max(2, Math.floor(w / step));
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const px = x + w * t;
-      const py = i % 2 === 0 ? topY : botY;
-      stitches.push({ x: Math.round(px), y: Math.round(py), color, type: "satin" });
+    for (let x = bounds.minX; x <= bounds.maxX; x += step) {
+      // Find y range inside polygon at this x
+      const yIntersections = [];
+      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const [x1, y1] = points[i];
+        const [x2, y2] = points[j];
+        if ((x1 <= x && x2 > x) || (x2 <= x && x1 > x)) {
+          const t = (x - x1) / (x2 - x1);
+          yIntersections.push(y1 + t * (y2 - y1));
+        }
+      }
+      if (yIntersections.length >= 2) {
+        yIntersections.sort((a, b) => a - b);
+        const top = yIntersections[0];
+        const bot = yIntersections[yIntersections.length - 1];
+        stitches.push({ x: Math.round(x), y: Math.round(top), color, type: "satin" });
+        stitches.push({ x: Math.round(x), y: Math.round(bot), color, type: "satin" });
+      }
     }
   } else {
-    const leftX = x, rightX = x + w;
-    const steps = Math.max(2, Math.floor(h / step));
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const py = y + h * t;
-      const px = i % 2 === 0 ? leftX : rightX;
-      stitches.push({ x: Math.round(px), y: Math.round(py), color, type: "satin" });
+    for (let y = bounds.minY; y <= bounds.maxY; y += step) {
+      const xIntersections = [];
+      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const [x1, y1] = points[i];
+        const [x2, y2] = points[j];
+        if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
+          const t = (y - y1) / (y2 - y1);
+          xIntersections.push(x1 + t * (x2 - x1));
+        }
+      }
+      if (xIntersections.length >= 2) {
+        xIntersections.sort((a, b) => a - b);
+        const left = xIntersections[0];
+        const right = xIntersections[xIntersections.length - 1];
+        stitches.push({ x: Math.round(left), y: Math.round(y), color, type: "satin" });
+        stitches.push({ x: Math.round(right), y: Math.round(y), color, type: "satin" });
+      }
     }
   }
   return stitches;
 }
 
-function runningStitch(x, y, w, h, color) {
+function runningPolygon(points, color) {
   const stitches = [];
-  const dash = 2.0;
-  const perimeter = 2 * (w + h);
-  const steps = Math.max(4, Math.floor(perimeter / dash));
+  const dash = 2.5;
+  const perimeter = points.length * 10; // rough estimate
+  const steps = Math.max(points.length * 2, Math.floor(perimeter / dash));
+
   for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    let px, py;
-    if (t < 0.25) { const lt = t / 0.25; px = x + w * lt; py = y; }
-    else if (t < 0.5) { const lt = (t - 0.25) / 0.25; px = x + w; py = y + h * lt; }
-    else if (t < 0.75) { const lt = (t - 0.5) / 0.25; px = x + w * (1 - lt); py = y + h; }
-    else { const lt = (t - 0.75) / 0.25; px = x; py = y + h * (1 - lt); }
-    stitches.push({ x: Math.round(px), y: Math.round(py), color, type: "running" });
+    const t = (i / steps) * points.length;
+    const idx = Math.floor(t) % points.length;
+    const nextIdx = (idx + 1) % points.length;
+    const frac = t - Math.floor(t);
+    const x = points[idx][0] + (points[nextIdx][0] - points[idx][0]) * frac;
+    const y = points[idx][1] + (points[nextIdx][1] - points[idx][1]) * frac;
+    stitches.push({ x: Math.round(x), y: Math.round(y), color, type: "running" });
   }
   return stitches;
 }
@@ -215,24 +297,24 @@ function generateStitches(analysis) {
   const designH = analysis.height || 300;
 
   for (const s of shapes) {
-    const x = s.x || 0, y = s.y || 0;
-    const w = s.width || 30, h = s.height || 30;
+    const points = s.points || [[0,0],[10,0],[10,10],[0,10]];
     const color = toThreadColor(s.color || "#FF0066");
     const type = s.type || "fill";
 
     if (type === "fill") {
-      all = all.concat(underlay(x, y, w, h, color));
-      all = all.concat(contourFill(x, y, w, h, color));
-      all = all.concat(runningStitch(x - 0.5, y - 0.5, w + 1, h + 1, color));
+      all = all.concat(underlayPolygon(points, color));
+      all = all.concat(contourFillPolygon(points, color));
+      all = all.concat(runningPolygon(points, color));
     } else if (type === "satin") {
-      all = all.concat(satinStitch(x, y, w, h, color));
-      all = all.concat(runningStitch(x - 0.5, y - 0.5, w + 1, h + 1, color));
+      all = all.concat(satinPolygon(points, color));
+      all = all.concat(runningPolygon(points, color));
     } else if (type === "running") {
-      all = all.concat(runningStitch(x, y, w, h, color));
+      all = all.concat(runningPolygon(points, color));
     }
   }
 
-  all = all.concat(runningStitch(-2, -2, designW + 4, designH + 4, "#333333"));
+  // Global basting box
+  all = all.concat(runningPolygon([[-2,-2],[designW+2,-2],[designW+2,designH+2],[-2,designH+2]], "#333333"));
   return { stitches: all, designW, designH, shapes };
 }
 
@@ -313,10 +395,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
       shapes: result.shapes.map(s => ({
         type: s.type,
         color: s.color,
-        x: s.x,
-        y: s.y,
-        width: s.width,
-        height: s.height
+        points: s.points
       }))
     });
   } catch (e) {

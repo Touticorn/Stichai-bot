@@ -19,7 +19,7 @@
     background: #e94560; color: #fff; padding: 4px 10px; border-radius: 12px;
     font-size: 12px; font-weight: 600;
   }
-  .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
   .card {
     background: #fff; border-radius: 16px; padding: 24px; margin-bottom: 20px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.06);
@@ -39,7 +39,7 @@
   .btn:disabled { background: #aaa; cursor: not-allowed; }
   .btn-secondary { background: #16213e; }
   .btn-secondary:hover { background: #0f1a30; }
-  .photo-wrap, .preview-wrap {
+  .photo-wrap, .preview-wrap, .flat-wrap {
     position: relative; width: 100%;
     border: 1px solid #d4cfc5; border-radius: 12px; overflow: hidden;
     background: #fff;
@@ -47,9 +47,9 @@
   .photo-wrap img { display: block; width: 100%; height: auto; }
   canvas { display: block; width: 100%; height: auto; }
   .compare-grid {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;
   }
-  @media (max-width: 720px) {
+  @media (max-width: 900px) {
     .compare-grid { grid-template-columns: 1fr; }
   }
   .compare-label {
@@ -125,14 +125,20 @@
 
   <!-- Results -->
   <div class="card" id="resultCard" style="display:none;">
-    <div class="stage-label">Results — Compare original with embroidery preview</div>
+    <div class="stage-label">Results — Original · AI 2D extraction · Stitch preview</div>
     <div class="compare-grid">
       <div>
         <div class="compare-label">Original Photo</div>
         <div class="photo-wrap">
           <img id="resultOriginalImg" alt="Original" />
         </div>
-        <div class="compare-label" style="margin-top:16px;">Extracted Shapes (what AI sees)</div>
+      </div>
+      <div>
+        <div class="compare-label">AI Extracted 2D Flat Design</div>
+        <div class="flat-wrap">
+          <canvas id="flatCanvas" width="600" height="600"></canvas>
+        </div>
+        <div class="compare-label" style="margin-top:12px;">Detected Shapes</div>
         <div class="extracted-shapes" id="extractedShapes"></div>
       </div>
       <div>
@@ -167,8 +173,10 @@
   const originalImg = document.getElementById('originalImg');
   const resultOriginalImg = document.getElementById('resultOriginalImg');
   const extractedShapesEl = document.getElementById('extractedShapes');
-  const canvas = document.getElementById('stitchCanvas');
-  const ctx = canvas.getContext('2d');
+  const flatCanvas = document.getElementById('flatCanvas');
+  const flatCtx = flatCanvas.getContext('2d');
+  const stitchCanvas = document.getElementById('stitchCanvas');
+  const stitchCtx = stitchCanvas.getContext('2d');
   const shapesEl = document.getElementById('shapes');
   const formatSel = document.getElementById('formatSel');
   const downloadBtn = document.getElementById('downloadBtn');
@@ -204,7 +212,7 @@
   generateBtn.addEventListener('click', async () => {
     if (!currentFile) return;
     generateBtn.disabled = true;
-    statusEl.innerHTML = '<p>Analyzing photo and generating stitches…</p>';
+    statusEl.innerHTML = '<p>Analyzing photo and generating shapes & stitches…</p>';
 
     const form = new FormData();
     form.append('image', currentFile);
@@ -215,10 +223,12 @@
       if (!data.success) throw new Error(data.error || 'Server error');
 
       currentId = data.id;
-      metaEl.textContent = `${data.stitchCount.toLocaleString()} stitches · Design ${data.designSize.w}×${data.designSize.h} units · ${data.shapes.length} shapes extracted`;
+      metaEl.textContent = `${data.stitchCount.toLocaleString()} stitches · ${data.shapes.length} shapes · ${data.designSize.w}×${data.designSize.h} units`;
 
-      // Show original in result
       resultOriginalImg.src = currentImageDataUrl;
+
+      // Render 2D flat design from extracted shapes
+      renderFlatDesign(data.shapes, data.designSize.w, data.designSize.h);
 
       // Show extracted shapes as colored boxes
       extractedShapesEl.innerHTML = '';
@@ -226,7 +236,7 @@
         const box = document.createElement('div');
         box.className = 'shape-box';
         box.style.backgroundColor = s.color || '#888';
-        box.textContent = s.type || 'shape';
+        box.textContent = (s.type || 'shape') + ' (' + (s.points?.length || 0) + 'pts)';
         extractedShapesEl.appendChild(box);
       }
 
@@ -242,13 +252,13 @@
         shapesEl.appendChild(chip);
       }
 
-      // Fetch preview data and render
+      // Fetch stitch preview and render
       const pRes = await fetch(data.previewUrl);
       const pData = await pRes.json();
-      renderCanvas(pData);
+      renderStitchCanvas(pData);
 
       resultCard.style.display = 'block';
-      statusEl.innerHTML = '<p style="color:#27ae60;">Done! Compare the extracted shapes with the stitch preview.</p>';
+      statusEl.innerHTML = '<p style="color:#27ae60;">Done! Compare the AI-extracted 2D design with the stitch preview.</p>';
     } catch (e) {
       statusEl.innerHTML = `<div class="error">${e.message}</div>`;
       generateBtn.disabled = false;
@@ -261,21 +271,19 @@
     window.location = `/download/${currentId}/${fmt}`;
   });
 
-  function renderCanvas(data) {
+  // Render the AI-extracted 2D flat design on canvas
+  function renderFlatDesign(shapes, designW, designH) {
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = 800 * dpr;
-    canvas.height = 800 * dpr;
-    canvas.style.width = '100%';
-    canvas.style.height = 'auto';
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const W = 800;
-    const H = 800;
-    const { stitches, designW, designH, shapes } = data;
+    flatCanvas.width = 600 * dpr;
+    flatCanvas.height = 600 * dpr;
+    flatCanvas.style.width = '100%';
+    flatCanvas.style.height = 'auto';
+    flatCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const W = 600, H = 600;
 
-    // Fabric background
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = '#f5f0e8';
-    ctx.fillRect(0, 0, W, H);
+    flatCtx.clearRect(0, 0, W, H);
+    flatCtx.fillStyle = '#f5f0e8';
+    flatCtx.fillRect(0, 0, W, H);
 
     const scale = Math.min(W / (designW + 20), H / (designH + 20));
     const offX = (W - designW * scale) / 2;
@@ -284,18 +292,74 @@
     const tx = x => offX + x * scale;
     const ty = y => offY + y * scale;
 
-    // Draw shapes as filled regions
+    // Draw each polygon shape filled
     for (const s of shapes || []) {
-      ctx.fillStyle = s.color || '#888';
-      ctx.globalAlpha = 0.35;
-      ctx.fillRect(tx(s.x), ty(s.y), (s.width || 10) * scale, (s.height || 10) * scale);
-      ctx.globalAlpha = 1.0;
-      ctx.strokeStyle = s.color || '#888';
-      ctx.lineWidth = 0.6;
-      ctx.strokeRect(tx(s.x), ty(s.y), (s.width || 10) * scale, (s.height || 10) * scale);
+      const pts = s.points || [];
+      if (pts.length < 2) continue;
+
+      flatCtx.beginPath();
+      flatCtx.moveTo(tx(pts[0][0]), ty(pts[0][1]));
+      for (let i = 1; i < pts.length; i++) {
+        flatCtx.lineTo(tx(pts[i][0]), ty(pts[i][1]));
+      }
+      flatCtx.closePath();
+      flatCtx.fillStyle = s.color || '#888';
+      flatCtx.fill();
+      flatCtx.strokeStyle = 'rgba(0,0,0,0.2)';
+      flatCtx.lineWidth = 0.8;
+      flatCtx.stroke();
     }
 
-    // Group stitches by color and draw thread paths
+    // Draw vertex dots for clarity
+    for (const s of shapes || []) {
+      const pts = s.points || [];
+      flatCtx.fillStyle = 'rgba(0,0,0,0.4)';
+      for (const [px, py] of pts) {
+        flatCtx.beginPath();
+        flatCtx.arc(tx(px), ty(py), 2, 0, Math.PI * 2);
+        flatCtx.fill();
+      }
+    }
+  }
+
+  // Render stitch preview
+  function renderStitchCanvas(data) {
+    const dpr = window.devicePixelRatio || 1;
+    stitchCanvas.width = 800 * dpr;
+    stitchCanvas.height = 800 * dpr;
+    stitchCanvas.style.width = '100%';
+    stitchCanvas.style.height = 'auto';
+    stitchCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const W = 800, H = 800;
+    const { stitches, designW, designH, shapes } = data;
+
+    stitchCtx.clearRect(0, 0, W, H);
+    stitchCtx.fillStyle = '#f5f0e8';
+    stitchCtx.fillRect(0, 0, W, H);
+
+    const scale = Math.min(W / (designW + 20), H / (designH + 20));
+    const offX = (W - designW * scale) / 2;
+    const offY = (H - designH * scale) / 2;
+
+    const tx = x => offX + x * scale;
+    const ty = y => offY + y * scale;
+
+    // Draw polygon outlines (light)
+    for (const s of shapes || []) {
+      const pts = s.points || [];
+      if (pts.length < 2) continue;
+      stitchCtx.beginPath();
+      stitchCtx.moveTo(tx(pts[0][0]), ty(pts[0][1]));
+      for (let i = 1; i < pts.length; i++) {
+        stitchCtx.lineTo(tx(pts[i][0]), ty(pts[i][1]));
+      }
+      stitchCtx.closePath();
+      stitchCtx.strokeStyle = 'rgba(0,0,0,0.08)';
+      stitchCtx.lineWidth = 0.5;
+      stitchCtx.stroke();
+    }
+
+    // Draw actual stitches
     const groups = [];
     let current = null;
     for (const st of stitches || []) {
@@ -307,29 +371,29 @@
     }
 
     for (const g of groups) {
-      ctx.beginPath();
-      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
-      ctx.lineWidth = 2.2;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
+      stitchCtx.beginPath();
+      stitchCtx.strokeStyle = 'rgba(0,0,0,0.15)';
+      stitchCtx.lineWidth = 2.2;
+      stitchCtx.lineCap = 'round';
+      stitchCtx.lineJoin = 'round';
       for (let i = 0; i < g.points.length; i++) {
         const p = g.points[i];
-        if (i === 0) ctx.moveTo(p.x + 0.5, p.y + 0.5);
-        else ctx.lineTo(p.x + 0.5, p.y + 0.5);
+        if (i === 0) stitchCtx.moveTo(p.x + 0.5, p.y + 0.5);
+        else stitchCtx.lineTo(p.x + 0.5, p.y + 0.5);
       }
-      ctx.stroke();
+      stitchCtx.stroke();
 
-      ctx.beginPath();
-      ctx.strokeStyle = g.color;
-      ctx.lineWidth = 1.0;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
+      stitchCtx.beginPath();
+      stitchCtx.strokeStyle = g.color;
+      stitchCtx.lineWidth = 1.0;
+      stitchCtx.lineCap = 'round';
+      stitchCtx.lineJoin = 'round';
       for (let i = 0; i < g.points.length; i++) {
         const p = g.points[i];
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
+        if (i === 0) stitchCtx.moveTo(p.x, p.y);
+        else stitchCtx.lineTo(p.x, p.y);
       }
-      ctx.stroke();
+      stitchCtx.stroke();
     }
   }
 </script>
