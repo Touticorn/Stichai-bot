@@ -1,99 +1,54 @@
 const express = require("express");
 const multer = require("multer");
 const axios = require("axios");
-const fs = require("fs");
 const path = require("path");
 const app = express();
 
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MODEL_ANALYZE = "gemini-3-flash-preview";
-const MODEL_CLEAN = "gemini-2.0-flash-exp";
-const API_URL = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+const MODEL = "gemini-3-flash-preview";
+const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
 const jobs = new Map();
 
 /* ========================
-   STEP 1: CLEAN PHOTO
-   Convert real photo to flat 2D illustration
-   ======================== */
-async function cleanPhoto(b64, mime) {
-  const prompt = `Convert this photo into a flat 2D vector-style illustration suitable for embroidery digitization.
-
-Requirements:
-- Remove all shadows, reflections, gradients, and 3D depth
-- Remove photo noise, wrinkles, fabric texture, and lighting effects
-- Convert to solid flat colors only — no shading
-- Keep all text crisp and readable as flat shapes
-- Keep the perspective as front-facing 2D
-- Output as a clean illustration with distinct color regions
-- Use the exact same colors as the original design, just flattened
-- Background should be transparent or single solid color
-- This is for machine embroidery — every color must be a distinct flat region`;
-
-  const body = {
-    contents: [{
-      role: "user",
-      parts: [
-        { text: prompt },
-        { inlineData: { mimeType: mime, data: b64 } }
-      ]
-    }],
-    generationConfig: {
-      temperature: 0.2,
-      maxOutputTokens: 4096,
-      responseModalities: ["TEXT", "IMAGE"]
-    }
-  };
-
-  const res = await axios.post(API_URL(MODEL_CLEAN), body, { timeout: 60000 });
-  const candidate = res.data?.candidates?.[0];
-  if (!candidate) throw new Error("No candidate from image cleaning");
-
-  // Find the generated image in response
-  const parts = candidate.content?.parts || [];
-  for (const part of parts) {
-    if (part.inlineData && part.inlineData.mimeType && part.inlineData.mimeType.startsWith("image/")) {
-      return {
-        mimeType: part.inlineData.mimeType,
-        data: part.inlineData.data
-      };
-    }
-  }
-  throw new Error("No generated image in cleaning response");
-}
-
-/* ========================
-   STEP 2: ANALYZE CLEANED IMAGE
-   Extract shapes from flat 2D illustration
+   GEMINI ANALYSIS
+   Analyze photo directly — mentally flatten it
    ======================== */
 async function analyzeImage(b64, mime) {
-  const prompt = `You are an expert embroidery digitizer. Analyze this flat 2D design image.
+  const prompt = `You are an expert embroidery digitizer. I will show you a photo of a design (logo, text, artwork on fabric, packaging, etc.).
 
-Your task: identify every distinct solid-color region and return as compact JSON.
+Your task: mentally remove ALL photo artifacts and extract ONLY the underlying flat design.
 
-CRITICAL color rules:
-- Use ONLY colors actually visible in the image. Do NOT invent colors.
-- If the image has red text on white background with a gold stripe, ONLY use red, white, and gold.
-- No green, no blue, no purple unless those colors actually exist in the image.
-- Match the hex color as precisely as possible.
+IMPORTANT — ignore these photo artifacts:
+- Shadows, highlights, reflections, glare
+- Fabric texture, wrinkles, folds
+- 3D depth, lighting gradients
+- Photo noise, blur, camera distortion
+- Background clutter not part of the design
 
-Return compact JSON (no spaces, no newlines, no markdown):
+What to extract:
+- The actual design colors (red text, white background, gold stripe, etc.)
+- Every distinct flat-color region as a separate shape
+- Text elements as individual shapes
+- Borders, stripes, logos as separate shapes
+
+Return ONLY compact JSON (no spaces, no markdown, no commentary):
 {"shapes":[{"type":"fill","color":"#RRGGBB","x":0,"y":0,"width":100,"height":100}],"width":300,"height":300}
 
-Type rules:
-- "fill" = broad solid areas (backgrounds, large logos)
-- "satin" = narrow borders, stripes, letter strokes 2-8 units wide
-- "running" = thin outlines, tiny details, text serifs under 4 units
+CRITICAL color rules:
+- Use ONLY colors that exist in the actual DESIGN, not photo artifacts
+- The background of the design is a shape too
+- Match colors precisely — red should be red, not pink or orange
+- Do NOT invent colors that are not in the design
 
-Extract rules:
-- Create 10 to 20 shapes covering ALL visible elements
-- Background = one large fill shape
-- Each text element or letter group = separate shape(s)
-- Each stripe or border = separate satin shape
-- Small details = running shapes
-- Coordinates in stitch units, canvas 300x300 max
-- Every shape must use a color actually present in the image`;
+Shape rules:
+- "fill" = broad solid areas (backgrounds, large text blocks, logos)
+- "satin" = narrow borders, stripes, thin strokes 2-8 units wide
+- "running" = tiny details, text serifs, outlines under 4 units
+- Create 12 to 25 shapes covering ALL design elements
+- Minimum shape 3x3 units. Canvas 300x300 max.
+- Each distinct color region = separate shape`;
 
   const body = {
     contents: [{
@@ -106,7 +61,7 @@ Extract rules:
     generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
   };
 
-  const res = await axios.post(API_URL(MODEL_ANALYZE), body, { timeout: 60000 });
+  const res = await axios.post(API_URL, body, { timeout: 60000 });
   const candidate = res.data?.candidates?.[0];
   if (!candidate) throw new Error("Gemini returned no candidate");
 
@@ -125,7 +80,6 @@ Extract rules:
   try {
     analysis = JSON.parse(jsonStr);
   } catch (parseErr) {
-    // Try repair
     const repaired = repairJSON(jsonStr);
     analysis = JSON.parse(repaired);
   }
@@ -137,7 +91,6 @@ Extract rules:
   return analysis;
 }
 
-/* Try to repair truncated JSON */
 function repairJSON(str) {
   let openBraces = 0, openBrackets = 0, inString = false, escaped = false;
   for (const ch of str) {
@@ -338,31 +291,6 @@ function encodeFile(format, data) {
 app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
-// Step 1: Clean the photo
-app.post("/clean-photo", upload.single("image"), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: "No image" });
-    const b64 = req.file.buffer.toString("base64");
-    const mime = req.file.mimetype;
-
-    const cleaned = await cleanPhoto(b64, mime);
-
-    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    jobs.set(id + "_clean", cleaned);
-
-    return res.json({
-      success: true,
-      id,
-      cleanedImage: `data:${cleaned.mimeType};base64,${cleaned.data}`,
-      mimeType: cleaned.mimeType
-    });
-  } catch (e) {
-    console.error("/clean-photo error:", e.message);
-    return res.status(500).json({ error: "Photo cleaning failed: " + e.message });
-  }
-});
-
-// Step 2: Generate stitches from cleaned image
 app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
@@ -393,7 +321,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     });
   } catch (e) {
     console.error("/generate-embroidery error:", e.message);
-    return res.status(500).json({ error: "Stitch generation failed: " + e.message });
+    return res.status(500).json({ error: "Analysis failed: " + e.message });
   }
 });
 
