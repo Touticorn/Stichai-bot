@@ -751,18 +751,7 @@ async function processWebJob(jobId, file, settings, phone) {
   }
 }
 
-app.post("/generate-embroidery", async (req, res) => {
-  const { analysis } = req.body;
-  res.json({
-    stitch_count: analysis?.stitch_count || 5000,
-    dst_url: null,
-    pes_url: null,
-    jef_url: null,
-    exp_url: null,
-    vp3_url: null,
-    note: "Stub endpoint - implement actual embroidery generation"
-  });
-});
+
 
 // ============================================================
 // BOOT
