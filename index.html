@@ -40,16 +40,11 @@
   .btn-secondary { background: #16213e; }
   .btn-secondary:hover { background: #0f1a30; }
   .preview-wrap {
-    position: relative; width: 100%; max-width: 600px; margin: 0 auto;
-    background: repeating-linear-gradient(45deg, #e8e4da 0, #e8e4da 2px, #f5f0e8 2px, #f5f0e8 8px);
+    position: relative; width: 100%; background: #fff;
     border: 1px solid #d4cfc5; border-radius: 12px; overflow: hidden;
   }
-  .photo-wrap {
-    position: relative; width: 100%; max-width: 600px; margin: 0 auto;
-    border: 1px solid #d4cfc5; border-radius: 12px; overflow: hidden;
-    background: #fff;
-  }
-  .photo-wrap img { display: block; width: 100%; height: auto; }
+  .preview-wrap img { display: block; width: 100%; height: auto; }
+  canvas { display: block; width: 100%; height: auto; }
   .compare-grid {
     display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
   }
@@ -61,7 +56,6 @@
     text-transform: uppercase; letter-spacing: 0.5px;
     margin-bottom: 6px;
   }
-  canvas { display: block; width: 100%; height: auto; }
   .controls {
     display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 16px;
   }
@@ -80,6 +74,11 @@
   }
   .chip span { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
   .error { color: #c0392b; background: #fdecea; padding: 12px; border-radius: 8px; margin-top: 12px; }
+  .stage-label {
+    font-size: 11px; font-weight: 700; color: #999;
+    text-transform: uppercase; letter-spacing: 1px;
+    margin-bottom: 12px;
+  }
 </style>
 </head>
 <body>
@@ -89,35 +88,50 @@
 </header>
 
 <div class="container">
-  <!-- Upload -->
-  <div class="card">
+  <!-- Stage 1: Upload -->
+  <div class="card" id="uploadCard">
+    <div class="stage-label">Step 1: Upload your photo</div>
     <div class="dropzone" id="dropzone">
       <input type="file" id="fileInput" accept="image/*">
       <p><strong>Drop a photo here</strong> or click to choose</p>
       <p class="meta">JPG, PNG — max 10 MB</p>
     </div>
     <div style="text-align:center; margin-top:16px;">
-      <button class="btn" id="generateBtn" disabled>Generate stitches</button>
+      <button class="btn" id="cleanBtn" disabled>Clean & simplify photo</button>
     </div>
     <div id="status"></div>
   </div>
 
-  <!-- Original Photo (shown after upload) -->
-  <div class="card" id="photoCard" style="display:none;">
-    <div class="compare-label">Original Photo</div>
-    <div class="photo-wrap">
-      <img id="originalImg" alt="Original upload" />
+  <!-- Stage 2: Cleaned 2D photo -->
+  <div class="card" id="cleanCard" style="display:none;">
+    <div class="stage-label">Step 2: Review simplified 2D version</div>
+    <div class="compare-grid">
+      <div>
+        <div class="compare-label">Original Photo</div>
+        <div class="preview-wrap">
+          <img id="originalImg" alt="Original" />
+        </div>
+      </div>
+      <div>
+        <div class="compare-label">Simplified 2D (for embroidery)</div>
+        <div class="preview-wrap">
+          <img id="cleanedImg" alt="Cleaned" />
+        </div>
+      </div>
+    </div>
+    <div style="text-align:center; margin-top:16px;">
+      <button class="btn" id="generateBtn">Generate stitches from 2D version</button>
     </div>
   </div>
 
-  <!-- Preview -->
+  <!-- Stage 3: Stitch Preview -->
   <div class="card" id="resultCard" style="display:none;">
-    <h3 style="margin-top:0;">Results</h3>
+    <div class="stage-label">Step 3: Stitch preview & download</div>
     <div class="compare-grid">
       <div>
-        <div class="compare-label">Original</div>
-        <div class="photo-wrap">
-          <img id="resultOriginalImg" alt="Original" />
+        <div class="compare-label">2D Reference</div>
+        <div class="preview-wrap">
+          <img id="resultCleanedImg" alt="Cleaned" />
         </div>
       </div>
       <div>
@@ -145,19 +159,26 @@
 <script>
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('fileInput');
+  const cleanBtn = document.getElementById('cleanBtn');
   const generateBtn = document.getElementById('generateBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
   const statusEl = document.getElementById('status');
+  const uploadCard = document.getElementById('uploadCard');
+  const cleanCard = document.getElementById('cleanCard');
   const resultCard = document.getElementById('resultCard');
+  const originalImg = document.getElementById('originalImg');
+  const cleanedImg = document.getElementById('cleanedImg');
+  const resultCleanedImg = document.getElementById('resultCleanedImg');
   const canvas = document.getElementById('stitchCanvas');
   const ctx = canvas.getContext('2d');
   const shapesEl = document.getElementById('shapes');
   const formatSel = document.getElementById('formatSel');
-  const downloadBtn = document.getElementById('downloadBtn');
   const metaEl = document.getElementById('meta');
 
   let currentFile = null;
+  let cleanedImageDataUrl = null;
+  let cleanedImageBlob = null;
   let currentId = null;
-  let currentImageDataUrl = null;
 
   dropzone.addEventListener('click', () => fileInput.click());
   dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
@@ -170,26 +191,55 @@
 
   function handleFile(file) {
     currentFile = file;
-    generateBtn.disabled = false;
+    cleanBtn.disabled = false;
     statusEl.innerHTML = `<p style="color:#27ae60;">Ready: <strong>${file.name}</strong></p>`;
-
-    // Show original photo preview immediately
-    const reader = new FileReader();
-    reader.onload = e => {
-      currentImageDataUrl = e.target.result;
-      document.getElementById('originalImg').src = currentImageDataUrl;
-      document.getElementById('photoCard').style.display = 'block';
-    };
-    reader.readAsDataURL(file);
   }
 
-  generateBtn.addEventListener('click', async () => {
+  // Step 1: Clean the photo
+  cleanBtn.addEventListener('click', async () => {
     if (!currentFile) return;
-    generateBtn.disabled = true;
-    statusEl.innerHTML = '<p>Analyzing image and generating stitches…</p>';
+    cleanBtn.disabled = true;
+    statusEl.innerHTML = '<p>Cleaning photo — removing shadows, reflections, converting to flat 2D…</p>';
 
     const form = new FormData();
     form.append('image', currentFile);
+
+    try {
+      const res = await fetch('/clean-photo', { method: 'POST', body: form });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Server error');
+
+      cleanedImageDataUrl = data.cleanedImage;
+
+      // Convert data URL to blob for later upload
+      const blobRes = await fetch(cleanedImageDataUrl);
+      cleanedImageBlob = await blobRes.blob();
+
+      // Show both images
+      const originalReader = new FileReader();
+      originalReader.onload = e => {
+        originalImg.src = e.target.result;
+      };
+      originalReader.readAsDataURL(currentFile);
+
+      cleanedImg.src = cleanedImageDataUrl;
+
+      cleanCard.style.display = 'block';
+      statusEl.innerHTML = '<p style="color:#27ae60;">Photo cleaned! Review the simplified 2D version below.</p>';
+    } catch (e) {
+      statusEl.innerHTML = `<div class="error">${e.message}</div>`;
+      cleanBtn.disabled = false;
+    }
+  });
+
+  // Step 2: Generate stitches from cleaned image
+  generateBtn.addEventListener('click', async () => {
+    if (!cleanedImageBlob) return;
+    generateBtn.disabled = true;
+    statusEl.innerHTML = '<p>Analyzing 2D image and generating stitches…</p>';
+
+    const form = new FormData();
+    form.append('image', cleanedImageBlob, 'cleaned.png');
 
     try {
       const res = await fetch('/generate-embroidery', { method: 'POST', body: form });
@@ -199,10 +249,8 @@
       currentId = data.id;
       metaEl.textContent = `${data.stitchCount.toLocaleString()} stitches · Design ${data.designSize.w}×${data.designSize.h} units`;
 
-      // Show original in result card too
-      if (currentImageDataUrl) {
-        document.getElementById('resultOriginalImg').src = currentImageDataUrl;
-      }
+      // Show 2D ref in result
+      resultCleanedImg.src = cleanedImageDataUrl;
 
       // Build color chips
       shapesEl.innerHTML = '';
@@ -222,7 +270,7 @@
       renderCanvas(pData);
 
       resultCard.style.display = 'block';
-      statusEl.innerHTML = '<p style="color:#27ae60;">Done! Preview below.</p>';
+      statusEl.innerHTML = '<p style="color:#27ae60;">Done! Compare the 2D reference with the stitch preview.</p>';
     } catch (e) {
       statusEl.innerHTML = `<div class="error">${e.message}</div>`;
       generateBtn.disabled = false;
@@ -255,11 +303,10 @@
     const offX = (W - designW * scale) / 2;
     const offY = (H - designH * scale) / 2;
 
-    // Helper to transform coordinates
     const tx = x => offX + x * scale;
     const ty = y => offY + y * scale;
 
-    // Draw shapes as filled regions (35% opacity)
+    // Draw shapes as filled regions
     for (const s of shapes || []) {
       ctx.fillStyle = s.color || '#888';
       ctx.globalAlpha = 0.35;

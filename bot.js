@@ -7,28 +7,29 @@ const app = express();
 
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MODEL = "gemini-3-flash-preview";
+const MODEL_ANALYZE = "gemini-3-flash-preview";
+const MODEL_CLEAN = "gemini-2.0-flash-exp";
 const API_URL = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
 
 const jobs = new Map();
 
 /* ========================
-   GEMINI SHAPE ANALYSIS
+   STEP 1: CLEAN PHOTO
+   Convert real photo to flat 2D illustration
    ======================== */
-async function analyzeImage(b64, mime) {
-  const prompt = `
-You are an expert embroidery digitizer. Analyze this image and extract distinct flat-color regions.
+async function cleanPhoto(b64, mime) {
+  const prompt = `Convert this photo into a flat 2D vector-style illustration suitable for embroidery digitization.
 
-Return ONLY compact JSON. No markdown, no spaces, no newlines, no commentary:
-{"shapes":[{"type":"fill","color":"#RRGGBB","x":0,"y":0,"width":100,"height":100},{"type":"satin","color":"#RRGGBB","x":10,"y":10,"width":30,"height":5}],"width":300,"height":300}
-
-Rules:
-- Create 10 to 20 shapes. Extract every distinct color region: letters, stripes, spots, highlights, borders.
-- "fill" = solid areas. "satin" = narrow borders/stripes. "running" = thin outlines/text.
-- Min shape size 3x3. Max 300x300 canvas. Coordinates in stitch units.
-- Match original image colors precisely.
-- Keep JSON compact — no spaces, no labels, no extra fields.
-`;
+Requirements:
+- Remove all shadows, reflections, gradients, and 3D depth
+- Remove photo noise, wrinkles, fabric texture, and lighting effects
+- Convert to solid flat colors only — no shading
+- Keep all text crisp and readable as flat shapes
+- Keep the perspective as front-facing 2D
+- Output as a clean illustration with distinct color regions
+- Use the exact same colors as the original design, just flattened
+- Background should be transparent or single solid color
+- This is for machine embroidery — every color must be a distinct flat region`;
 
   const body = {
     contents: [{
@@ -38,25 +39,82 @@ Rules:
         { inlineData: { mimeType: mime, data: b64 } }
       ]
     }],
-    generationConfig: { temperature: 0.15, maxOutputTokens: 8192 }
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 4096,
+      responseModalities: ["TEXT", "IMAGE"]
+    }
   };
 
-  const res = await axios.post(API_URL(MODEL), body, { timeout: 60000 });
-
+  const res = await axios.post(API_URL(MODEL_CLEAN), body, { timeout: 60000 });
   const candidate = res.data?.candidates?.[0];
-  if (!candidate) {
-    throw new Error("Gemini returned no candidate.");
+  if (!candidate) throw new Error("No candidate from image cleaning");
+
+  // Find the generated image in response
+  const parts = candidate.content?.parts || [];
+  for (const part of parts) {
+    if (part.inlineData && part.inlineData.mimeType && part.inlineData.mimeType.startsWith("image/")) {
+      return {
+        mimeType: part.inlineData.mimeType,
+        data: part.inlineData.data
+      };
+    }
   }
+  throw new Error("No generated image in cleaning response");
+}
+
+/* ========================
+   STEP 2: ANALYZE CLEANED IMAGE
+   Extract shapes from flat 2D illustration
+   ======================== */
+async function analyzeImage(b64, mime) {
+  const prompt = `You are an expert embroidery digitizer. Analyze this flat 2D design image.
+
+Your task: identify every distinct solid-color region and return as compact JSON.
+
+CRITICAL color rules:
+- Use ONLY colors actually visible in the image. Do NOT invent colors.
+- If the image has red text on white background with a gold stripe, ONLY use red, white, and gold.
+- No green, no blue, no purple unless those colors actually exist in the image.
+- Match the hex color as precisely as possible.
+
+Return compact JSON (no spaces, no newlines, no markdown):
+{"shapes":[{"type":"fill","color":"#RRGGBB","x":0,"y":0,"width":100,"height":100}],"width":300,"height":300}
+
+Type rules:
+- "fill" = broad solid areas (backgrounds, large logos)
+- "satin" = narrow borders, stripes, letter strokes 2-8 units wide
+- "running" = thin outlines, tiny details, text serifs under 4 units
+
+Extract rules:
+- Create 10 to 20 shapes covering ALL visible elements
+- Background = one large fill shape
+- Each text element or letter group = separate shape(s)
+- Each stripe or border = separate satin shape
+- Small details = running shapes
+- Coordinates in stitch units, canvas 300x300 max
+- Every shape must use a color actually present in the image`;
+
+  const body = {
+    contents: [{
+      role: "user",
+      parts: [
+        { text: prompt },
+        { inlineData: { mimeType: mime, data: b64 } }
+      ]
+    }],
+    generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
+  };
+
+  const res = await axios.post(API_URL(MODEL_ANALYZE), body, { timeout: 60000 });
+  const candidate = res.data?.candidates?.[0];
+  if (!candidate) throw new Error("Gemini returned no candidate");
 
   const text = candidate.content?.parts?.[0]?.text || "";
-  if (!text) {
-    throw new Error("Gemini returned empty text.");
-  }
+  if (!text) throw new Error("Gemini returned empty text");
 
-  // Extract JSON from markdown code blocks if present
+  // Extract JSON
   let jsonStr = text.replace(/```json|```/g, "").trim();
-
-  // Try to find the outermost JSON object if text has extra fluff
   const firstBrace = jsonStr.indexOf("{");
   const lastBrace = jsonStr.lastIndexOf("}");
   if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
@@ -67,44 +125,21 @@ Rules:
   try {
     analysis = JSON.parse(jsonStr);
   } catch (parseErr) {
-    console.error("JSON parse failed, attempting repair. Raw text:", text.slice(0, 800));
-    console.error("Extracted JSON:", jsonStr.slice(0, 800));
-    try {
-      const repaired = repairJSON(jsonStr);
-      console.error("Repaired JSON:", repaired.slice(0, 800));
-      analysis = JSON.parse(repaired);
-      console.log("JSON repair succeeded!");
-    } catch (repairErr) {
-      console.error("JSON repair also failed:", repairErr.message);
-      throw new Error("Failed to parse Gemini response: " + parseErr.message);
-    }
+    // Try repair
+    const repaired = repairJSON(jsonStr);
+    analysis = JSON.parse(repaired);
   }
 
-  // Validate minimal structure
   if (!analysis.shapes || !Array.isArray(analysis.shapes)) {
-    console.error("Invalid analysis shape. Response:", JSON.stringify(analysis).slice(0, 500));
-    throw new Error("Gemini response missing shapes array.");
+    throw new Error("Missing shapes array");
   }
 
   return analysis;
 }
 
-/* ========================
-   STITCH GENERATION ENGINE
-   ======================== */
-
-function toThreadColor(hex) {
-  const m = hex.match(/^#([0-9a-fA-F]{6})$/);
-  return m ? `#${m[1].toUpperCase()}` : "#FF0066";
-}
-
-/* Try to repair truncated JSON by adding missing closers */
+/* Try to repair truncated JSON */
 function repairJSON(str) {
-  let openBraces = 0;
-  let openBrackets = 0;
-  let inString = false;
-  let escaped = false;
-
+  let openBraces = 0, openBrackets = 0, inString = false, escaped = false;
   for (const ch of str) {
     if (escaped) { escaped = false; continue; }
     if (ch === '\\') { escaped = true; continue; }
@@ -115,32 +150,32 @@ function repairJSON(str) {
     if (ch === '[') openBrackets++;
     if (ch === ']') openBrackets--;
   }
-
   let repaired = str;
-  // Close any unclosed objects inside shapes array first
   if (openBraces > 0) {
-    // Check if we're mid-object (no closing brace for last shape)
     const trimmed = repaired.trim();
     const lastChar = trimmed[trimmed.length - 1];
-    if (lastChar !== '}' && lastChar !== ']') {
-      repaired += '"dummy":0}';
-    }
+    if (lastChar !== '}' && lastChar !== ']') repaired += '"d":0}';
     for (let i = 0; i < openBraces; i++) repaired += '}';
   }
   for (let i = 0; i < openBrackets; i++) repaired += ']';
   return repaired;
 }
 
-/* Underlay — sparse diagonal 45° base layer for stabilization */
+/* ========================
+   STITCH GENERATION ENGINE
+   ======================== */
+function toThreadColor(hex) {
+  const m = hex.match(/^#([0-9a-fA-F]{6})$/);
+  return m ? `#${m[1].toUpperCase()}` : "#FF0066";
+}
+
 function underlay(x, y, w, h, color) {
   const stitches = [];
   const spacing = 5;
   const len = Math.max(w, h) * 1.5;
   for (let i = -len; i < len; i += spacing) {
-    const sx = x + i;
-    const sy = y - i;
-    const ex = sx + len * 0.7;
-    const ey = sy + len * 0.7;
+    const sx = x + i, sy = y - i;
+    const ex = sx + len * 0.7, ey = sy + len * 0.7;
     if (ex > x + w || ey > y + h) continue;
     if (sx < x || sy < y) continue;
     stitches.push({ x: Math.round(sx), y: Math.round(sy), color, type: "underlay" });
@@ -149,7 +184,6 @@ function underlay(x, y, w, h, color) {
   return stitches;
 }
 
-/* Contour fill — spiral inward serpentine rows */
 function contourFill(x, y, w, h, color) {
   const stitches = [];
   const stitchLen = 2.0;
@@ -178,14 +212,12 @@ function contourFill(x, y, w, h, color) {
   return stitches;
 }
 
-/* Satin stitch — zigzag along a narrow shape */
 function satinStitch(x, y, w, h, color) {
   const stitches = [];
   const step = 1.5;
   const isHorizontal = w >= h;
   if (isHorizontal) {
-    const topY = y;
-    const botY = y + h;
+    const topY = y, botY = y + h;
     const steps = Math.max(2, Math.floor(w / step));
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
@@ -194,8 +226,7 @@ function satinStitch(x, y, w, h, color) {
       stitches.push({ x: Math.round(px), y: Math.round(py), color, type: "satin" });
     }
   } else {
-    const leftX = x;
-    const rightX = x + w;
+    const leftX = x, rightX = x + w;
     const steps = Math.max(2, Math.floor(h / step));
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
@@ -207,7 +238,6 @@ function satinStitch(x, y, w, h, color) {
   return stitches;
 }
 
-/* Running stitch — dashed outline around perimeter */
 function runningStitch(x, y, w, h, color) {
   const stitches = [];
   const dash = 2.0;
@@ -216,27 +246,15 @@ function runningStitch(x, y, w, h, color) {
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
     let px, py;
-    if (t < 0.25) {
-      const lt = t / 0.25;
-      px = x + w * lt; py = y;
-    } else if (t < 0.5) {
-      const lt = (t - 0.25) / 0.25;
-      px = x + w; py = y + h * lt;
-    } else if (t < 0.75) {
-      const lt = (t - 0.5) / 0.25;
-      px = x + w * (1 - lt); py = y + h;
-    } else {
-      const lt = (t - 0.75) / 0.25;
-      px = x; py = y + h * (1 - lt);
-    }
+    if (t < 0.25) { const lt = t / 0.25; px = x + w * lt; py = y; }
+    else if (t < 0.5) { const lt = (t - 0.25) / 0.25; px = x + w; py = y + h * lt; }
+    else if (t < 0.75) { const lt = (t - 0.5) / 0.25; px = x + w * (1 - lt); py = y + h; }
+    else { const lt = (t - 0.75) / 0.25; px = x; py = y + h * (1 - lt); }
     stitches.push({ x: Math.round(px), y: Math.round(py), color, type: "running" });
   }
   return stitches;
 }
 
-/* ========================
-   MAIN STITCH PIPELINE
-   ======================== */
 function generateStitches(analysis) {
   let all = [];
   const shapes = analysis.shapes || [];
@@ -244,10 +262,8 @@ function generateStitches(analysis) {
   const designH = analysis.height || 300;
 
   for (const s of shapes) {
-    const x = s.x || 0;
-    const y = s.y || 0;
-    const w = s.width || 30;
-    const h = s.height || 30;
+    const x = s.x || 0, y = s.y || 0;
+    const w = s.width || 30, h = s.height || 30;
     const color = toThreadColor(s.color || "#FF0066");
     const type = s.type || "fill";
 
@@ -263,9 +279,7 @@ function generateStitches(analysis) {
     }
   }
 
-  /* Global bounding box outline for stability */
   all = all.concat(runningStitch(-2, -2, designW + 4, designH + 4, "#333333"));
-
   return { stitches: all, designW, designH, shapes };
 }
 
@@ -290,51 +304,22 @@ function encodeDST(data) {
 
     const dx = Math.round(s.x - prevX);
     const dy = Math.round(s.y - prevY);
-    prevX = s.x;
-    prevY = s.y;
+    prevX = s.x; prevY = s.y;
 
     const clamp = (v) => Math.max(-121, Math.min(121, v));
-    const cdx = clamp(dx);
-    const cdy = clamp(dy);
-
+    const cdx = clamp(dx), cdy = clamp(dy);
     const b1 = cdy >= 0 ? cdy : 0x100 + cdy;
     const b2 = cdx >= 0 ? cdx : 0x100 + cdx;
     stitchRecords.push(Buffer.from([b1, b2, 0x03]));
   }
-
   stitchRecords.push(Buffer.from([0x00, 0x00, 0xF3]));
-
   return Buffer.concat([header, ...stitchRecords]);
 }
 
-/* PES is proprietary; we embed a minimal placeholder that many viewers tolerate */
-function encodePES(data) {
-  const dst = encodeDST(data);
-  const pesHeader = Buffer.alloc(8);
-  pesHeader.write("#PES0001", 0, "ascii");
-  return Buffer.concat([pesHeader, dst]);
-}
-
-function encodeJEF(data) {
-  const dst = encodeDST(data);
-  const jefHeader = Buffer.alloc(8);
-  jefHeader.write("JEF0001\x00", 0, "ascii");
-  return Buffer.concat([jefHeader, dst]);
-}
-
-function encodeEXP(data) {
-  const dst = encodeDST(data);
-  const expHeader = Buffer.alloc(8);
-  expHeader.write("EXP0001\x00", 0, "ascii");
-  return Buffer.concat([expHeader, dst]);
-}
-
-function encodeVP3(data) {
-  const dst = encodeDST(data);
-  const vp3Header = Buffer.alloc(8);
-  vp3Header.write("VP30001\x00", 0, "ascii");
-  return Buffer.concat([vp3Header, dst]);
-}
+function encodePES(data) { const dst = encodeDST(data); const h = Buffer.alloc(8); h.write("#PES0001", 0, "ascii"); return Buffer.concat([h, dst]); }
+function encodeJEF(data) { const dst = encodeDST(data); const h = Buffer.alloc(8); h.write("JEF0001\x00", 0, "ascii"); return Buffer.concat([h, dst]); }
+function encodeEXP(data) { const dst = encodeDST(data); const h = Buffer.alloc(8); h.write("EXP0001\x00", 0, "ascii"); return Buffer.concat([h, dst]); }
+function encodeVP3(data) { const dst = encodeDST(data); const h = Buffer.alloc(8); h.write("VP30001\x00", 0, "ascii"); return Buffer.concat([h, dst]); }
 
 function encodeFile(format, data) {
   switch (format.toLowerCase()) {
@@ -353,46 +338,39 @@ function encodeFile(format, data) {
 app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
+// Step 1: Clean the photo
+app.post("/clean-photo", upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No image" });
+    const b64 = req.file.buffer.toString("base64");
+    const mime = req.file.mimetype;
+
+    const cleaned = await cleanPhoto(b64, mime);
+
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    jobs.set(id + "_clean", cleaned);
+
+    return res.json({
+      success: true,
+      id,
+      cleanedImage: `data:${cleaned.mimeType};base64,${cleaned.data}`,
+      mimeType: cleaned.mimeType
+    });
+  } catch (e) {
+    console.error("/clean-photo error:", e.message);
+    return res.status(500).json({ error: "Photo cleaning failed: " + e.message });
+  }
+});
+
+// Step 2: Generate stitches from cleaned image
 app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
     const b64 = req.file.buffer.toString("base64");
     const mime = req.file.mimetype;
 
-    let analysis;
-    try {
-      analysis = await analyzeImage(b64, mime);
-    } catch (aiErr) {
-      console.error("Gemini analysis failed, using fallback shapes:", aiErr.message);
-      analysis = {
-        shapes: [
-          { type: "fill", color: "#1a237e", x: 20, y: 20, width: 260, height: 260 },
-          { type: "fill", color: "#e53935", x: 60, y: 60, width: 60, height: 60 },
-          { type: "fill", color: "#fdd835", x: 140, y: 60, width: 60, height: 60 },
-          { type: "fill", color: "#43a047", x: 220, y: 60, width: 60, height: 60 },
-          { type: "fill", color: "#e53935", x: 60, y: 140, width: 60, height: 60 },
-          { type: "fill", color: "#fdd835", x: 140, y: 140, width: 60, height: 60 },
-          { type: "fill", color: "#43a047", x: 220, y: 140, width: 60, height: 60 },
-          { type: "fill", color: "#e53935", x: 60, y: 220, width: 60, height: 60 },
-          { type: "fill", color: "#fdd835", x: 140, y: 220, width: 60, height: 60 },
-          { type: "fill", color: "#43a047", x: 220, y: 220, width: 60, height: 60 },
-          { type: "running", color: "#ffffff", x: 80, y: 80, width: 20, height: 180 },
-          { type: "running", color: "#ffffff", x: 160, y: 80, width: 20, height: 180 },
-          { type: "running", color: "#ffffff", x: 240, y: 80, width: 20, height: 180 }
-        ],
-        width: 300,
-        height: 300,
-        estimated_stitch_count: 5000
-      };
-    }
-
-    let result;
-    try {
-      result = generateStitches(analysis);
-    } catch (stitchErr) {
-      console.error("Stitch generation failed:", stitchErr.message);
-      return res.status(500).json({ error: "Stitch generation failed: " + stitchErr.message });
-    }
+    const analysis = await analyzeImage(b64, mime);
+    const result = generateStitches(analysis);
 
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     jobs.set(id, result);
@@ -410,25 +388,19 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
         x: s.x,
         y: s.y,
         width: s.width,
-        height: s.height,
-        label: s.label || ""
+        height: s.height
       }))
     });
   } catch (e) {
-    console.error("/generate-embroidery fatal error:", e.message);
-    return res.status(500).json({ error: "Server error: " + e.message });
+    console.error("/generate-embroidery error:", e.message);
+    return res.status(500).json({ error: "Stitch generation failed: " + e.message });
   }
 });
 
 app.get("/preview/:id", (req, res) => {
   const data = jobs.get(req.params.id);
   if (!data) return res.status(404).json({ error: "Not found" });
-  return res.json({
-    stitches: data.stitches,
-    designW: data.designW,
-    designH: data.designH,
-    shapes: data.shapes
-  });
+  return res.json({ stitches: data.stitches, designW: data.designW, designH: data.designH, shapes: data.shapes });
 });
 
 app.get("/download/:id/:format", (req, res) => {
