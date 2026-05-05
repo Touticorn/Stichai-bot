@@ -44,6 +44,23 @@
     background: repeating-linear-gradient(45deg, #e8e4da 0, #e8e4da 2px, #f5f0e8 2px, #f5f0e8 8px);
     border: 1px solid #d4cfc5; border-radius: 12px; overflow: hidden;
   }
+  .photo-wrap {
+    position: relative; width: 100%; max-width: 600px; margin: 0 auto;
+    border: 1px solid #d4cfc5; border-radius: 12px; overflow: hidden;
+    background: #fff;
+  }
+  .photo-wrap img { display: block; width: 100%; height: auto; }
+  .compare-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  @media (max-width: 640px) {
+    .compare-grid { grid-template-columns: 1fr; }
+  }
+  .compare-label {
+    font-size: 12px; font-weight: 600; color: #666;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
   canvas { display: block; width: 100%; height: auto; }
   .controls {
     display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 16px;
@@ -85,11 +102,30 @@
     <div id="status"></div>
   </div>
 
+  <!-- Original Photo (shown after upload) -->
+  <div class="card" id="photoCard" style="display:none;">
+    <div class="compare-label">Original Photo</div>
+    <div class="photo-wrap">
+      <img id="originalImg" alt="Original upload" />
+    </div>
+  </div>
+
   <!-- Preview -->
   <div class="card" id="resultCard" style="display:none;">
-    <h3 style="margin-top:0;">Stitch Preview</h3>
-    <div class="preview-wrap">
-      <canvas id="stitchCanvas" width="800" height="800"></canvas>
+    <h3 style="margin-top:0;">Results</h3>
+    <div class="compare-grid">
+      <div>
+        <div class="compare-label">Original</div>
+        <div class="photo-wrap">
+          <img id="resultOriginalImg" alt="Original" />
+        </div>
+      </div>
+      <div>
+        <div class="compare-label">Stitch Preview</div>
+        <div class="preview-wrap">
+          <canvas id="stitchCanvas" width="800" height="800"></canvas>
+        </div>
+      </div>
     </div>
     <div class="shapes" id="shapes"></div>
     <div class="controls">
@@ -121,6 +157,7 @@
 
   let currentFile = null;
   let currentId = null;
+  let currentImageDataUrl = null;
 
   dropzone.addEventListener('click', () => fileInput.click());
   dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
@@ -135,6 +172,15 @@
     currentFile = file;
     generateBtn.disabled = false;
     statusEl.innerHTML = `<p style="color:#27ae60;">Ready: <strong>${file.name}</strong></p>`;
+
+    // Show original photo preview immediately
+    const reader = new FileReader();
+    reader.onload = e => {
+      currentImageDataUrl = e.target.result;
+      document.getElementById('originalImg').src = currentImageDataUrl;
+      document.getElementById('photoCard').style.display = 'block';
+    };
+    reader.readAsDataURL(file);
   }
 
   generateBtn.addEventListener('click', async () => {
@@ -152,6 +198,11 @@
 
       currentId = data.id;
       metaEl.textContent = `${data.stitchCount.toLocaleString()} stitches · Design ${data.designSize.w}×${data.designSize.h} units`;
+
+      // Show original in result card too
+      if (currentImageDataUrl) {
+        document.getElementById('resultOriginalImg').src = currentImageDataUrl;
+      }
 
       // Build color chips
       shapesEl.innerHTML = '';
