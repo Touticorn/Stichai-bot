@@ -72,8 +72,8 @@ function ramerDouglasPeucker(points, epsilon) {
 }
 
 async function extractShapesFromImage(buffer, colors) {
-  let Jimp;
-  try { ({ Jimp } = require("jimp")); } catch { Jimp = require("jimp"); }
+  const jimpModule = require("jimp");
+  const Jimp = jimpModule.Jimp || jimpModule;
 
   const image = await Jimp.read(buffer);
   const origW = image.bitmap.width, origH = image.bitmap.height;
