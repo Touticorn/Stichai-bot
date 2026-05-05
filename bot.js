@@ -3,7 +3,6 @@
 // ========================================================================
 
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
-const qrcode = require("qrcode-terminal");
 const express = require("express");
 const axios = require("axios");
 const NodeCache = require("node-cache");
@@ -74,7 +73,6 @@ async function initBaileys() {
 
   whSocket.ev.on("creds.update", saveCreds);
   whSocket.ev.on("connection.update", ({ connection, qr }) => {
-    if (qr) { qrcode.generate(qr, { small: true }); console.log("Scan QR"); }
     if (connection === "open") console.log("WhatsApp ready");
     if (connection === "close") setTimeout(initBaileys, 5000);
   });
