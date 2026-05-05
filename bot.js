@@ -7,7 +7,6 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const qrcode = require("qrcode-terminal");
 const express = require("express");
 const axios = require("axios");
-const QRCode = require("qrcode");
 const NodeCache = require("node-cache");
 const FormData = require("form-data");
 const fs = require("fs");
