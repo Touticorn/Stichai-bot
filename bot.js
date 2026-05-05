@@ -38,7 +38,7 @@ Return ONLY a JSON object with this exact structure:
 }
 
 CRITICAL rules for maximum detail:
-- Create 20 to 50 shapes. Do NOT merge small details into big blobs. Every letter, eye, stripe, spot, or highlight should be its own shape.
+- Create 15 to 40 shapes. Do NOT merge small details into big blobs. Every letter, eye, stripe, spot, or highlight should be its own shape.
 - type "fill" for any solid colored area wider than 6 units.
 - type "satin" for narrow borders, stripes, or letter strokes between 2-8 units wide.
 - type "running" for hair-thin outlines, text serifs, tiny dots, or details under 4 units wide.
@@ -46,7 +46,7 @@ CRITICAL rules for maximum detail:
 - Coordinates x,y,width,height are in stitch units (1 unit ≈ 0.1mm). Keep canvas roughly 300×300 units.
 - Use exact thread colors matching the original image. Be precise with color choices.
 - Overlapping shapes are fine — embroidery is layered.
-- No extra text outside the JSON.
+- Return ONLY the JSON object. No markdown, no extra commentary.
 `;
 
   const body = {
@@ -57,13 +57,46 @@ CRITICAL rules for maximum detail:
         { inlineData: { mimeType: mime, data: b64 } }
       ]
     }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 4096 }
+    generationConfig: { temperature: 0.15, maxOutputTokens: 8192 }
   };
 
-  const res = await axios.post(API_URL(MODEL), body, { timeout: 45000 });
-  const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  const json = text.replace(/```json|```/g, "").trim();
-  const analysis = JSON.parse(json);
+  const res = await axios.post(API_URL(MODEL), body, { timeout: 60000 });
+
+  const candidate = res.data?.candidates?.[0];
+  if (!candidate) {
+    throw new Error("Gemini returned no candidate.");
+  }
+
+  const text = candidate.content?.parts?.[0]?.text || "";
+  if (!text) {
+    throw new Error("Gemini returned empty text.");
+  }
+
+  // Extract JSON from markdown code blocks if present
+  let jsonStr = text.replace(/```json|```/g, "").trim();
+
+  // Try to find the outermost JSON object if text has extra fluff
+  const firstBrace = jsonStr.indexOf("{");
+  const lastBrace = jsonStr.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+  }
+
+  let analysis;
+  try {
+    analysis = JSON.parse(jsonStr);
+  } catch (parseErr) {
+    console.error("JSON parse failed. Raw text:", text.slice(0, 500));
+    console.error("Extracted JSON:", jsonStr.slice(0, 500));
+    throw new Error("Failed to parse Gemini response: " + parseErr.message);
+  }
+
+  // Validate minimal structure
+  if (!analysis.shapes || !Array.isArray(analysis.shapes)) {
+    console.error("Invalid analysis shape. Response:", JSON.stringify(analysis).slice(0, 500));
+    throw new Error("Gemini response missing shapes array.");
+  }
+
   return analysis;
 }
 
@@ -305,8 +338,21 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     const b64 = req.file.buffer.toString("base64");
     const mime = req.file.mimetype;
 
-    const analysis = await analyzeImage(b64, mime);
-    const result = generateStitches(analysis);
+    let analysis;
+    try {
+      analysis = await analyzeImage(b64, mime);
+    } catch (aiErr) {
+      console.error("Gemini analysis failed:", aiErr.message);
+      return res.status(502).json({ error: "AI analysis failed: " + aiErr.message });
+    }
+
+    let result;
+    try {
+      result = generateStitches(analysis);
+    } catch (stitchErr) {
+      console.error("Stitch generation failed:", stitchErr.message);
+      return res.status(500).json({ error: "Stitch generation failed: " + stitchErr.message });
+    }
 
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     jobs.set(id, result);
@@ -329,8 +375,8 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
       }))
     });
   } catch (e) {
-    console.error("/generate-embroidery error:", e.message);
-    return res.status(500).json({ error: e.message });
+    console.error("/generate-embroidery fatal error:", e.message);
+    return res.status(500).json({ error: "Server error: " + e.message });
   }
 });
 
