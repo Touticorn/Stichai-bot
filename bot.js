@@ -201,9 +201,10 @@ async function extractShapesFromImage(buffer, colors) {
 
         const comp = [];
         const q = [idx];
+        let qPtr = 0;
         visited[idx] = 1;
-        while (q.length) {
-          const ci2 = q.shift();
+        while (qPtr < q.length) {
+          const ci2 = q[qPtr++];
           comp.push(ci2);
           const cx = ci2 % pw, cy = Math.floor(ci2 / pw);
           for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
@@ -249,7 +250,7 @@ async function extractShapesFromImage(buffer, colors) {
           }
           if (!found) break;
           safety++;
-        } while ((cx !== startX || cy !== startY) && safety < 32000);
+        } while ((cx !== startX || cy !== startY) && safety < 128000);
 
         if (contour.length < 4) continue;
 
