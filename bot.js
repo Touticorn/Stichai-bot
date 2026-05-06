@@ -52,8 +52,11 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
   const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
   const clean = (fb !== -1 && lb > fb) ? jsonStr.slice(fb, lb + 1) : jsonStr;
   const parsed = JSON.parse(clean);
+  const rawColors = parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"];
+  const colors = mergeSimilarColors(rawColors, 18);
+  console.log(`Gemini returned ${rawColors.length} colors, merged to ${colors.length}`);
   return {
-    colors: parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"],
+    colors,
     is_text: !!parsed.is_text,
     is_logo: !!parsed.is_logo,
   };
@@ -86,6 +89,38 @@ function colorDistanceLab(c1Lab, c2Lab) {
   const da = c1Lab.a - c2Lab.a;
   const db = c1Lab.b - c2Lab.b;
   return Math.sqrt(dl * dl + da * da + db * db);
+}
+
+/* -----------------------------------------------------------
+   COLOR MERGE: Gemini sometimes returns 8-12+ "colors" for
+   a design with only 4-5 actual thread colors. Anti-aliased
+   edge shades get detected as separate colors, fragmenting
+   the pixel tracing into hundreds of tiny shapes.
+   Merge any two colors within LAB threshold 18 back to one.
+   ----------------------------------------------------------- */
+function mergeSimilarColors(colors, threshold = 18) {
+  if (!colors || colors.length <= 4) return colors;
+  const merged = [];
+  const labs = colors.map(c => ({ hex: c, lab: rgbToLab(hexToRgb(c)) }));
+  const used = new Array(labs.length).fill(false);
+
+  for (let i = 0; i < labs.length; i++) {
+    if (used[i]) continue;
+    let cluster = labs[i];
+    for (let j = i + 1; j < labs.length; j++) {
+      if (used[j]) continue;
+      if (colorDistanceLab(cluster.lab, labs[j].lab) < threshold) {
+        used[j] = true;
+      }
+    }
+    merged.push(cluster.hex);
+  }
+
+  if (merged.length < 3 && colors.length >= 3) {
+    // Too aggressive — keep at least the 3 most distinct
+    return colors.slice(0, Math.max(3, merged.length));
+  }
+  return merged;
 }
 
 function ramerDouglasPeucker(points, epsilon) {
@@ -474,6 +509,69 @@ function encodeFile(format, data) {
 }
 
 /* ============================================================
+   2D FLAT IMAGE PREVIEW — rasterizes stitches to PNG
+   ============================================================ */
+function hexToRgbNums(hex) {
+  const m = hex.match(/^#([0-9a-fA-F]{6})$/);
+  if (!m) return [0, 0, 0];
+  return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
+}
+
+function setPixel(buf, w, h, x, y, r, g, b) {
+  const px = Math.round(x);
+  const py = Math.round(y);
+  if (px < 0 || px >= w || py < 0 || py >= h) return;
+  const idx = (py * w + px) * 4;
+  buf[idx] = r; buf[idx + 1] = g; buf[idx + 2] = b; buf[idx + 3] = 255;
+}
+
+function drawLineOnBuffer(buf, w, h, x0, y0, x1, y1, r, g, b, stroke) {
+  const dx = Math.abs(x1 - x0);
+  const dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx - dy;
+  let x = x0, y = y0;
+  const half = Math.ceil(stroke / 2);
+
+  while (true) {
+    for (let ox = -half; ox <= half; ox++) {
+      for (let oy = -half; oy <= half; oy++) {
+        setPixel(buf, w, h, x + ox, y + oy, r, g, b);
+      }
+    }
+    if (Math.abs(x - x1) < 0.5 && Math.abs(y - y1) < 0.5) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x += sx; }
+    if (e2 < dx) { err += dx; y += sy; }
+  }
+}
+
+async function renderStitchesToPng(stitches, designW, designH) {
+  const scale = 4;
+  const w = Math.round(designW * scale);
+  const h = Math.round(designH * scale);
+  const buf = Buffer.alloc(w * h * 4);
+
+  // Beige fabric background
+  for (let i = 0; i < w * h * 4; i += 4) {
+    buf[i] = 245; buf[i + 1] = 242; buf[i + 2] = 235; buf[i + 3] = 255;
+  }
+
+  let prev = null;
+  for (const s of stitches) {
+    if (prev && prev.color === s.color) {
+      const [cr, cg, cb] = hexToRgbNums(s.color);
+      const sw = s.type === 'satin' ? 1.5 : (s.type === 'underlay' ? 0.5 : 1.0);
+      drawLineOnBuffer(buf, w, h, prev.x * scale, prev.y * scale, s.x * scale, s.y * scale, cr, cg, cb, sw);
+    }
+    prev = s;
+  }
+
+  return await sharp(buf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
+}
+
+/* ============================================================
    EXPRESS ROUTES
    ============================================================ */
 app.use(express.static(path.join(__dirname, "public")));
@@ -520,6 +618,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
       success: true,
       id,
       previewUrl: `/preview/${id}`,
+      previewImageUrl: `/preview-image/${id}`,
       downloadUrl: `/download/${id}/dst`,
       stitchCount: result.stitches.length,
       designSize: { w: result.designW, h: result.designH },
@@ -549,7 +648,21 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "6.1" }));
+app.get("/preview-image/:id", async (req, res) => {
+  const data = jobs.get(req.params.id);
+  if (!data) return res.status(404).json({ error: "Not found" });
+  try {
+    const png = await renderStitchesToPng(data.stitches, data.designW, data.designH);
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.send(png);
+  } catch (e) {
+    console.error("Preview image error:", e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "7.1" }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Stichai v6.1 running on port ${PORT}`));
