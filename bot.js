@@ -219,7 +219,7 @@ function getComponentBounds(comp, pw, padding = 0.1) {
   return { minX: Math.max(0, minX - padX), minY: Math.max(0, minY - padY), maxX, maxY, w, h, pw, padX, padY };
 }
 
-async function extractShapesFromImage(buffer, colors) {
+async function extractShapesFromImage(buffer, colors, isText = false) {
   const jimpModule = require("jimp");
   const Jimp = jimpModule.Jimp || jimpModule;
 
@@ -315,7 +315,7 @@ async function extractShapesFromImage(buffer, colors) {
         // Too small to upscale or too large for detail mode — use normal path
         const simplified = ramerDouglasPeucker(contour, 0.25);
         const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
-        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes);
+        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText);
         continue;
       }
 
@@ -353,12 +353,12 @@ async function extractShapesFromImage(buffer, colors) {
           Math.round(((px / 4 + b.minX - b.padX) * stitchScale)),
           Math.round(((py / 4 + b.minY - b.padY) * stitchScale))
         ]);
-        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes);
+        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText);
       } else {
         // Fallback to normal trace
         const simplified = ramerDouglasPeucker(contour, 0.25);
         const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
-        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes);
+        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText);
       }
     } else {
       // NORMAL MODE: standard resolution, same epsilon as original (0.25)
@@ -378,7 +378,7 @@ async function extractShapesFromImage(buffer, colors) {
   return ordered;
 }
 
-function finalizeShape(points, color, pixelCount, stitchScale, shapes) {
+function finalizeShape(points, color, pixelCount, stitchScale, shapes, isText = false) {
   // Close polygon
   if (points.length >= 3) {
     const first = points[0], last = points[points.length - 1];
@@ -403,9 +403,18 @@ function finalizeShape(points, color, pixelCount, stitchScale, shapes) {
   const isLarge = (bw * bh) > 300 * 300 * 0.15;
   const isNarrow = (bw < 12 || bh < 12) && !isLarge;
 
-  // Auto-satin: small shapes (< 1.5mm^2 area) → satin
+  // TEXT OVERRIDE: when Gemini detected text, ALL shapes become satin
+  // This prevents large text letters (like "W" in WINSTON) from becoming fill
+  if (isText) {
+    shapes.push({ type: "satin", color, points, pixelCount, area });
+    return;
+  }
+
+  // Auto-satin: small shapes (< 1.5mm^2 area) OR very elongated shapes (aspect > 3)
+  const aspectRatio = Math.max(bw, bh) / Math.min(bw, bh);
+  const isElongated = aspectRatio > 3 && !isLarge;
   const isSmallDetail = area < 1.5;
-  const type = (isNarrow || isSmallDetail) ? "satin" : "fill";
+  const type = (isNarrow || isSmallDetail || isElongated) ? "satin" : "fill";
 
   shapes.push({ type, color, points, pixelCount, area });
 }
@@ -846,7 +855,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     let shapes;
     let extractionMethod = "pixel";
     try {
-      shapes = await extractShapesFromImage(cleanBuffer, colors);
+      shapes = await extractShapesFromImage(cleanBuffer, colors, detection.is_text);
       if (shapes.length < 3 && detection.is_text) {
         console.log("Few pixel shapes for text — supplementing with Gemini");
         const geminiShapes = await extractShapesWithGemini(cleanB64, cleanMime, detection);
