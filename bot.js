@@ -351,18 +351,6 @@ async function extractShapesFromImage(buffer, colors, isText = false, isArabic =
   }
 
   shapes.sort((a, b) => b.pixelCount - a.pixelCount);
-
-  // For text/Arabic images: largest shape = background (keep as fill)
-  // All other shapes = text/calligraphy → convert to satin
-  let backgroundFound = false;
-  for (const s of shapes) {
-    if (s.isLarge && !backgroundFound) {
-      backgroundFound = true; // keep as fill
-    } else if (isText || isArabic) {
-      s.type = "satin"; // text letters always satin
-    }
-  }
-
   console.log(`Extracted ${shapes.length} shapes (Arabic=${isArabic}, Text=${isText})`);
   return shapes;
 }
@@ -379,17 +367,26 @@ function finalizeShape(points, color, pixelCount, stitchScale, shapes, isText = 
     maxX = Math.max(maxX, px); maxY = Math.max(maxY, py);
   }
   const bw = maxX - minX, bh = maxY - minY;
-  const isLarge = (bw * bh) > 300 * 300 * 0.15;
+  const boxArea = bw * bh;
+  const isLarge = boxArea > 300 * 300 * 0.15;
 
-  // TEXT/ARABIC: non-background shapes become satin
-  // Background = largest shape (handled after sorting)
-  // Other shapes = text letters → satin
+  // ORIGINAL: thin shapes → satin
   const isNarrow = (bw < 12 || bh < 12) && !isLarge;
-  const aspectRatio = Math.max(bw, bh) / Math.min(bw, bh);
-  const isElongated = aspectRatio > 2.5 && !isLarge;
 
-  const type = (isNarrow || isElongated) ? "satin" : "fill";
-  shapes.push({ type, color, points, pixelCount, isText, isLarge });
+  // NEW for text/Arabic: complex shapes (high perimeter-to-area ratio) → satin
+  // Text letters have lots of edges; background blobs are smooth
+  let perimeter = 0;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const dx = points[i][0] - points[j][0];
+    const dy = points[i][1] - points[j][1];
+    perimeter += Math.hypot(dx, dy);
+  }
+  const complexity = boxArea > 0 ? perimeter / boxArea : 0;
+  // Text letters: perimeter/area ~ 0.15-0.50. Background: ~0.03-0.08
+  const isComplex = (isText || isArabic) && complexity > 0.12 && !isLarge;
+
+  const type = (isNarrow || isComplex) ? "satin" : "fill";
+  shapes.push({ type, color, points, pixelCount });
 }
 
 async function extractShapesWithGemini(b64, mime, hint = {}) {
