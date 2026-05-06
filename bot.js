@@ -7,8 +7,35 @@ const app = express();
 
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MODEL = "gemini-2.5-pro";
-const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+const FLASH_MODEL = "gemini-2.5-flash";
+const PRO_MODEL = "gemini-2.5-pro";
+
+function makeUrl(model) {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+}
+
+/* Retry wrapper: 3 attempts with exponential backoff on 503/429 */
+async function geminiPost(body, timeoutMs, primaryModel, retries = 3) {
+  let lastErr;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await axios.post(makeUrl(primaryModel), body, { timeout: timeoutMs });
+    } catch (e) {
+      lastErr = e;
+      const status = e.response?.status;
+      if (status === 503 || status === 429) {
+        const delay = 2000 * Math.pow(2, i); // 2s, 4s, 8s
+        console.log(`Gemini ${primaryModel} returned ${status}, retry ${i + 1}/${retries} in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        throw e;
+      }
+    }
+  }
+  // All retries exhausted — try fallback (Flash) once
+  console.log(`All ${retries} retries failed for ${primaryModel}, trying ${FLASH_MODEL}...`);
+  return axios.post(makeUrl(FLASH_MODEL), body, { timeout: timeoutMs });
+}
 
 const jobs = new Map();
 
@@ -46,7 +73,7 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
     generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
   };
 
-  const res = await axios.post(API_URL, body, { timeout: 45000 });
+  const res = await geminiPost(body, 45000, FLASH_MODEL);
   const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
   const jsonStr = text.replace(/```json|```/g, "").trim();
   const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
@@ -312,7 +339,7 @@ Coordinates 0-300. type:"fill" for solid areas, "satin" for thin lines/borders. 
     generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
   };
 
-  const res = await axios.post(API_URL, body, { timeout: 60000 });
+  const res = await geminiPost(body, 60000, PRO_MODEL);
   const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
   let jsonStr = text.replace(/```json|```/g, "").trim();
   const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
@@ -639,31 +666,4 @@ app.get("/preview/:id", (req, res) => {
   return res.json({ stitches: data.stitches, designW: data.designW, designH: data.designH, shapes: data.shapes });
 });
 
-app.get("/download/:id/:format", (req, res) => {
-  const data = jobs.get(req.params.id);
-  if (!data) return res.status(404).json({ error: "Not found" });
-  const fmt = req.params.format || "dst";
-  const { buf, ext } = encodeFile(fmt, data);
-  res.setHeader("Content-Type", "application/octet-stream");
-  res.setHeader("Content-Disposition", `attachment; filename="design.${ext}"`);
-  return res.send(buf);
-});
-
-app.get("/preview-image/:id", async (req, res) => {
-  const data = jobs.get(req.params.id);
-  if (!data) return res.status(404).json({ error: "Not found" });
-  try {
-    const png = await renderStitchesToPng(data.stitches, data.designW, data.designH);
-    res.setHeader("Content-Type", "image/png");
-    res.setHeader("Cache-Control", "public, max-age=300");
-    return res.send(png);
-  } catch (e) {
-    console.error("Preview image error:", e.message);
-    return res.status(500).json({ error: e.message });
-  }
-});
-
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "7.1" }));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Stichai v6.1 running on port ${PORT}`));
+app.get("/download/:id/:format", (req, res) => 
