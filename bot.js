@@ -53,7 +53,8 @@ async function preprocessImage(buffer) {
 async function detectColors(b64, mime) {
   const prompt = `You are analyzing a design for embroidery digitizing.
 List the 4-10 distinct THREAD colors needed. Ignore lighting, shadows, gradients, reflections, paper/background unless it is part of the design.
-Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": true|false}`;
+Also classify: is this Arabic text/calligraphy?
+Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_arabic": true|false, "is_logo": true|false}`;
 
   const body = {
     contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
@@ -74,6 +75,7 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
   return {
     colors,
     is_text: !!parsed.is_text,
+    is_arabic: !!parsed.is_arabic,
     is_logo: !!parsed.is_logo,
   };
 }
@@ -108,7 +110,6 @@ function mergeColorsByDeltaE(colors, threshold = 15) {
   const labs = colors.map(c => ({ hex: c, lab: rgbToLab(hexToRgb(c)) }));
   const used = new Array(labs.length).fill(false);
   const merged = [];
-
   for (let i = 0; i < labs.length; i++) {
     if (used[i]) continue;
     for (let j = i + 1; j < labs.length; j++) {
@@ -148,11 +149,6 @@ function ramerDouglasPeucker(points, epsilon) {
   return Array.from(keep).sort((a, b) => a - b).map(i => points[i]);
 }
 
-/* ============================================================
-   DUAL-MODE EXTRACTION: detail vs normal regions
-   ============================================================ */
-
-// Trace contour of a single component given its mask
 function traceContour(mask, pw, ph) {
   let startX = -1, startY = -1;
   outer: for (let by = 0; by < ph; by++) {
@@ -166,7 +162,6 @@ function traceContour(mask, pw, ph) {
     }
   }
   if (startX === -1) return null;
-
   const contour = [];
   const n8 = [[-1, 0], [-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1]];
   let cx = startX, cy = startY, dir = 7;
@@ -184,11 +179,9 @@ function traceContour(mask, pw, ph) {
     if (!found) break;
     safety++;
   } while ((cx !== startX || cy !== startY) && safety < 128000);
-
   return contour.length >= 4 ? contour : null;
 }
 
-// Calculate edge density: border pixels / total pixels
 function calcEdgeDensity(comp, pixelColors, pw, ph, ci) {
   let edgePixels = 0;
   for (const idx of comp) {
@@ -205,7 +198,6 @@ function calcEdgeDensity(comp, pixelColors, pw, ph, ci) {
   return comp.length > 0 ? edgePixels / comp.length : 0;
 }
 
-// Extract component's bounding box with padding
 function getComponentBounds(comp, pw, padding = 0.1) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const idx of comp) {
@@ -219,7 +211,7 @@ function getComponentBounds(comp, pw, padding = 0.1) {
   return { minX: Math.max(0, minX - padX), minY: Math.max(0, minY - padY), maxX, maxY, w, h, pw, padX, padY };
 }
 
-async function extractShapesFromImage(buffer, colors, isText = false) {
+async function extractShapesFromImage(buffer, colors, isText = false, isArabic = false) {
   const jimpModule = require("jimp");
   const Jimp = jimpModule.Jimp || jimpModule;
 
@@ -236,7 +228,6 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
   const pixelColors = new Int16Array(pw * ph);
   for (let i = 0; i < pw * ph; i++) pixelColors[i] = -1;
 
-  // Classify pixels
   for (let y = 0; y < ph; y++) {
     for (let x = 0; x < pw; x++) {
       const idx = image.getPixelIndex(x, y);
@@ -256,9 +247,10 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
   const totalPixels = pw * ph;
   const visited = new Uint8Array(pw * ph);
   const components = [];
-  const minComponentSize = 6;
+  // For Arabic: lower threshold to catch diacritics (dots, tashkeel)
+  const minComponentSize = isArabic ? 4 : 6;
 
-  // Pass 1: detect all connected components with metrics
+  // Pass 1: detect all connected components
   for (let ci = 0; ci < labColors.length; ci++) {
     for (let y = 0; y < ph; y++) {
       for (let x = 0; x < pw; x++) {
@@ -286,16 +278,16 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
 
         const areaPct = comp.length / totalPixels;
         const edgeDensity = calcEdgeDensity(comp, pixelColors, pw, ph, ci);
-        const isDetail = areaPct < 0.05 && edgeDensity > 0.4;
+        // For text/Arabic: lower the detail threshold so more shapes get fine treatment
+        const detailThreshold = (isText || isArabic) ? 0.02 : 0.05;
+        const isDetail = areaPct < detailThreshold && edgeDensity > 0.4;
 
         components.push({ comp, ci, areaPct, edgeDensity, isDetail });
       }
     }
   }
 
-  console.log(`Found ${components.length} components: ${components.filter(c => c.isDetail).length} detail, ${components.filter(c => !c.isDetail).length} normal`);
-
-  // Pass 2: extract contours with appropriate method
+  // Pass 2: extract contours
   const shapes = [];
   for (const { comp, ci, isDetail } of components) {
     const mask = new Uint8Array(pw * ph);
@@ -307,29 +299,23 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
     const stitchScale = 300 / Math.max(pw, ph);
 
     if (isDetail) {
-      // DETAIL MODE: crop, upscale, trace at high res
       const b = getComponentBounds(comp, pw, 0.15);
       const cropW = b.maxX - b.minX + 2 * b.padX;
       const cropH = b.maxY - b.minY + 2 * b.padY;
       if (cropW < 10 || cropH < 10 || comp.length > 500) {
-        // Too small to upscale or too large for detail mode — use normal path
         const simplified = ramerDouglasPeucker(contour, 0.25);
         const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
-        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText);
+        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText, isArabic);
         continue;
       }
 
-      // Create a crop mask for this component
       const cropMask = new Uint8Array(cropW * cropH);
       for (const idx of comp) {
         const x = idx % pw - b.minX + b.padX;
         const y = Math.floor(idx / pw) - b.minY + b.padY;
-        if (x >= 0 && x < cropW && y >= 0 && y < cropH) {
-          cropMask[y * cropW + x] = 1;
-        }
+        if (x >= 0 && x < cropW && y >= 0 && y < cropH) cropMask[y * cropW + x] = 1;
       }
 
-      // Upscale 4x
       const upW = cropW * 4, upH = cropH * 4;
       const upMask = new Uint8Array(upW * upH);
       for (let y = 0; y < cropH; y++) {
@@ -344,56 +330,49 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
         }
       }
 
-      // Trace at upscaled resolution — same precision as original
       const upContour = traceContour(upMask, upW, upH);
       if (upContour) {
         const simplified = ramerDouglasPeucker(upContour, 0.25);
-        // Scale back down to original crop coordinates, then to stitch space
         const points = simplified.map(([px, py]) => [
           Math.round(((px / 4 + b.minX - b.padX) * stitchScale)),
           Math.round(((py / 4 + b.minY - b.padY) * stitchScale))
         ]);
-        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText);
+        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText, isArabic);
       } else {
-        // Fallback to normal trace
         const simplified = ramerDouglasPeucker(contour, 0.25);
         const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
-        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText);
+        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText, isArabic);
       }
     } else {
-      // NORMAL MODE: standard resolution, same epsilon as original (0.25)
       const simplified = ramerDouglasPeucker(contour, 0.25);
       const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
-      if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes);
+      if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText, isArabic);
     }
   }
 
-  // Sort by pixel count (largest first)
   shapes.sort((a, b) => b.pixelCount - a.pixelCount);
 
-  // Nearest-neighbor reordering to minimize jump stitches
-  const ordered = nearestNeighborOrder(shapes);
+  // For text/Arabic images: largest shape = background (keep as fill)
+  // All other shapes = text/calligraphy → convert to satin
+  let backgroundFound = false;
+  for (const s of shapes) {
+    if (s.isLarge && !backgroundFound) {
+      backgroundFound = true; // keep as fill
+    } else if (isText || isArabic) {
+      s.type = "satin"; // text letters always satin
+    }
+  }
 
-  console.log(`Extracted ${ordered.length} shapes (${components.filter(c => c.isDetail).length} detail, ${components.filter(c => !c.isDetail).length} normal)`);
-  return ordered;
+  console.log(`Extracted ${shapes.length} shapes (Arabic=${isArabic}, Text=${isText})`);
+  return shapes;
 }
 
-function finalizeShape(points, color, pixelCount, stitchScale, shapes, isText = false) {
-  // Close polygon
+function finalizeShape(points, color, pixelCount, stitchScale, shapes, isText = false, isArabic = false) {
   if (points.length >= 3) {
     const first = points[0], last = points[points.length - 1];
     if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
   }
 
-  // Calculate physical area in mm^2 (assuming 300 units = ~100mm)
-  const mmScale = 100 / 300; // mm per unit
-  let area = 0;
-  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-    area += points[j][0] * points[i][1] - points[i][0] * points[j][1];
-  }
-  area = Math.abs(area) * 0.5 * mmScale * mmScale;
-
-  // Check bounds
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const [px, py] of points) {
     minX = Math.min(minX, px); minY = Math.min(minY, py);
@@ -401,44 +380,16 @@ function finalizeShape(points, color, pixelCount, stitchScale, shapes, isText = 
   }
   const bw = maxX - minX, bh = maxY - minY;
   const isLarge = (bw * bh) > 300 * 300 * 0.15;
+
+  // TEXT/ARABIC: non-background shapes become satin
+  // Background = largest shape (handled after sorting)
+  // Other shapes = text letters → satin
   const isNarrow = (bw < 12 || bh < 12) && !isLarge;
-
-  // TEXT OVERRIDE: when Gemini detected text, ALL shapes become satin
-  // This prevents large text letters (like "W" in WINSTON) from becoming fill
-  if (isText) {
-    shapes.push({ type: "satin", color, points, pixelCount, area });
-    return;
-  }
-
-  // Auto-satin: small shapes (< 1.5mm^2 area) OR very elongated shapes (aspect > 3)
   const aspectRatio = Math.max(bw, bh) / Math.min(bw, bh);
-  const isElongated = aspectRatio > 3 && !isLarge;
-  const isSmallDetail = area < 1.5;
-  const type = (isNarrow || isSmallDetail || isElongated) ? "satin" : "fill";
+  const isElongated = aspectRatio > 2.5 && !isLarge;
 
-  shapes.push({ type, color, points, pixelCount, area });
-}
-
-// Nearest-neighbor ordering to minimize jump stitches
-function nearestNeighborOrder(shapes) {
-  if (shapes.length <= 2) return shapes;
-  const remaining = shapes.map(s => ({ ...s }));
-  const ordered = [];
-  let current = remaining.shift();
-  ordered.push(current);
-
-  while (remaining.length > 0) {
-    let bestIdx = 0, bestDist = Infinity;
-    const lastPoint = current.points[current.points.length - 1] || [0, 0];
-    for (let i = 0; i < remaining.length; i++) {
-      const firstPoint = remaining[i].points[0] || [0, 0];
-      const d = Math.hypot(firstPoint[0] - lastPoint[0], firstPoint[1] - lastPoint[1]);
-      if (d < bestDist) { bestDist = d; bestIdx = i; }
-    }
-    current = remaining.splice(bestIdx, 1)[0];
-    ordered.push(current);
-  }
-  return ordered;
+  const type = (isNarrow || isElongated) ? "satin" : "fill";
+  shapes.push({ type, color, points, pixelCount, isText, isLarge });
 }
 
 async function extractShapesWithGemini(b64, mime, hint = {}) {
@@ -523,29 +474,18 @@ function polygonBounds(points) {
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 }
 
-function polygonArea(points) {
-  let area = 0;
-  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-    area += points[j][0] * points[i][1] - points[i][0] * points[j][1];
-  }
-  return Math.abs(area) * 0.5;
-}
-
+/* Professional underlay: edge-walk + center-walk */
 function underlayPolygon(points, color) {
   const stitches = [];
   const bounds = polygonBounds(points);
-  // Center-walk underlay (single line down the middle of the shape)
-  const midY = (bounds.minY + bounds.maxY) / 2;
-  const midX = (bounds.minX + bounds.maxX) / 2;
-  // Edge-walk underlay (zigzag just inside the border)
   const offset = 2.0;
+
+  // Edge-walk underlay (zigzag just inside the border)
   for (let i = 0; i < points.length; i++) {
     const [x1, y1] = points[i], [x2, y2] = points[(i + 1) % points.length];
-    // Push inward by offset
     const dx = x2 - x1, dy = y2 - y1;
     const len = Math.hypot(dx, dy) || 1;
     const nx = -dy / len * offset, ny = dx / len * offset;
-    // Only add if the inward point is still inside the polygon
     const ix1 = x1 + nx, iy1 = y1 + ny;
     const ix2 = x2 + nx, iy2 = y2 + ny;
     if (pointInPolygon((ix1 + ix2) / 2, (iy1 + iy2) / 2, points)) {
@@ -553,7 +493,10 @@ function underlayPolygon(points, color) {
       stitches.push({ x: Math.round(ix2), y: Math.round(iy2), color, type: "underlay" });
     }
   }
+
   // Single center line
+  const midX = (bounds.minX + bounds.maxX) / 2;
+  const midY = (bounds.minY + bounds.maxY) / 2;
   if (pointInPolygon(midX, midY, points)) {
     stitches.push({ x: Math.round(bounds.minX), y: Math.round(midY), color, type: "underlay" });
     stitches.push({ x: Math.round(bounds.maxX), y: Math.round(midY), color, type: "underlay" });
@@ -561,11 +504,7 @@ function underlayPolygon(points, color) {
   return stitches;
 }
 
-/* Professional Tatami Fill
-   - Computes optimal fill angle from shape's principal axis
-   - Staggered rows (brickwork pattern) to hide seams
-   - Auto-detects narrow regions and switches to satin
-*/
+/* Professional Tatami Fill with auto-angle and stagger */
 function computePrincipalAngle(points) {
   let cx = 0, cy = 0, n = points.length;
   for (const [x, y] of points) { cx += x; cy += y; }
@@ -579,12 +518,6 @@ function computePrincipalAngle(points) {
   return Math.atan2(2 * mxy, mxx - myy) / 2;
 }
 
-function isNarrowColumn(points, rowStart, rowEnd, fillAngle) {
-  // Measure the width of this specific row segment
-  const segLen = Math.hypot(rowEnd[0] - rowStart[0], rowEnd[1] - rowStart[1]);
-  return segLen < 8; // Less than ~2.5mm → too narrow for fill
-}
-
 function contourFillPolygon(points, color) {
   const stitches = [];
   const bounds = polygonBounds(points);
@@ -592,7 +525,6 @@ function contourFillPolygon(points, color) {
   const cosA = Math.cos(fillAngle), sinA = Math.sin(fillAngle);
   const stitchLen = 2.8, rowSpacing = 3.2;
 
-  // Transform points to local (rotated) frame
   function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
   function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
 
@@ -614,17 +546,12 @@ function contourFillPolygon(points, color) {
     for (let k = 0; k + 1 < ints.length; k += 2) {
       let segStart = ints[k], segEnd = ints[k + 1];
       if (segEnd <= segStart) continue;
-
-      // Stagger every other row by half row spacing
       if (rowIdx % 2 === 1) {
         const stagger = rowSpacing * 0.35;
         segStart += stagger;
         segEnd += stagger;
       }
-
-      // If segment is too narrow, skip fill (satin will handle it)
       if (segEnd - segStart < 6) continue;
-
       const steps = Math.max(1, Math.floor((segEnd - segStart) / stitchLen));
       const dir = (rowIdx % 2 === 0) ? 1 : -1;
       const startX = dir === 1 ? segStart : segEnd, endX = dir === 1 ? segEnd : segStart;
@@ -638,7 +565,7 @@ function contourFillPolygon(points, color) {
     rowIdx++;
   }
 
-  // Inner passes (offset inward, same angle, for density)
+  // Inner passes for density
   for (let pass = 1; pass <= 2; pass++) {
     const inset = pass * rowSpacing * 0.6;
     const innerBounds = {
@@ -682,29 +609,6 @@ function contourFillPolygon(points, color) {
   return stitches;
 }
 
-/* Narrow satin — for shapes too thin for fill */
-function narrowSatinFill(points, color, width = 3.0) {
-  const stitches = [];
-  const totalLen = points.length * 6;
-  const steps = Math.max(points.length * 3, Math.floor(totalLen / 1.5));
-  for (let i = 0; i <= steps; i++) {
-    const t = (i / steps) * points.length;
-    const idx = Math.floor(t) % points.length;
-    const nextIdx = (idx + 1) % points.length;
-    const frac = t - Math.floor(t);
-    const bx = points[idx][0] + (points[nextIdx][0] - points[idx][0]) * frac;
-    const by = points[idx][1] + (points[nextIdx][1] - points[idx][1]) * frac;
-    // Normal vector
-    const dx = points[nextIdx][0] - points[idx][0];
-    const dy = points[nextIdx][1] - points[idx][1];
-    const len = Math.hypot(dx, dy) || 1;
-    const nx = -dy / len * (width / 2), ny = dx / len * (width / 2);
-    stitches.push({ x: Math.round(bx + nx), y: Math.round(by + ny), color, type: "satin" });
-    stitches.push({ x: Math.round(bx - nx), y: Math.round(by - ny), color, type: "satin" });
-  }
-  return stitches;
-}
-
 function runningPolygon(points, color) {
   const stitches = [], dash = 2.5;
   const totalLen = points.length * 8;
@@ -730,19 +634,12 @@ function generateStitches(shapes) {
     const color = toThreadColor(s.color || "#FF0066");
     const type = s.type || "fill";
     if (type === "fill") {
-      // Check if shape is too narrow for fill → use narrow satin instead
-      const bounds = polygonBounds(points);
-      const area = polygonArea(points);
-      const isVeryNarrow = (bounds.width < 8 || bounds.height < 8) || (area < 2.0);
-      if (isVeryNarrow) {
-        all = all.concat(narrowSatinFill(points, color, 2.5));
-      } else {
-        all = all.concat(underlayPolygon(points, color));
-        all = all.concat(contourFillPolygon(points, color));
-      }
+      all = all.concat(underlayPolygon(points, color));
+      all = all.concat(contourFillPolygon(points, color));
       all = all.concat(runningPolygon(points, color));
     } else if (type === "satin") {
-      all = all.concat(narrowSatinFill(points, color, 3.0));
+      all = all.concat(runningPolygon(points, color));
+      all = all.concat(runningPolygon(points, color));
     } else {
       all = all.concat(runningPolygon(points, color));
     }
@@ -851,11 +748,11 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     const cleanMime = "image/png";
     const detection = await detectColors(cleanB64, cleanMime);
     const colors = detection.colors;
-    console.log("is_text:", detection.is_text, "is_logo:", detection.is_logo);
+    console.log("is_text:", detection.is_text, "is_arabic:", detection.is_arabic, "is_logo:", detection.is_logo);
     let shapes;
     let extractionMethod = "pixel";
     try {
-      shapes = await extractShapesFromImage(cleanBuffer, colors, detection.is_text);
+      shapes = await extractShapesFromImage(cleanBuffer, colors, detection.is_text, detection.is_arabic);
       if (shapes.length < 3 && detection.is_text) {
         console.log("Few pixel shapes for text — supplementing with Gemini");
         const geminiShapes = await extractShapesWithGemini(cleanB64, cleanMime, detection);
@@ -881,7 +778,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
       stitchCount: result.stitches.length,
       designSize: { w: result.designW, h: result.designH },
       colors,
-      detection: { is_text: detection.is_text, is_logo: detection.is_logo, method: extractionMethod },
+      detection: { is_text: detection.is_text, is_arabic: detection.is_arabic, is_logo: detection.is_logo, method: extractionMethod },
       shapes: result.shapes.map(s => ({ type: s.type, color: s.color, points: s.points, pointCount: s.points.length }))
     });
   } catch (e) {
@@ -920,7 +817,7 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "7.2" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "7.3" }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Stichai v7.2 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Stichai v7.3 running on port ${PORT}`));
