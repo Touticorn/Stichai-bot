@@ -339,53 +339,6 @@ function polygonCentroid(points) {
   return { x: cx / points.length, y: cy / points.length };
 }
 
-/* -----------------------------------------------------------
-   1. JUMP STITCH MINIMIZATION
-   Reorder shapes by nearest-neighbor within each color group
-   to minimize thread travel between shapes.
-   ----------------------------------------------------------- */
-function reorderShapesNN(shapes) {
-  if (shapes.length <= 2) return shapes;
-  const ordered = [];
-  const remaining = shapes.map((s, i) => ({ ...s, _idx: i }));
-  let current = remaining.shift();
-  ordered.push(current);
-
-  while (remaining.length) {
-    let bestIdx = 0, bestDist = Infinity;
-    const last = ordered[ordered.length - 1];
-    const lastCenter = polygonCentroid(last.points);
-    for (let i = 0; i < remaining.length; i++) {
-      const c = polygonCentroid(remaining[i].points);
-      const d = Math.hypot(c.x - lastCenter.x, c.y - lastCenter.y);
-      if (d < bestDist) { bestDist = d; bestIdx = i; }
-    }
-    ordered.push(remaining.splice(bestIdx, 1)[0]);
-  }
-  return ordered;
-}
-
-/* -----------------------------------------------------------
-   2. FILL STITCH ANGLE — detect shape orientation
-   Calculate principal axis via moment of inertia, rotate
-   fill lines to match shape orientation.
-   ----------------------------------------------------------- */
-function computeFillAngle(points) {
-  const n = points.length;
-  if (n < 3) return 0;
-  let cx = 0, cy = 0;
-  for (const [x, y] of points) { cx += x; cy += y; }
-  cx /= n; cy /= n;
-  let mxx = 0, myy = 0, mxy = 0;
-  for (const [x, y] of points) {
-    const dx = x - cx, dy = y - cy;
-    mxx += dx * dx; myy += dy * dy; mxy += dx * dy;
-  }
-  if (Math.abs(mxy) < 0.001) return 0;
-  const angle = Math.atan2(2 * mxy, mxx - myy) / 2;
-  return angle;
-}
-
 function underlayPolygon(points, color) {
   const stitches = [], bounds = polygonBounds(points), spacing = 5;
   const len = Math.max(bounds.width, bounds.height) * 1.5;
@@ -400,32 +353,19 @@ function underlayPolygon(points, color) {
   return stitches;
 }
 
-/* -----------------------------------------------------------
-   3. ORIENTED FILL STITCHES
-   Fill lines rotated to match shape's principal axis.
-   ----------------------------------------------------------- */
 function contourFillPolygon(points, color) {
   const stitches = [], bounds = polygonBounds(points);
-  const fillAngle = computeFillAngle(points);
-  const cosA = Math.cos(fillAngle), sinA = Math.sin(fillAngle);
   const stitchLen = 2.5, rowSpacing = 3.0;
   let inset = 0, pass = 0, maxPasses = 8;
 
-  // Transform points to rotated frame — return arrays for array destructuring
-  function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
-  function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
-
-  const localPts = points.map(([x, y]) => toLocal(x, y));
-  const lBounds = polygonBounds(localPts);
-
-  while (inset < Math.min(lBounds.width, lBounds.height) / 2 && pass < maxPasses) {
-    const yStart = lBounds.minY + inset, yEnd = lBounds.maxY - inset;
-    for (let ly = yStart; ly < yEnd; ly += rowSpacing) {
-      const ry = ly + (pass % 2) * (rowSpacing * 0.5);
+  while (inset < Math.min(bounds.width, bounds.height) / 2 && pass < maxPasses) {
+    const yStart = bounds.minY + inset, yEnd = bounds.maxY - inset;
+    for (let y = yStart; y < yEnd; y += rowSpacing) {
+      const ry = y + (pass % 2) * (rowSpacing * 0.5);
       if (ry > yEnd) break;
       const ints = [];
-      for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
-        const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
+      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const [x1, y1] = points[i], [x2, y2] = points[j];
         if ((y1 <= ry && y2 > ry) || (y2 <= ry && y1 > ry)) {
           ints.push(x1 + (ry - y1) / (y2 - y1) * (x2 - x1));
         }
@@ -435,69 +375,16 @@ function contourFillPolygon(points, color) {
         const segStart = ints[k], segEnd = ints[k + 1];
         if (segEnd <= segStart) continue;
         const steps = Math.max(1, Math.floor((segEnd - segStart) / stitchLen));
-        const dir = (Math.floor(ly / rowSpacing) % 2 === 0) ? 1 : -1;
+        const dir = (Math.floor(y / rowSpacing) % 2 === 0) ? 1 : -1;
         const startX = dir === 1 ? segStart : segEnd, endX = dir === 1 ? segEnd : segStart;
         for (let s = 0; s <= steps; s++) {
           const t = s / steps;
-          const lx = startX + (endX - startX) * t;
-          const [gx, gy] = toGlobal(lx, ry);
-          stitches.push({ x: Math.round(gx), y: Math.round(gy), color, type: "fill" });
+          stitches.push({ x: Math.round(startX + (endX - startX) * t), y: Math.round(ry), color, type: "fill" });
         }
       }
     }
     inset += rowSpacing * 1.5; pass++;
   }
-  return stitches;
-}
-
-/* -----------------------------------------------------------
-   4. PROFESSIONAL SATIN STITCH
-   Instead of 1px running stitch, create proper satin columns
-   with parallel zigzag pairs. Includes pull compensation
-   (widens stitches by 0.3mm to counter fabric shrinkage).
-   ----------------------------------------------------------- */
-function satinStitchPolygon(points, color) {
-  const stitches = [];
-  const spacing = 2.0;     // zigzag spacing (mm)
-  const pullComp = 0.3;    // pull compensation width
-  const totalLen = points.length * 12;
-  const dash = 2.5;
-  const steps = Math.max(points.length * 3, Math.floor(totalLen / dash));
-
-  // Build a centerline with normals for offsetting
-  function getNormal(idx) {
-    const i0 = Math.floor(idx) % points.length;
-    const i1 = (i0 + 1) % points.length;
-    const [x0, y0] = points[i0], [x1, y1] = points[i1];
-    const len = Math.hypot(x1 - x0, y1 - y0) || 1;
-    return { nx: -(y1 - y0) / len, ny: (x1 - x0) / len };
-  }
-
-  // First pass: right-offset centerline (with pull comp)
-  for (let i = 0; i <= steps; i++) {
-    const t = (i / steps) * points.length;
-    const idx = Math.floor(t) % points.length;
-    const nextIdx = (idx + 1) % points.length;
-    const frac = t - Math.floor(t);
-    const bx = points[idx][0] + (points[nextIdx][0] - points[idx][0]) * frac;
-    const by = points[idx][1] + (points[nextIdx][1] - points[idx][1]) * frac;
-    const n = getNormal(t);
-    const w = (spacing / 2) + pullComp;
-    stitches.push({ x: Math.round(bx + n.nx * w), y: Math.round(by + n.ny * w), color, type: "satin" });
-  }
-  // Second pass: left-offset centerline (reverse)
-  for (let i = steps; i >= 0; i--) {
-    const t = (i / steps) * points.length;
-    const idx = Math.floor(t) % points.length;
-    const nextIdx = (idx + 1) % points.length;
-    const frac = t - Math.floor(t);
-    const bx = points[idx][0] + (points[nextIdx][0] - points[idx][0]) * frac;
-    const by = points[idx][1] + (points[nextIdx][1] - points[idx][1]) * frac;
-    const n = getNormal(t);
-    const w = (spacing / 2) + pullComp;
-    stitches.push({ x: Math.round(bx - n.nx * w), y: Math.round(by - n.ny * w), color, type: "satin" });
-  }
-
   return stitches;
 }
 
@@ -522,29 +409,20 @@ function generateStitches(shapes) {
   let all = [];
   const designW = 300, designH = 300;
 
-  // Group by color, reorder within each group for minimal jumps
-  const colorGroups = {};
   for (const s of shapes) {
-    const c = toThreadColor(s.color || "#FF0066");
-    if (!colorGroups[c]) colorGroups[c] = [];
-    colorGroups[c].push({ ...s, color: c });
-  }
+    const points = s.points || [[0, 0], [10, 0], [10, 10], [0, 10]];
+    const color = toThreadColor(s.color || "#FF0066");
+    const type = s.type || "fill";
 
-  for (const color of Object.keys(colorGroups)) {
-    const group = reorderShapesNN(colorGroups[color]);
-    for (const s of group) {
-      const points = s.points || [[0, 0], [10, 0], [10, 10], [0, 10]];
-      const type = s.type || "fill";
-
-      if (type === "fill") {
-        all = all.concat(underlayPolygon(points, color));
-        all = all.concat(contourFillPolygon(points, color));
-        all = all.concat(runningPolygon(points, color));
-      } else if (type === "satin") {
-        all = all.concat(satinStitchPolygon(points, color));
-      } else {
-        all = all.concat(runningPolygon(points, color));
-      }
+    if (type === "fill") {
+      all = all.concat(underlayPolygon(points, color));
+      all = all.concat(contourFillPolygon(points, color));
+      all = all.concat(runningPolygon(points, color));
+    } else if (type === "satin") {
+      all = all.concat(runningPolygon(points, color));
+      all = all.concat(runningPolygon(points, color));
+    } else {
+      all = all.concat(runningPolygon(points, color));
     }
   }
 
