@@ -311,8 +311,8 @@ async function extractShapesFromImage(buffer, colors) {
       const b = getComponentBounds(comp, pw, 0.15);
       const cropW = b.maxX - b.minX + 2 * b.padX;
       const cropH = b.maxY - b.minY + 2 * b.padY;
-      if (cropW < 10 || cropH < 10) {
-        // Too small to upscale meaningfully — use normal path
+      if (cropW < 10 || cropH < 10 || comp.length > 500) {
+        // Too small to upscale or too large for detail mode — use normal path
         const simplified = ramerDouglasPeucker(contour, 0.25);
         const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
         if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes);
@@ -344,11 +344,10 @@ async function extractShapesFromImage(buffer, colors) {
         }
       }
 
-      // Trace at upscaled resolution
+      // Trace at upscaled resolution — same precision as original
       const upContour = traceContour(upMask, upW, upH);
       if (upContour) {
-        // Low epsilon (0.5) at upscaled resolution = very fine detail
-        const simplified = ramerDouglasPeucker(upContour, 0.5);
+        const simplified = ramerDouglasPeucker(upContour, 0.25);
         // Scale back down to original crop coordinates, then to stitch space
         const points = simplified.map(([px, py]) => [
           Math.round(((px / 4 + b.minX - b.padX) * stitchScale)),
@@ -362,8 +361,8 @@ async function extractShapesFromImage(buffer, colors) {
         if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes);
       }
     } else {
-      // NORMAL MODE: standard resolution, higher epsilon (2.5) for smoother curves
-      const simplified = ramerDouglasPeucker(contour, 2.5);
+      // NORMAL MODE: standard resolution, same epsilon as original (0.25)
+      const simplified = ramerDouglasPeucker(contour, 0.25);
       const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
       if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes);
     }
@@ -515,50 +514,184 @@ function polygonBounds(points) {
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 }
 
+function polygonArea(points) {
+  let area = 0;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    area += points[j][0] * points[i][1] - points[i][0] * points[j][1];
+  }
+  return Math.abs(area) * 0.5;
+}
+
 function underlayPolygon(points, color) {
-  const stitches = [], bounds = polygonBounds(points), spacing = 5;
-  const len = Math.max(bounds.width, bounds.height) * 1.5;
-  for (let i = -len; i < len; i += spacing) {
-    const sx = bounds.minX + i, sy = bounds.minY - i;
-    const ex = sx + len * 0.7, ey = sy + len * 0.7;
-    if (pointInPolygon((sx + ex) / 2, (sy + ey) / 2, points)) {
-      stitches.push({ x: Math.round(sx), y: Math.round(sy), color, type: "underlay" });
-      stitches.push({ x: Math.round(ex), y: Math.round(ey), color, type: "underlay" });
+  const stitches = [];
+  const bounds = polygonBounds(points);
+  // Center-walk underlay (single line down the middle of the shape)
+  const midY = (bounds.minY + bounds.maxY) / 2;
+  const midX = (bounds.minX + bounds.maxX) / 2;
+  // Edge-walk underlay (zigzag just inside the border)
+  const offset = 2.0;
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i], [x2, y2] = points[(i + 1) % points.length];
+    // Push inward by offset
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len * offset, ny = dx / len * offset;
+    // Only add if the inward point is still inside the polygon
+    const ix1 = x1 + nx, iy1 = y1 + ny;
+    const ix2 = x2 + nx, iy2 = y2 + ny;
+    if (pointInPolygon((ix1 + ix2) / 2, (iy1 + iy2) / 2, points)) {
+      stitches.push({ x: Math.round(ix1), y: Math.round(iy1), color, type: "underlay" });
+      stitches.push({ x: Math.round(ix2), y: Math.round(iy2), color, type: "underlay" });
     }
+  }
+  // Single center line
+  if (pointInPolygon(midX, midY, points)) {
+    stitches.push({ x: Math.round(bounds.minX), y: Math.round(midY), color, type: "underlay" });
+    stitches.push({ x: Math.round(bounds.maxX), y: Math.round(midY), color, type: "underlay" });
   }
   return stitches;
 }
 
+/* Professional Tatami Fill
+   - Computes optimal fill angle from shape's principal axis
+   - Staggered rows (brickwork pattern) to hide seams
+   - Auto-detects narrow regions and switches to satin
+*/
+function computePrincipalAngle(points) {
+  let cx = 0, cy = 0, n = points.length;
+  for (const [x, y] of points) { cx += x; cy += y; }
+  cx /= n; cy /= n;
+  let mxx = 0, myy = 0, mxy = 0;
+  for (const [x, y] of points) {
+    const dx = x - cx, dy = y - cy;
+    mxx += dx * dx; myy += dy * dy; mxy += dx * dy;
+  }
+  if (Math.abs(mxy) < 0.001) return 0;
+  return Math.atan2(2 * mxy, mxx - myy) / 2;
+}
+
+function isNarrowColumn(points, rowStart, rowEnd, fillAngle) {
+  // Measure the width of this specific row segment
+  const segLen = Math.hypot(rowEnd[0] - rowStart[0], rowEnd[1] - rowStart[1]);
+  return segLen < 8; // Less than ~2.5mm → too narrow for fill
+}
+
 function contourFillPolygon(points, color) {
-  const stitches = [], bounds = polygonBounds(points);
-  const stitchLen = 2.5, rowSpacing = 3.0;
-  let inset = 0, pass = 0, maxPasses = 8;
-  while (inset < Math.min(bounds.width, bounds.height) / 2 && pass < maxPasses) {
-    const yStart = bounds.minY + inset, yEnd = bounds.maxY - inset;
-    for (let y = yStart; y < yEnd; y += rowSpacing) {
-      const ry = y + (pass % 2) * (rowSpacing * 0.5);
-      if (ry > yEnd) break;
+  const stitches = [];
+  const bounds = polygonBounds(points);
+  const fillAngle = computePrincipalAngle(points);
+  const cosA = Math.cos(fillAngle), sinA = Math.sin(fillAngle);
+  const stitchLen = 2.8, rowSpacing = 3.2;
+
+  // Transform points to local (rotated) frame
+  function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
+  function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
+
+  const localPts = points.map(([x, y]) => toLocal(x, y));
+  const lBounds = polygonBounds(localPts);
+
+  let rowIdx = 0;
+  for (let ly = lBounds.minY; ly <= lBounds.maxY; ly += rowSpacing) {
+    const ints = [];
+    for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
+      const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
+      if ((y1 <= ly && y2 > ly) || (y2 <= ly && y1 > ly)) {
+        ints.push(x1 + (ly - y1) / (y2 - y1) * (x2 - x1));
+      }
+    }
+    if (ints.length < 2) continue;
+    ints.sort((a, b) => a - b);
+
+    for (let k = 0; k + 1 < ints.length; k += 2) {
+      let segStart = ints[k], segEnd = ints[k + 1];
+      if (segEnd <= segStart) continue;
+
+      // Stagger every other row by half row spacing
+      if (rowIdx % 2 === 1) {
+        const stagger = rowSpacing * 0.35;
+        segStart += stagger;
+        segEnd += stagger;
+      }
+
+      // If segment is too narrow, skip fill (satin will handle it)
+      if (segEnd - segStart < 6) continue;
+
+      const steps = Math.max(1, Math.floor((segEnd - segStart) / stitchLen));
+      const dir = (rowIdx % 2 === 0) ? 1 : -1;
+      const startX = dir === 1 ? segStart : segEnd, endX = dir === 1 ? segEnd : segStart;
+      for (let s = 0; s <= steps; s++) {
+        const t = s / steps;
+        const lx = startX + (endX - startX) * t;
+        const [gx, gy] = toGlobal(lx, ly);
+        stitches.push({ x: Math.round(gx), y: Math.round(gy), color, type: "fill" });
+      }
+    }
+    rowIdx++;
+  }
+
+  // Inner passes (offset inward, same angle, for density)
+  for (let pass = 1; pass <= 2; pass++) {
+    const inset = pass * rowSpacing * 0.6;
+    const innerBounds = {
+      minX: lBounds.minX + inset, maxX: lBounds.maxX - inset,
+      minY: lBounds.minY + inset, maxY: lBounds.maxY - inset
+    };
+    if (innerBounds.maxX <= innerBounds.minX || innerBounds.maxY <= innerBounds.minY) break;
+
+    let innerRowIdx = 0;
+    for (let ly = innerBounds.minY; ly <= innerBounds.maxY; ly += rowSpacing) {
       const ints = [];
-      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-        const [x1, y1] = points[i], [x2, y2] = points[j];
-        if ((y1 <= ry && y2 > ry) || (y2 <= ry && y1 > ry)) {
-          ints.push(x1 + (ry - y1) / (y2 - y1) * (x2 - x1));
+      for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
+        const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
+        if ((y1 <= ly && y2 > ly) || (y2 <= ly && y1 > ly)) {
+          ints.push(x1 + (ly - y1) / (y2 - y1) * (x2 - x1));
         }
       }
+      if (ints.length < 2) continue;
       ints.sort((a, b) => a - b);
       for (let k = 0; k + 1 < ints.length; k += 2) {
-        const segStart = ints[k], segEnd = ints[k + 1];
-        if (segEnd <= segStart) continue;
+        let segStart = ints[k], segEnd = ints[k + 1];
+        if (segEnd <= segStart || segEnd - segStart < 6) continue;
+        if ((innerRowIdx + pass) % 2 === 1) {
+          segStart += rowSpacing * 0.3;
+          segEnd += rowSpacing * 0.3;
+        }
         const steps = Math.max(1, Math.floor((segEnd - segStart) / stitchLen));
-        const dir = (Math.floor(y / rowSpacing) % 2 === 0) ? 1 : -1;
+        const dir = (innerRowIdx % 2 === 0) ? 1 : -1;
         const startX = dir === 1 ? segStart : segEnd, endX = dir === 1 ? segEnd : segStart;
         for (let s = 0; s <= steps; s++) {
           const t = s / steps;
-          stitches.push({ x: Math.round(startX + (endX - startX) * t), y: Math.round(ry), color, type: "fill" });
+          const lx = startX + (endX - startX) * t;
+          const [gx, gy] = toGlobal(lx, ly);
+          stitches.push({ x: Math.round(gx), y: Math.round(gy), color, type: "fill" });
         }
       }
+      innerRowIdx++;
     }
-    inset += rowSpacing * 1.5; pass++;
+  }
+
+  return stitches;
+}
+
+/* Narrow satin — for shapes too thin for fill */
+function narrowSatinFill(points, color, width = 3.0) {
+  const stitches = [];
+  const totalLen = points.length * 6;
+  const steps = Math.max(points.length * 3, Math.floor(totalLen / 1.5));
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * points.length;
+    const idx = Math.floor(t) % points.length;
+    const nextIdx = (idx + 1) % points.length;
+    const frac = t - Math.floor(t);
+    const bx = points[idx][0] + (points[nextIdx][0] - points[idx][0]) * frac;
+    const by = points[idx][1] + (points[nextIdx][1] - points[idx][1]) * frac;
+    // Normal vector
+    const dx = points[nextIdx][0] - points[idx][0];
+    const dy = points[nextIdx][1] - points[idx][1];
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len * (width / 2), ny = dx / len * (width / 2);
+    stitches.push({ x: Math.round(bx + nx), y: Math.round(by + ny), color, type: "satin" });
+    stitches.push({ x: Math.round(bx - nx), y: Math.round(by - ny), color, type: "satin" });
   }
   return stitches;
 }
@@ -588,12 +721,19 @@ function generateStitches(shapes) {
     const color = toThreadColor(s.color || "#FF0066");
     const type = s.type || "fill";
     if (type === "fill") {
-      all = all.concat(underlayPolygon(points, color));
-      all = all.concat(contourFillPolygon(points, color));
+      // Check if shape is too narrow for fill → use narrow satin instead
+      const bounds = polygonBounds(points);
+      const area = polygonArea(points);
+      const isVeryNarrow = (bounds.width < 8 || bounds.height < 8) || (area < 2.0);
+      if (isVeryNarrow) {
+        all = all.concat(narrowSatinFill(points, color, 2.5));
+      } else {
+        all = all.concat(underlayPolygon(points, color));
+        all = all.concat(contourFillPolygon(points, color));
+      }
       all = all.concat(runningPolygon(points, color));
     } else if (type === "satin") {
-      all = all.concat(runningPolygon(points, color));
-      all = all.concat(runningPolygon(points, color));
+      all = all.concat(narrowSatinFill(points, color, 3.0));
     } else {
       all = all.concat(runningPolygon(points, color));
     }
