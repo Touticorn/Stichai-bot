@@ -8,7 +8,23 @@ const app = express();
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const MODEL = "gemini-2.5-flash";
-const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+const FALLBACK_MODEL = "gemini-1.5-flash";
+
+function apiUrl(model) {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+}
+
+async function geminiRequest(body, timeoutMs) {
+  try {
+    return await axios.post(apiUrl(MODEL), body, { timeout: timeoutMs });
+  } catch (e) {
+    if (e.response?.status === 503 || e.response?.status === 429) {
+      console.log(`${MODEL} returned ${e.response.status}, trying ${FALLBACK_MODEL}...`);
+      return await axios.post(apiUrl(FALLBACK_MODEL), body, { timeout: timeoutMs });
+    }
+    throw e;
+  }
+}
 
 const jobs = new Map();
 
@@ -46,7 +62,7 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
     generationConfig: { temperature: 0.1, maxOutputTokens: 2048 }
   };
 
-  const res = await axios.post(API_URL, body, { timeout: 45000 });
+  const res = await geminiRequest(body, 45000);
   const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
   const jsonStr = text.replace(/```json|```/g, "").trim();
   const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
@@ -276,7 +292,7 @@ Coordinates 0-300. type:"fill" for solid areas, "satin" for thin lines/borders. 
     generationConfig: { temperature: 0.1, maxOutputTokens: 8192 }
   };
 
-  const res = await axios.post(API_URL, body, { timeout: 60000 });
+  const res = await geminiRequest(body, 60000);
   const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
   let jsonStr = text.replace(/```json|```/g, "").trim();
   const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
