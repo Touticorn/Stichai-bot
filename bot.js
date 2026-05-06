@@ -13,16 +13,20 @@ const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL
 const jobs = new Map();
 
 /* ============================================================
-   PHOTO PREPROCESSING (sharp)
+   IMPROVEMENT #1: PHOTO PREPROCESSING (sharp)
+   Auto-flatten phone photos into vector-like images
    ============================================================ */
 async function preprocessImage(buffer) {
   const processed = await sharp(buffer)
     .rotate()
     .resize(2000, 2000, { fit: "inside", withoutEnlargement: false })
-    .linear(1.15, -10)
+    // Stronger contrast push BEFORE blur to lock in tiny details
+    .linear(1.15, -10)              // gentle contrast curve (multiply, then offset)
     .normalize()
     .modulate({ saturation: 1.7 })
+    // Single-pixel median to kill JPEG noise without blurring tiny shapes
     .median(1)
+    // Strong sharpen to recover edges of small details (crown prongs, thin text)
     .sharpen({ sigma: 1.2, m1: 1.5, m2: 2.5 })
     .toFormat("png")
     .toBuffer();
@@ -30,7 +34,7 @@ async function preprocessImage(buffer) {
 }
 
 /* ============================================================
-   STEP 1: COLOR DETECTION (Gemini)
+   STEP 1: COLOR DETECTION + classification (Gemini)
    ============================================================ */
 async function detectColors(b64, mime) {
   const prompt = `You are analyzing a design for embroidery digitizing.
@@ -56,7 +60,7 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
 }
 
 /* ============================================================
-   LAB COLOR SPACE
+   IMPROVEMENT #3: LAB COLOR SPACE
    ============================================================ */
 function hexToRgb(hex) {
   const m = hex.match(/^#([0-9a-fA-F]{6})$/);
@@ -111,7 +115,7 @@ function ramerDouglasPeucker(points, epsilon) {
 }
 
 /* ============================================================
-   PIXEL TRACING — your original, untouched
+   IMPROVEMENT #2: PIXEL TRACING at 1024px + LAB
    ============================================================ */
 async function extractShapesFromImage(buffer, colors) {
   const jimpModule = require("jimp");
@@ -142,12 +146,16 @@ async function extractShapesFromImage(buffer, colors) {
         const d = colorDistanceLab(pixLab, labColors[c]);
         if (d < bestDist) { bestDist = d; bestIdx = c; }
       }
+      // Wider threshold (35 in LAB) catches anti-aliased pixels on small details
+      // — letter strokes, crown prongs, tiny shapes. 35 ≈ "loosely similar"
       if (bestDist < 35) pixelColors[y * pw + x] = bestIdx;
     }
   }
 
   const visited = new Uint8Array(pw * ph);
   const shapes = [];
+  // Hard floor of 6 pixels — captures crown prongs, accent dots, thin strokes
+  // Removed adaptive scaling that was nuking small shapes on big images
   const minComponentSize = 6;
 
   for (let ci = 0; ci < labColors.length; ci++) {
@@ -210,6 +218,7 @@ async function extractShapesFromImage(buffer, colors) {
 
         if (contour.length < 4) continue;
 
+        // Preserve small detail curves — epsilon 0.25 keeps crown prong shapes
         const simplified = ramerDouglasPeucker(contour, 0.25);
         const stitchScale = 300 / Math.max(pw, ph);
         const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
@@ -245,7 +254,7 @@ async function extractShapesFromImage(buffer, colors) {
 }
 
 /* ============================================================
-   GEMINI SHAPE EXTRACTION FALLBACK
+   IMPROVEMENT #4 + #5: SMART GEMINI EXTRACTION
    ============================================================ */
 async function extractShapesWithGemini(b64, mime, hint = {}) {
   const isText = hint.is_text;
@@ -309,7 +318,7 @@ function repairJSON(str) {
 }
 
 /* ============================================================
-   PROFESSIONAL STITCH GENERATION
+   STITCH GENERATION — proper geometry, no diagonals outside polygon
    ============================================================ */
 function toThreadColor(hex) {
   const m = hex.match(/^#([0-9a-fA-F]{6})$/);
@@ -333,101 +342,296 @@ function polygonBounds(points) {
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 }
 
-function polygonCentroid(points) {
-  let cx = 0, cy = 0;
-  for (const [x, y] of points) { cx += x; cy += y; }
-  return { x: cx / points.length, y: cy / points.length };
+function polygonArea(points) {
+  let area = 0;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    area += (points[j][0] + points[i][0]) * (points[j][1] - points[i][1]);
+  }
+  return Math.abs(area / 2);
 }
 
+// FIX #1: proper underlay — runs INSIDE the polygon only, zigzag pattern
+// Used for fill underlay (stabilizes fabric before main stitches)
 function underlayPolygon(points, color) {
-  const stitches = [], bounds = polygonBounds(points), spacing = 5;
-  const len = Math.max(bounds.width, bounds.height) * 1.5;
-  for (let i = -len; i < len; i += spacing) {
-    const sx = bounds.minX + i, sy = bounds.minY - i;
-    const ex = sx + len * 0.7, ey = sy + len * 0.7;
-    if (pointInPolygon((sx + ex) / 2, (sy + ey) / 2, points)) {
-      stitches.push({ x: Math.round(sx), y: Math.round(sy), color, type: "underlay" });
-      stitches.push({ x: Math.round(ex), y: Math.round(ey), color, type: "underlay" });
+  const stitches = [], bounds = polygonBounds(points);
+  const rowSpacing = 6;
+  const stitchLen = 3;
+
+  for (let y = bounds.minY + 2; y < bounds.maxY - 2; y += rowSpacing) {
+    // find horizontal line intersections with polygon at this y
+    const ints = [];
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const [x1, y1] = points[i], [x2, y2] = points[j];
+      if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
+        ints.push(x1 + (y - y1) / (y2 - y1) * (x2 - x1));
+      }
+    }
+    ints.sort((a, b) => a - b);
+    // for each inside segment, walk along it
+    const flip = Math.floor(y / rowSpacing) % 2 === 0;
+    for (let k = 0; k + 1 < ints.length; k += 2) {
+      const segA = ints[k], segB = ints[k + 1];
+      const segStart = flip ? segA : segB;
+      const segEnd = flip ? segB : segA;
+      if (Math.abs(segEnd - segStart) < stitchLen) continue;
+      const steps = Math.max(1, Math.floor(Math.abs(segEnd - segStart) / stitchLen));
+      for (let s = 0; s <= steps; s++) {
+        const t = s / steps;
+        stitches.push({ x: Math.round(segStart + (segEnd - segStart) * t), y: Math.round(y), color, type: "underlay" });
+      }
     }
   }
   return stitches;
 }
 
-function contourFillPolygon(points, color) {
+function contourFillPolygon(points, color, density = "medium") {
   const stitches = [], bounds = polygonBounds(points);
-  const stitchLen = 2.5, rowSpacing = 3.0;
-  let inset = 0, pass = 0, maxPasses = 8;
+  const rowSpacing = density === "dense" ? 2.0 : density === "light" ? 4.0 : 3.0;
+  const stitchLen = 2.5;
 
-  while (inset < Math.min(bounds.width, bounds.height) / 2 && pass < maxPasses) {
-    const yStart = bounds.minY + inset, yEnd = bounds.maxY - inset;
-    for (let y = yStart; y < yEnd; y += rowSpacing) {
-      const ry = y + (pass % 2) * (rowSpacing * 0.5);
-      if (ry > yEnd) break;
+  for (let y = bounds.minY; y < bounds.maxY; y += rowSpacing) {
+    const ints = [];
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const [x1, y1] = points[i], [x2, y2] = points[j];
+      if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
+        ints.push(x1 + (y - y1) / (y2 - y1) * (x2 - x1));
+      }
+    }
+    ints.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < ints.length; k += 2) {
+      const segStart = ints[k], segEnd = ints[k + 1];
+      if (segEnd <= segStart) continue;
+      const steps = Math.max(1, Math.floor((segEnd - segStart) / stitchLen));
+      const flip = Math.floor(y / rowSpacing) % 2 === 0;
+      const startX = flip ? segStart : segEnd, endX = flip ? segEnd : segStart;
+      for (let s = 0; s <= steps; s++) {
+        const t = s / steps;
+        stitches.push({ x: Math.round(startX + (endX - startX) * t), y: Math.round(y), color, type: "fill" });
+      }
+    }
+  }
+  return stitches;
+}
+
+// FIX #3: Proper satin column for thin shapes (text strokes, borders)
+// Walks the long axis with perpendicular zigzag stitches across the short axis
+function satinColumnPolygon(points, color) {
+  const stitches = [], bounds = polygonBounds(points);
+  const isHorizontal = bounds.width >= bounds.height;
+  const longAxis = isHorizontal ? "x" : "y";
+  const longLen = isHorizontal ? bounds.width : bounds.height;
+  const stepSpacing = 1.8; // stitches along long axis
+  const steps = Math.max(2, Math.floor(longLen / stepSpacing));
+
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    if (isHorizontal) {
+      const x = bounds.minX + bounds.width * t;
       const ints = [];
       for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
         const [x1, y1] = points[i], [x2, y2] = points[j];
-        if ((y1 <= ry && y2 > ry) || (y2 <= ry && y1 > ry)) {
-          ints.push(x1 + (ry - y1) / (y2 - y1) * (x2 - x1));
+        if ((x1 <= x && x2 > x) || (x2 <= x && x1 > x)) {
+          ints.push(y1 + (x - x1) / (x2 - x1) * (y2 - y1));
         }
       }
       ints.sort((a, b) => a - b);
-      for (let k = 0; k + 1 < ints.length; k += 2) {
-        const segStart = ints[k], segEnd = ints[k + 1];
-        if (segEnd <= segStart) continue;
-        const steps = Math.max(1, Math.floor((segEnd - segStart) / stitchLen));
-        const dir = (Math.floor(y / rowSpacing) % 2 === 0) ? 1 : -1;
-        const startX = dir === 1 ? segStart : segEnd, endX = dir === 1 ? segEnd : segStart;
-        for (let s = 0; s <= steps; s++) {
-          const t = s / steps;
-          stitches.push({ x: Math.round(startX + (endX - startX) * t), y: Math.round(ry), color, type: "fill" });
+      if (ints.length >= 2) {
+        const flip = s % 2 === 0;
+        stitches.push({ x: Math.round(x), y: Math.round(flip ? ints[0] : ints[ints.length - 1]), color, type: "satin" });
+        stitches.push({ x: Math.round(x), y: Math.round(flip ? ints[ints.length - 1] : ints[0]), color, type: "satin" });
+      }
+    } else {
+      const y = bounds.minY + bounds.height * t;
+      const ints = [];
+      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const [x1, y1] = points[i], [x2, y2] = points[j];
+        if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
+          ints.push(x1 + (y - y1) / (y2 - y1) * (x2 - x1));
         }
       }
+      ints.sort((a, b) => a - b);
+      if (ints.length >= 2) {
+        const flip = s % 2 === 0;
+        stitches.push({ x: Math.round(flip ? ints[0] : ints[ints.length - 1]), y: Math.round(y), color, type: "satin" });
+        stitches.push({ x: Math.round(flip ? ints[ints.length - 1] : ints[0]), y: Math.round(y), color, type: "satin" });
+      }
     }
-    inset += rowSpacing * 1.5; pass++;
   }
   return stitches;
 }
 
-function runningPolygon(points, color) {
+// FIX #2: outline runs ONCE around the polygon contour — no zigzag noise
+function outlinePolygon(points, color) {
   const stitches = [], dash = 2.5;
-  const totalLen = points.length * 8;
-  const steps = Math.max(points.length * 2, Math.floor(totalLen / dash));
-  for (let i = 0; i <= steps; i++) {
-    const t = (i / steps) * points.length;
-    const idx = Math.floor(t) % points.length, nextIdx = (idx + 1) % points.length;
-    const frac = t - Math.floor(t);
-    stitches.push({
-      x: Math.round(points[idx][0] + (points[nextIdx][0] - points[idx][0]) * frac),
-      y: Math.round(points[idx][1] + (points[nextIdx][1] - points[idx][1]) * frac),
-      color, type: "running"
-    });
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    const dx = x2 - x1, dy = y2 - y1;
+    const segLen = Math.sqrt(dx * dx + dy * dy);
+    if (segLen < dash) {
+      stitches.push({ x: Math.round(x1), y: Math.round(y1), color, type: "running" });
+      continue;
+    }
+    const steps = Math.max(1, Math.floor(segLen / dash));
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      stitches.push({ x: Math.round(x1 + dx * t), y: Math.round(y1 + dy * t), color, type: "running" });
+    }
   }
   return stitches;
 }
 
-function generateStitches(shapes) {
+function generateStitches(shapes, plan = null) {
   let all = [];
   const designW = 300, designH = 300;
 
-  for (const s of shapes) {
+  // Sort shapes per plan if provided (color order, large→small)
+  let ordered = shapes;
+  if (plan?.order && Array.isArray(plan.order)) {
+    const indexed = shapes.map((s, i) => ({ s, i }));
+    ordered = plan.order.map(i => shapes[i]).filter(Boolean);
+    if (ordered.length < shapes.length) ordered = ordered.concat(shapes.filter((_, i) => !plan.order.includes(i)));
+  }
+
+  for (let idx = 0; idx < ordered.length; idx++) {
+    const s = ordered[idx];
     const points = s.points || [[0, 0], [10, 0], [10, 10], [0, 10]];
     const color = toThreadColor(s.color || "#FF0066");
     const type = s.type || "fill";
 
-    if (type === "fill") {
+    if (type === "satin") {
+      // satin column for thin shapes — no underlay, no fill
+      all = all.concat(satinColumnPolygon(points, color));
+    } else if (type === "fill") {
+      // underlay + fill + thin outline (single pass)
       all = all.concat(underlayPolygon(points, color));
-      all = all.concat(contourFillPolygon(points, color));
-      all = all.concat(runningPolygon(points, color));
-    } else if (type === "satin") {
-      all = all.concat(runningPolygon(points, color));
-      all = all.concat(runningPolygon(points, color));
+      all = all.concat(contourFillPolygon(points, color, s.density || "medium"));
+      all = all.concat(outlinePolygon(points, color));
     } else {
-      all = all.concat(runningPolygon(points, color));
+      // running stitch only
+      all = all.concat(outlinePolygon(points, color));
     }
   }
 
-  all = all.concat(runningPolygon([[-2, -2], [designW + 2, -2], [designW + 2, designH + 2], [-2, designH + 2]], "#333333"));
-  return { stitches: all, designW, designH, shapes };
+  return { stitches: all, designW, designH, shapes: ordered };
+}
+
+/* ============================================================
+   SHAPE FILTERING & DEDUPLICATION
+   Reduces 300+ noisy shapes to clean set
+   ============================================================ */
+function shapeOverlapRatio(a, b) {
+  // approximate overlap by bounding box intersection over union
+  const ba = polygonBounds(a.points), bb = polygonBounds(b.points);
+  const ix1 = Math.max(ba.minX, bb.minX), iy1 = Math.max(ba.minY, bb.minY);
+  const ix2 = Math.min(ba.maxX, bb.maxX), iy2 = Math.min(ba.maxY, bb.maxY);
+  if (ix2 <= ix1 || iy2 <= iy1) return 0;
+  const inter = (ix2 - ix1) * (iy2 - iy1);
+  const areaA = Math.max(1, (ba.maxX - ba.minX) * (ba.maxY - ba.minY));
+  const areaB = Math.max(1, (bb.maxX - bb.minX) * (bb.maxY - bb.minY));
+  return inter / Math.min(areaA, areaB);
+}
+
+function filterAndMergeShapes(shapes, maxShapes = 60) {
+  if (!shapes.length) return shapes;
+
+  // 1. Remove tiny noise (under 12 stitch units area)
+  let kept = shapes.filter(s => {
+    const a = polygonArea(s.points || []);
+    return a >= 12;
+  });
+
+  // 2. Sort by area descending — bigger shapes are more important
+  kept.sort((a, b) => polygonArea(b.points) - polygonArea(a.points));
+
+  // 3. Greedy dedup: drop shape if it heavily overlaps a kept bigger shape of same color
+  const finalSet = [];
+  for (const s of kept) {
+    let isDuplicate = false;
+    for (const k of finalSet) {
+      if (k.color === s.color && shapeOverlapRatio(k, s) > 0.7) {
+        isDuplicate = true;
+        break;
+      }
+    }
+    if (!isDuplicate) finalSet.push(s);
+    if (finalSet.length >= maxShapes) break;
+  }
+
+  return finalSet;
+}
+
+/* ============================================================
+   GEMINI STITCH PLANNER (the "outside the box" part)
+   Lets the AI decide stitch order, types, and density per shape
+   ============================================================ */
+async function planStitchingWithGemini(shapes, detection) {
+  if (!shapes.length) return null;
+
+  // Compact representation Gemini can reason about
+  const summary = shapes.slice(0, 50).map((s, i) => {
+    const b = polygonBounds(s.points);
+    return {
+      i,
+      color: s.color,
+      type: s.type,
+      x: Math.round(b.minX),
+      y: Math.round(b.minY),
+      w: Math.round(b.width),
+      h: Math.round(b.height),
+      area: Math.round(polygonArea(s.points))
+    };
+  });
+
+  const prompt = `You are an expert embroidery digitizer planning a real production stitch-out.
+The design contains ${shapes.length} shapes. Detection: ${detection.is_text ? "TEXT" : ""} ${detection.is_logo ? "LOGO" : ""}.
+
+For each shape index, decide:
+- "type": "satin" (thin lines/letters under 18 units thick) | "fill" (solid areas) | "running" (single line)
+- "density": "light" | "medium" | "dense"
+- "keep": true|false (false to discard noise)
+
+Also give the global stitch ORDER as an array of indices (large background → foreground; group same colors to minimize thread changes).
+
+Shapes:
+${JSON.stringify(summary)}
+
+Return ONLY compact JSON:
+{"plan":[{"i":0,"type":"fill","density":"medium","keep":true},...],"order":[2,5,1,...]}
+No prose. No markdown.`;
+
+  const body = {
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
+  };
+
+  try {
+    const res = await axios.post(API_URL, body, { timeout: 45000 });
+    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    let jsonStr = text.replace(/```json|```/g, "").trim();
+    const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
+    if (fb !== -1 && lb > fb) jsonStr = jsonStr.slice(fb, lb + 1);
+    const parsed = JSON.parse(jsonStr);
+    return parsed;
+  } catch (e) {
+    console.error("Stitch planner failed, using heuristic fallback:", e.message);
+    return null;
+  }
+}
+
+function applyPlan(shapes, plan) {
+  if (!plan?.plan) return shapes;
+  const updated = [];
+  for (const item of plan.plan) {
+    const s = shapes[item.i];
+    if (!s || item.keep === false) continue;
+    updated.push({ ...s, type: item.type || s.type, density: item.density || "medium" });
+  }
+  // include shapes the planner forgot
+  for (let i = 0; i < shapes.length; i++) {
+    if (!plan.plan.find(p => p.i === i)) updated.push(shapes[i]);
+  }
+  return updated;
 }
 
 /* ============================================================
@@ -454,163 +658,10 @@ function encodeDST(data) {
   return Buffer.concat([header, ...records]);
 }
 
-/* ============================================================
-   REAL PES ENCODER (Brother format)
-   Proper PEC stitch block with color changes
-   ============================================================ */
-function encodePES(data) {
-  const { stitches } = data;
-  const pecStitches = [];
-  let prevX = 0, prevY = 0, lastColor = null;
-  const colorChanges = [];
-
-  for (const s of stitches) {
-    if (s.color !== lastColor) {
-      if (lastColor !== null) {
-        pecStitches.push({ x: 0, y: 0, colorChange: true });
-        colorChanges.push(s.color);
-      }
-      lastColor = s.color;
-    }
-    const dx = Math.round(s.x - prevX);
-    const dy = Math.round(s.y - prevY);
-    prevX = s.x; prevY = s.y;
-    pecStitches.push({ x: dx, y: dy });
-  }
-
-  // Build PEC section
-  const pecRecords = [];
-  for (const st of pecStitches) {
-    let dx = st.x, dy = st.y;
-    if (st.colorChange) {
-      pecRecords.push(Buffer.from([0xFE, 0xB0]));
-      continue;
-    }
-    // PES uses 8-bit signed deltas with special escape codes
-    while (Math.abs(dx) > 63 || Math.abs(dy) > 63) {
-      const sx = Math.sign(dx) * Math.min(Math.abs(dx), 63);
-      const sy = Math.sign(dy) * Math.min(Math.abs(dy), 63);
-      pecRecords.push(Buffer.from([0x7F, sy & 0xFF, sx & 0xFF]));
-      dx -= sx; dy -= sy;
-    }
-    pecRecords.push(Buffer.from([dy & 0xFF, dx & 0xFF]));
-  }
-  pecRecords.push(Buffer.from([0xFF]));
-
-  const pecStitchData = Buffer.concat(pecRecords);
-
-  // PEC header
-  const colors = [...new Set(stitches.map(s => s.color))];
-  const pecHeader = Buffer.alloc(512);
-  let off = 0;
-  pecHeader.write("LA:Stichai\x20\x20\x20\x20\x20\x20\x00", off); off += 19; // label
-  pecHeader[off++] = 0x00; // spacing
-  pecHeader[off++] = 0x00; // unknown
-  pecHeader[off++] = colors.length; // color count
-  for (let i = 0; i < colors.length; i++) {
-    pecHeader[off++] = i % 64; // color index
-  }
-  pecHeader[off++] = 0x00; // unknown
-  pecHeader[off++] = 0x00; // unknown
-  // bounding box (placeholder)
-  pecHeader.writeInt16LE(0, off); off += 2;
-  pecHeader.writeInt16LE(0, off); off += 2;
-  pecHeader.writeInt16LE(300, off); off += 2;
-  pecHeader.writeInt16LE(300, off); off += 2;
-  // start offset in PEC (relative)
-  pecHeader.writeInt32LE(0x1F0 + 0x200, off); off += 4;
-  pecHeader.writeInt32LE(0x1F0, off); off += 4;
-
-  const pecData = Buffer.concat([pecHeader, pecStitchData]);
-
-  // PES header
-  const pesHeaderSize = 0x8000;
-  const pesHeader = Buffer.alloc(pesHeaderSize);
-  pesHeader.write("#PES0001", 0, "ascii");
-  pesHeader.writeUInt32LE(pesHeaderSize, 8);
-  pesHeader.writeUInt32LE(pesHeaderSize, 12); // PEC offset
-
-  return Buffer.concat([pesHeader, pecData]);
-}
-
-function encodeJEF(data) {
-  const { stitches } = data;
-  const records = [];
-  let prevX = 0, prevY = 0, lastColor = null;
-  const colors = [...new Set(stitches.map(s => s.color))];
-
-  for (const s of stitches) {
-    if (s.color !== lastColor) {
-      if (lastColor !== null) records.push(Buffer.from([0x80, 0x01, 0x00, 0x00]));
-      lastColor = s.color;
-    }
-    const dx = Math.round(s.x - prevX);
-    const dy = Math.round(s.y - prevY);
-    prevX = s.x; prevY = s.y;
-    if (dx === 0 && dy === 0) continue;
-    if (Math.abs(dx) <= 127 && Math.abs(dy) <= 127) {
-      records.push(Buffer.from([dx & 0xFF, dy & 0xFF]));
-    } else {
-      records.push(Buffer.from([0x80, 0x02, dx & 0xFF, (dx >> 8) & 0xFF, dy & 0xFF, (dy >> 8) & 0xFF]));
-    }
-  }
-  records.push(Buffer.from([0x80, 0x10, 0x00, 0x00]));
-
-  const stitchData = Buffer.concat(records);
-  const header = Buffer.alloc(116);
-  header.write("JF0a", 0, "ascii"); // version
-  header.writeUInt32LE(header.length + stitchData.length, 4); // file size
-  // stitch count area offsets
-  header.writeUInt32LE(116, 8);  // stitch offset
-  header.writeUInt32LE(116 + stitchData.length, 12); // end offset
-  // placeholder counts
-  header.writeUInt16LE(stitches.length, 16);
-  header.writeUInt16LE(colors.length, 20);
-  // bounding box
-  header.writeInt32LE(0, 24);
-  header.writeInt32LE(0, 28);
-  header.writeInt32LE(300 * 10, 32);
-  header.writeInt32LE(300 * 10, 36);
-  // design size in 0.1mm
-  header.writeInt32LE(3000, 40);
-  header.writeInt32LE(3000, 44);
-  // Hoop 110x110
-  header.write("H005", 48, "ascii");
-  // Thread colors (simplified map)
-  for (let i = 0; i < Math.min(colors.length, 10); i++) {
-    header.writeUInt8((i * 7 + 1) % 79, 60 + i); // Janome color indices
-  }
-
-  return Buffer.concat([header, stitchData]);
-}
-
-function encodeEXP(data) {
-  const { stitches } = data;
-  const records = [];
-  let prevX = 0, prevY = 0, lastColor = null;
-
-  for (const s of stitches) {
-    if (s.color !== lastColor) {
-      if (lastColor !== null) records.push(Buffer.from([0x80, 0x01, 0x00, 0x00]));
-      lastColor = s.color;
-    }
-    const dx = Math.round(s.x - prevX);
-    const dy = Math.round(s.y - prevY);
-    prevX = s.x; prevY = s.y;
-    records.push(Buffer.from([dx & 0xFF, (dx >> 8) & 0xFF, dy & 0xFF, (dy >> 8) & 0xFF]));
-  }
-  records.push(Buffer.from([0x00, 0x00, 0x00, 0x00]));
-
-  return Buffer.concat([Buffer.alloc(512), ...records]);
-}
-
-function encodeVP3(data) {
-  // VP3 is complex; fall back to DST-stitch data with VP3 marker header
-  const d = encodeDST(data);
-  const h = Buffer.alloc(8);
-  h.write("VP30001\x00", 0, "ascii");
-  return Buffer.concat([h, d]);
-}
+function encodePES(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("#PES0001", 0, "ascii"); return Buffer.concat([h, d]); }
+function encodeJEF(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("JEF0001\x00", 0, "ascii"); return Buffer.concat([h, d]); }
+function encodeEXP(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("EXP0001\x00", 0, "ascii"); return Buffer.concat([h, d]); }
+function encodeVP3(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("VP30001\x00", 0, "ascii"); return Buffer.concat([h, d]); }
 
 function encodeFile(format, data) {
   switch ((format || "dst").toLowerCase()) {
@@ -661,7 +712,21 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
 
     if (!shapes.length) return res.status(500).json({ error: "No shapes extracted" });
 
-    const result = generateStitches(shapes);
+    // OUTSIDE-THE-BOX: filter noise, dedupe overlaps, then let Gemini plan
+    const rawCount = shapes.length;
+    shapes = filterAndMergeShapes(shapes, 60);
+    console.log(`Filtered ${rawCount} → ${shapes.length} shapes`);
+
+    let plan = null;
+    if (shapes.length > 6) {
+      plan = await planStitchingWithGemini(shapes, detection);
+      if (plan) {
+        shapes = applyPlan(shapes, plan);
+        console.log(`Gemini planner: ${shapes.length} shapes after plan`);
+      }
+    }
+
+    const result = generateStitches(shapes, plan);
 
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     jobs.set(id, result);
@@ -674,7 +739,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
       stitchCount: result.stitches.length,
       designSize: { w: result.designW, h: result.designH },
       colors,
-      detection: { is_text: detection.is_text, is_logo: detection.is_logo, method: extractionMethod },
+      detection: { is_text: detection.is_text, is_logo: detection.is_logo, method: extractionMethod, planned: !!plan },
       shapes: result.shapes.map(s => ({ type: s.type, color: s.color, points: s.points, pointCount: s.points.length }))
     });
   } catch (e) {
@@ -699,7 +764,7 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "7.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "6.2" }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Stichai v7.0 — professional stitch engine on port ${PORT}`));
+app.listen(PORT, () => console.log(`Stichai v6.2 running on port ${PORT}`));
