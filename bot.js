@@ -14,7 +14,6 @@ function makeUrl(model) {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
 }
 
-/* Retry wrapper: 3 attempts with exponential backoff on 503/429 */
 async function geminiPost(body, timeoutMs, primaryModel, retries = 3) {
   let lastErr;
   for (let i = 0; i < retries; i++) {
@@ -24,45 +23,33 @@ async function geminiPost(body, timeoutMs, primaryModel, retries = 3) {
       lastErr = e;
       const status = e.response?.status;
       if (status === 503 || status === 429) {
-        const delay = 2000 * Math.pow(2, i); // 2s, 4s, 8s
-        console.log(`Gemini ${primaryModel} returned ${status}, retry ${i + 1}/${retries} in ${delay}ms...`);
+        const delay = 2000 * Math.pow(2, i);
+        console.log(`Gemini ${primaryModel} ${status}, retry ${i + 1}/${retries} in ${delay}ms`);
         await new Promise(r => setTimeout(r, delay));
       } else {
         throw e;
       }
     }
   }
-  // All retries exhausted — try fallback (Flash) once
-  console.log(`All ${retries} retries failed for ${primaryModel}, trying ${FLASH_MODEL}...`);
+  console.log(`All retries failed for ${primaryModel}, trying ${FLASH_MODEL}`);
   return axios.post(makeUrl(FLASH_MODEL), body, { timeout: timeoutMs });
 }
 
 const jobs = new Map();
 
-/* ============================================================
-   IMPROVEMENT #1: PHOTO PREPROCESSING (sharp)
-   Auto-flatten phone photos into vector-like images
-   ============================================================ */
 async function preprocessImage(buffer) {
-  const processed = await sharp(buffer)
+  return sharp(buffer)
     .rotate()
     .resize(2000, 2000, { fit: "inside", withoutEnlargement: false })
-    // Stronger contrast push BEFORE blur to lock in tiny details
-    .linear(1.15, -10)              // gentle contrast curve (multiply, then offset)
+    .linear(1.15, -10)
     .normalize()
     .modulate({ saturation: 1.7 })
-    // Single-pixel median to kill JPEG noise without blurring tiny shapes
     .median(1)
-    // Strong sharpen to recover edges of small details (crown prongs, thin text)
     .sharpen({ sigma: 1.2, m1: 1.5, m2: 2.5 })
     .toFormat("png")
     .toBuffer();
-  return processed;
 }
 
-/* ============================================================
-   STEP 1: COLOR DETECTION + classification (Gemini)
-   ============================================================ */
 async function detectColors(b64, mime) {
   const prompt = `You are analyzing a design for embroidery digitizing.
 List only the 4-6 distinct FLAT thread colors needed. Ignore all gradients, shadows, reflections, anti-aliasing, and background. Each color must be a solid flat area in the design.
@@ -79,10 +66,12 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
   const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
   const clean = (fb !== -1 && lb > fb) ? jsonStr.slice(fb, lb + 1) : jsonStr;
   const parsed = JSON.parse(clean);
+
   const rawColors = parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"];
   let colors = mergeSimilarColors(rawColors, 28);
   if (colors.length > 6) colors = colors.slice(0, 6);
   console.log(`Gemini returned ${rawColors.length} colors, merged to ${colors.length}`);
+
   return {
     colors,
     is_text: !!parsed.is_text,
@@ -90,9 +79,6 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
   };
 }
 
-/* ============================================================
-   IMPROVEMENT #3: LAB COLOR SPACE
-   ============================================================ */
 function hexToRgb(hex) {
   const m = hex.match(/^#([0-9a-fA-F]{6})$/);
   if (!m) return { r: 0, g: 0, b: 0 };
@@ -108,8 +94,7 @@ function rgbToLab({ r, g, b }) {
   const Y = R * 0.2126 + G * 0.7152 + B * 0.0722;
   const Z = R * 0.0193 + G * 0.1192 + B * 0.9505;
   const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
-  const fx = f(X / 0.95047), fy = f(Y / 1.0), fz = f(Z / 1.08883);
-  return { l: 116 * fy - 16, a: 500 * (fx - fy), b: 200 * (fy - fz) };
+  return { l: 116 * f(Y) - 16, a: 500 * (f(X / 0.95047) - f(Y)), b: 200 * (f(Y) - f(Z / 1.08883)) };
 }
 
 function colorDistanceLab(c1Lab, c2Lab) {
@@ -119,13 +104,6 @@ function colorDistanceLab(c1Lab, c2Lab) {
   return Math.sqrt(dl * dl + da * da + db * db);
 }
 
-/* -----------------------------------------------------------
-   COLOR MERGE: Gemini sometimes returns 8-12+ "colors" for
-   a design with only 4-5 actual thread colors. Anti-aliased
-   edge shades get detected as separate colors, fragmenting
-   the pixel tracing into hundreds of tiny shapes.
-   Merge any two colors within LAB threshold 18 back to one.
-   ----------------------------------------------------------- */
 function mergeSimilarColors(colors, threshold = 28) {
   if (!colors || colors.length < 2) return colors || ["#FF0000"];
   const labs = colors.map(c => ({ hex: c, lab: rgbToLab(hexToRgb(c)) }));
@@ -143,10 +121,7 @@ function mergeSimilarColors(colors, threshold = 28) {
     merged.push(labs[i].hex);
   }
 
-  // Ensure at least 2 colors remain (don't merge everything into mono)
-  if (merged.length < 2 && colors.length >= 2) {
-    return colors.slice(0, 2);
-  }
+  if (merged.length < 2 && colors.length >= 2) return colors.slice(0, 2);
   return merged;
 }
 
@@ -176,9 +151,6 @@ function ramerDouglasPeucker(points, epsilon) {
   return Array.from(keep).sort((a, b) => a - b).map(i => points[i]);
 }
 
-/* ============================================================
-   IMPROVEMENT #2: PIXEL TRACING at 1024px + LAB
-   ============================================================ */
 async function extractShapesFromImage(buffer, colors) {
   const jimpModule = require("jimp");
   const Jimp = jimpModule.Jimp || jimpModule;
@@ -208,16 +180,12 @@ async function extractShapesFromImage(buffer, colors) {
         const d = colorDistanceLab(pixLab, labColors[c]);
         if (d < bestDist) { bestDist = d; bestIdx = c; }
       }
-      // Wider threshold (35 in LAB) catches anti-aliased pixels on small details
-      // — letter strokes, crown prongs, tiny shapes. 35 ≈ "loosely similar"
       if (bestDist < 35) pixelColors[y * pw + x] = bestIdx;
     }
   }
 
   const visited = new Uint8Array(pw * ph);
   const shapes = [];
-  // Hard floor of 6 pixels — captures crown prongs, accent dots, thin strokes
-  // Removed adaptive scaling that was nuking small shapes on big images
   const minComponentSize = 6;
 
   for (let ci = 0; ci < labColors.length; ci++) {
@@ -281,7 +249,6 @@ async function extractShapesFromImage(buffer, colors) {
 
         if (contour.length < 4) continue;
 
-        // Preserve small detail curves — epsilon 0.25 keeps crown prong shapes
         const simplified = ramerDouglasPeucker(contour, 0.25);
         const stitchScale = 300 / Math.max(pw, ph);
         const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
@@ -312,16 +279,12 @@ async function extractShapesFromImage(buffer, colors) {
   }
 
   shapes.sort((a, b) => b.pixelCount - a.pixelCount);
-  console.log(`Extracted ${shapes.length} shapes from pixels (procSize=${pw}x${ph})`);
+  console.log(`Extracted ${shapes.length} shapes from pixels (${pw}x${ph})`);
   return shapes;
 }
 
-/* ============================================================
-   IMPROVEMENT #4 + #5: SMART GEMINI EXTRACTION
-   ============================================================ */
 async function extractShapesWithGemini(b64, mime, hint = {}) {
   const isText = hint.is_text;
-
   let prompt;
   if (isText) {
     prompt = `This image contains TEXT/typography. Extract each letter or word as a separate shape with tight bounding polygons.
@@ -380,9 +343,6 @@ function repairJSON(str) {
   return repaired;
 }
 
-/* ============================================================
-   STITCH GENERATION
-   ============================================================ */
 function toThreadColor(hex) {
   const m = hex.match(/^#([0-9a-fA-F]{6})$/);
   return m ? `#${m[1].toUpperCase()}` : "#FF0066";
@@ -423,7 +383,6 @@ function contourFillPolygon(points, color) {
   const stitches = [], bounds = polygonBounds(points);
   const stitchLen = 2.5, rowSpacing = 3.0;
   let inset = 0, pass = 0, maxPasses = 8;
-
   while (inset < Math.min(bounds.width, bounds.height) / 2 && pass < maxPasses) {
     const yStart = bounds.minY + inset, yEnd = bounds.maxY - inset;
     for (let y = yStart; y < yEnd; y += rowSpacing) {
@@ -474,12 +433,10 @@ function runningPolygon(points, color) {
 function generateStitches(shapes) {
   let all = [];
   const designW = 300, designH = 300;
-
   for (const s of shapes) {
     const points = s.points || [[0, 0], [10, 0], [10, 10], [0, 10]];
     const color = toThreadColor(s.color || "#FF0066");
     const type = s.type || "fill";
-
     if (type === "fill") {
       all = all.concat(underlayPolygon(points, color));
       all = all.concat(contourFillPolygon(points, color));
@@ -491,20 +448,68 @@ function generateStitches(shapes) {
       all = all.concat(runningPolygon(points, color));
     }
   }
-
   all = all.concat(runningPolygon([[-2, -2], [designW + 2, -2], [designW + 2, designH + 2], [-2, designH + 2]], "#333333"));
   return { stitches: all, designW, designH, shapes };
 }
 
-/* ============================================================
-   FILE ENCODERS
-   ============================================================ */
+function hexToRgbNums(hex) {
+  const m = hex.match(/^#([0-9a-fA-F]{6})$/);
+  if (!m) return [0, 0, 0];
+  return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
+}
+
+function setPixel(buf, w, h, x, y, r, g, b) {
+  const px = Math.round(x), py = Math.round(y);
+  if (px < 0 || px >= w || py < 0 || py >= h) return;
+  const i = (py * w + px) * 4;
+  buf[i] = r; buf[i + 1] = g; buf[i + 2] = b; buf[i + 3] = 255;
+}
+
+function drawLineOnBuffer(buf, w, h, x0, y0, x1, y1, r, g, b, stroke) {
+  const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx - dy;
+  let x = x0, y = y0;
+  const half = Math.ceil(stroke / 2);
+  while (true) {
+    for (let ox = -half; ox <= half; ox++) {
+      for (let oy = -half; oy <= half; oy++) {
+        setPixel(buf, w, h, x + ox, y + oy, r, g, b);
+      }
+    }
+    if (Math.abs(x - x1) < 0.5 && Math.abs(y - y1) < 0.5) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x += sx; }
+    if (e2 < dx) { err += dx; y += sy; }
+  }
+}
+
+async function renderStitchesToPng(stitches, designW, designH) {
+  const scale = 4;
+  const w = Math.round(designW * scale);
+  const h = Math.round(designH * scale);
+  const buf = Buffer.alloc(w * h * 4);
+  for (let i = 0; i < w * h * 4; i += 4) {
+    buf[i] = 245; buf[i + 1] = 242; buf[i + 2] = 235; buf[i + 3] = 255;
+  }
+  let prev = null;
+  for (const s of stitches) {
+    if (prev && prev.color === s.color) {
+      const [cr, cg, cb] = hexToRgbNums(s.color);
+      const sw = s.type === 'satin' ? 1.5 : (s.type === 'underlay' ? 0.5 : 1.0);
+      drawLineOnBuffer(buf, w, h, prev.x * scale, prev.y * scale, s.x * scale, s.y * scale, cr, cg, cb, sw);
+    }
+    prev = s;
+  }
+  return await sharp(buf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
+}
+
 function encodeDST(data) {
   const { stitches } = data;
   const header = Buffer.alloc(512);
   const label = "STICHAI";
   for (let i = 0; i < label.length; i++) header[i] = label.charCodeAt(i);
-
   const records = [];
   let lastColor = null, prevX = 0, prevY = 0;
   for (const s of stitches) {
@@ -512,8 +517,7 @@ function encodeDST(data) {
     lastColor = s.color;
     const dx = Math.round(s.x - prevX), dy = Math.round(s.y - prevY);
     prevX = s.x; prevY = s.y;
-    const clamp = (v) => Math.max(-121, Math.min(121, v));
-    const cdx = clamp(dx), cdy = clamp(dy);
+    const cdx = Math.max(-121, Math.min(121, dx)), cdy = Math.max(-121, Math.min(121, dy));
     records.push(Buffer.from([cdy >= 0 ? cdy : 0x100 + cdy, cdx >= 0 ? cdx : 0x100 + cdx, 0x03]));
   }
   records.push(Buffer.from([0x00, 0x00, 0xF3]));
@@ -536,87 +540,92 @@ function encodeFile(format, data) {
   }
 }
 
-/* ============================================================
-   2D FLAT IMAGE PREVIEW — rasterizes stitches to PNG
-   ============================================================ */
-function hexToRgbNums(hex) {
-  const m = hex.match(/^#([0-9a-fA-F]{6})$/);
-  if (!m) return [0, 0, 0];
-  return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
-}
-
-function setPixel(buf, w, h, x, y, r, g, b) {
-  const px = Math.round(x);
-  const py = Math.round(y);
-  if (px < 0 || px >= w || py < 0 || py >= h) return;
-  const idx = (py * w + px) * 4;
-  buf[idx] = r; buf[idx + 1] = g; buf[idx + 2] = b; buf[idx + 3] = 255;
-}
-
-function drawLineOnBuffer(buf, w, h, x0, y0, x1, y1, r, g, b, stroke) {
-  const dx = Math.abs(x1 - x0);
-  const dy = Math.abs(y1 - y0);
-  const sx = x0 < x1 ? 1 : -1;
-  const sy = y0 < y1 ? 1 : -1;
-  let err = dx - dy;
-  let x = x0, y = y0;
-  const half = Math.ceil(stroke / 2);
-
-  while (true) {
-    for (let ox = -half; ox <= half; ox++) {
-      for (let oy = -half; oy <= half; oy++) {
-        setPixel(buf, w, h, x + ox, y + oy, r, g, b);
-      }
-    }
-    if (Math.abs(x - x1) < 0.5 && Math.abs(y - y1) < 0.5) break;
-    const e2 = 2 * err;
-    if (e2 > -dy) { err -= dy; x += sx; }
-    if (e2 < dx) { err += dx; y += sy; }
-  }
-}
-
-async function renderStitchesToPng(stitches, designW, designH) {
-  const scale = 4;
-  const w = Math.round(designW * scale);
-  const h = Math.round(designH * scale);
-  const buf = Buffer.alloc(w * h * 4);
-
-  // Beige fabric background
-  for (let i = 0; i < w * h * 4; i += 4) {
-    buf[i] = 245; buf[i + 1] = 242; buf[i + 2] = 235; buf[i + 3] = 255;
-  }
-
-  let prev = null;
-  for (const s of stitches) {
-    if (prev && prev.color === s.color) {
-      const [cr, cg, cb] = hexToRgbNums(s.color);
-      const sw = s.type === 'satin' ? 1.5 : (s.type === 'underlay' ? 0.5 : 1.0);
-      drawLineOnBuffer(buf, w, h, prev.x * scale, prev.y * scale, s.x * scale, s.y * scale, cr, cg, cb, sw);
-    }
-    prev = s;
-  }
-
-  return await sharp(buf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
-}
-
-/* ============================================================
-   EXPRESS ROUTES
-   ============================================================ */
 app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
 app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
-
     console.log("Preprocessing image...");
     const cleanBuffer = await preprocessImage(req.file.buffer);
     const cleanB64 = cleanBuffer.toString("base64");
     const cleanMime = "image/png";
-
     const detection = await detectColors(cleanB64, cleanMime);
     const colors = detection.colors;
     console.log("Colors:", colors, "is_text:", detection.is_text, "is_logo:", detection.is_logo);
+    let shapes;
+    let extractionMethod = "pixel";
+    try {
+      shapes = await extractShapesFromImage(cleanBuffer, colors);
+      if (shapes.length < 3 && detection.is_text) {
+        console.log("Few pixel shapes for text — supplementing with Gemini");
+        const geminiShapes = await extractShapesWithGemini(cleanB64, cleanMime, detection);
+        shapes = shapes.concat(geminiShapes);
+        extractionMethod = "hybrid";
+      }
+    } catch (e) {
+      console.error("Pixel extraction failed:", e.message);
+      shapes = await extractShapesWithGemini(cleanB64, cleanMime, detection);
+      extractionMethod = "gemini";
+      console.log("Gemini fallback shapes:", shapes.length);
+    }
+    if (!shapes.length) return res.status(500).json({ error: "No shapes extracted" });
+    const result = generateStitches(shapes);
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    jobs.set(id, result);
+    return res.json({
+      success: true,
+      id,
+      previewUrl: `/preview/${id}`,
+      previewImageUrl: `/preview-image/${id}`,
+      downloadUrl: `/download/${id}/dst`,
+      stitchCount: result.stitches.length,
+      designSize: { w: result.designW, h: result.designH },
+      colors,
+      detection: { is_text: detection.is_text, is_logo: detection.is_logo, method: extractionMethod },
+      shapes: result.shapes.map(s => ({ type: s.type, color: s.color, points: s.points, pointCount: s.points.length }))
+    });
+  } catch (e) {
+    console.error("/generate-embroidery error:", e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/preview/:id", (req, res) => {
+  const data = jobs.get(req.params.id);
+  if (!data) return res.status(404).json({ error: "Not found" });
+  return res.json({ stitches: data.stitches, designW: data.designW, designH: data.designH, shapes: data.shapes });
+});
+
+app.get("/preview-image/:id", async (req, res) => {
+  const data = jobs.get(req.params.id);
+  if (!data) return res.status(404).json({ error: "Not found" });
+  try {
+    const png = await renderStitchesToPng(data.stitches, data.designW, data.designH);
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    return res.send(png);
+  } catch (e) {
+    console.error("Preview image error:", e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/download/:id/:format", (req, res) => {
+  const data = jobs.get(req.params.id);
+  if (!data) return res.status(404).json({ error: "Not found" });
+  const fmt = req.params.format || "dst";
+  const { buf, ext } = encodeFile(fmt, data);
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="design.${ext}"`);
+  return res.send(buf);
+});
+
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "7.1" }));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Stichai v7.1 running on port ${PORT}`));
+.log("Colors:", colors, "is_text:", detection.is_text, "is_logo:", detection.is_logo);
 
     let shapes;
     let extractionMethod = "pixel";
