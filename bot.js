@@ -38,7 +38,7 @@ async function preprocessImage(buffer) {
    ============================================================ */
 async function detectColors(b64, mime) {
   const prompt = `You are analyzing a design for embroidery digitizing.
-List the 4-10 distinct THREAD colors needed. Ignore lighting, shadows, gradients, reflections, paper/background unless it is part of the design.
+List only the 4-6 distinct FLAT thread colors needed. Ignore all gradients, shadows, reflections, anti-aliasing, and background. Each color must be a solid flat area in the design.
 Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": true|false}`;
 
   const body = {
@@ -53,7 +53,8 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
   const clean = (fb !== -1 && lb > fb) ? jsonStr.slice(fb, lb + 1) : jsonStr;
   const parsed = JSON.parse(clean);
   const rawColors = parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"];
-  const colors = mergeSimilarColors(rawColors, 18);
+  let colors = mergeSimilarColors(rawColors, 28);
+  if (colors.length > 6) colors = colors.slice(0, 6);
   console.log(`Gemini returned ${rawColors.length} colors, merged to ${colors.length}`);
   return {
     colors,
@@ -98,27 +99,26 @@ function colorDistanceLab(c1Lab, c2Lab) {
    the pixel tracing into hundreds of tiny shapes.
    Merge any two colors within LAB threshold 18 back to one.
    ----------------------------------------------------------- */
-function mergeSimilarColors(colors, threshold = 18) {
-  if (!colors || colors.length <= 4) return colors;
-  const merged = [];
+function mergeSimilarColors(colors, threshold = 28) {
+  if (!colors || colors.length < 2) return colors || ["#FF0000"];
   const labs = colors.map(c => ({ hex: c, lab: rgbToLab(hexToRgb(c)) }));
   const used = new Array(labs.length).fill(false);
+  const merged = [];
 
   for (let i = 0; i < labs.length; i++) {
     if (used[i]) continue;
-    let cluster = labs[i];
     for (let j = i + 1; j < labs.length; j++) {
       if (used[j]) continue;
-      if (colorDistanceLab(cluster.lab, labs[j].lab) < threshold) {
+      if (colorDistanceLab(labs[i].lab, labs[j].lab) < threshold) {
         used[j] = true;
       }
     }
-    merged.push(cluster.hex);
+    merged.push(labs[i].hex);
   }
 
-  if (merged.length < 3 && colors.length >= 3) {
-    // Too aggressive — keep at least the 3 most distinct
-    return colors.slice(0, Math.max(3, merged.length));
+  // Ensure at least 2 colors remain (don't merge everything into mono)
+  if (merged.length < 2 && colors.length >= 2) {
+    return colors.slice(0, 2);
   }
   return merged;
 }
