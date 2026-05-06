@@ -1,6 +1,6 @@
 {
   "name": "stichai-bot",
-  "version": "6.1.0",
+  "version": "7.0.0",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
