@@ -67,8 +67,12 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
   const clean = (fb !== -1 && lb > fb) ? jsonStr.slice(fb, lb + 1) : jsonStr;
   const parsed = JSON.parse(clean);
 
+  let colors = parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"];
+  colors = mergeColorsByDeltaE(colors, 15);
+  console.log("Colors:", colors, "count:", colors.length);
+
   return {
-    colors: parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"],
+    colors,
     is_text: !!parsed.is_text,
     is_logo: !!parsed.is_logo,
   };
@@ -99,6 +103,25 @@ function colorDistanceLab(c1Lab, c2Lab) {
   return Math.sqrt(dl * dl + da * da + db * db);
 }
 
+function mergeColorsByDeltaE(colors, threshold = 15) {
+  if (!colors || colors.length <= 2) return colors || ["#FF0000"];
+  const labs = colors.map(c => ({ hex: c, lab: rgbToLab(hexToRgb(c)) }));
+  const used = new Array(labs.length).fill(false);
+  const merged = [];
+
+  for (let i = 0; i < labs.length; i++) {
+    if (used[i]) continue;
+    for (let j = i + 1; j < labs.length; j++) {
+      if (used[j]) continue;
+      if (colorDistanceLab(labs[i].lab, labs[j].lab) < threshold) {
+        used[j] = true;
+      }
+    }
+    merged.push(labs[i].hex);
+  }
+  return merged.length >= 2 ? merged : colors.slice(0, 2);
+}
+
 function ramerDouglasPeucker(points, epsilon) {
   if (points.length <= 3) return points;
   const lineDist = (px, py, sx, sy, ex, ey) => {
@@ -125,6 +148,77 @@ function ramerDouglasPeucker(points, epsilon) {
   return Array.from(keep).sort((a, b) => a - b).map(i => points[i]);
 }
 
+/* ============================================================
+   DUAL-MODE EXTRACTION: detail vs normal regions
+   ============================================================ */
+
+// Trace contour of a single component given its mask
+function traceContour(mask, pw, ph) {
+  let startX = -1, startY = -1;
+  outer: for (let by = 0; by < ph; by++) {
+    for (let bx = 0; bx < pw; bx++) {
+      const bidx = by * pw + bx;
+      if (!mask[bidx]) continue;
+      if (bx === 0 || !mask[bidx - 1] || bx === pw - 1 || !mask[bidx + 1] ||
+          by === 0 || !mask[bidx - pw] || by === ph - 1 || !mask[bidx + pw]) {
+        startX = bx; startY = by; break outer;
+      }
+    }
+  }
+  if (startX === -1) return null;
+
+  const contour = [];
+  const n8 = [[-1, 0], [-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1]];
+  let cx = startX, cy = startY, dir = 7;
+  let safety = 0;
+  do {
+    contour.push([cx, cy]);
+    let found = false;
+    for (let i = 1; i <= 8; i++) {
+      const d = (dir + i) % 8;
+      const nx = cx + n8[d][0], ny = cy + n8[d][1];
+      if (nx >= 0 && nx < pw && ny >= 0 && ny < ph && mask[ny * pw + nx]) {
+        cx = nx; cy = ny; dir = (d + 5) % 8; found = true; break;
+      }
+    }
+    if (!found) break;
+    safety++;
+  } while ((cx !== startX || cy !== startY) && safety < 128000);
+
+  return contour.length >= 4 ? contour : null;
+}
+
+// Calculate edge density: border pixels / total pixels
+function calcEdgeDensity(comp, pixelColors, pw, ph, ci) {
+  let edgePixels = 0;
+  for (const idx of comp) {
+    const x = idx % pw, y = Math.floor(idx / pw);
+    let isEdge = false;
+    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || nx >= pw || ny < 0 || ny >= ph || pixelColors[ny * pw + nx] !== ci) {
+        isEdge = true; break;
+      }
+    }
+    if (isEdge) edgePixels++;
+  }
+  return comp.length > 0 ? edgePixels / comp.length : 0;
+}
+
+// Extract component's bounding box with padding
+function getComponentBounds(comp, pw, padding = 0.1) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const idx of comp) {
+    const x = idx % pw, y = Math.floor(idx / pw);
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  }
+  const w = maxX - minX, h = maxY - minY;
+  const padX = Math.round(w * padding);
+  const padY = Math.round(h * padding);
+  return { minX: Math.max(0, minX - padX), minY: Math.max(0, minY - padY), maxX, maxY, w, h, pw, padX, padY };
+}
+
 async function extractShapesFromImage(buffer, colors) {
   const jimpModule = require("jimp");
   const Jimp = jimpModule.Jimp || jimpModule;
@@ -142,6 +236,7 @@ async function extractShapesFromImage(buffer, colors) {
   const pixelColors = new Int16Array(pw * ph);
   for (let i = 0; i < pw * ph; i++) pixelColors[i] = -1;
 
+  // Classify pixels
   for (let y = 0; y < ph; y++) {
     for (let x = 0; x < pw; x++) {
       const idx = image.getPixelIndex(x, y);
@@ -158,10 +253,12 @@ async function extractShapesFromImage(buffer, colors) {
     }
   }
 
+  const totalPixels = pw * ph;
   const visited = new Uint8Array(pw * ph);
-  const shapes = [];
+  const components = [];
   const minComponentSize = 6;
 
+  // Pass 1: detect all connected components with metrics
   for (let ci = 0; ci < labColors.length; ci++) {
     for (let y = 0; y < ph; y++) {
       for (let x = 0; x < pw; x++) {
@@ -175,9 +272,9 @@ async function extractShapesFromImage(buffer, colors) {
         while (qPtr < q.length) {
           const ci2 = q[qPtr++];
           comp.push(ci2);
-          const cx = ci2 % pw, cy = Math.floor(ci2 / pw);
+          const cx2 = ci2 % pw, cy2 = Math.floor(ci2 / pw);
           for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
-            const nx = cx + dx, ny = cy + dy;
+            const nx = cx2 + dx, ny = cy2 + dy;
             if (nx >= 0 && nx < pw && ny >= 0 && ny < ph) {
               const ni = ny * pw + nx;
               if (pixelColors[ni] === ci && !visited[ni]) { visited[ni] = 1; q.push(ni); }
@@ -187,74 +284,153 @@ async function extractShapesFromImage(buffer, colors) {
 
         if (comp.length < minComponentSize) continue;
 
-        const mask = new Uint8Array(pw * ph);
-        for (const i of comp) mask[i] = 1;
+        const areaPct = comp.length / totalPixels;
+        const edgeDensity = calcEdgeDensity(comp, pixelColors, pw, ph, ci);
+        const isDetail = areaPct < 0.05 && edgeDensity > 0.4;
 
-        let startX = -1, startY = -1;
-        outer: for (let by = 0; by < ph; by++) {
-          for (let bx = 0; bx < pw; bx++) {
-            const bidx = by * pw + bx;
-            if (!mask[bidx]) continue;
-            if (bx === 0 || !mask[bidx - 1] || bx === pw - 1 || !mask[bidx + 1] ||
-              by === 0 || !mask[bidx - pw] || by === ph - 1 || !mask[bidx + pw]) {
-              startX = bx; startY = by; break outer;
-            }
-          }
-        }
-        if (startX === -1) continue;
-
-        const contour = [];
-        const n8 = [[-1, 0], [-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1]];
-        let cx = startX, cy = startY, dir = 7;
-        let safety = 0;
-        do {
-          contour.push([cx, cy]);
-          let found = false;
-          for (let i = 1; i <= 8; i++) {
-            const d = (dir + i) % 8;
-            const nx = cx + n8[d][0], ny = cy + n8[d][1];
-            if (nx >= 0 && nx < pw && ny >= 0 && ny < ph && mask[ny * pw + nx]) {
-              cx = nx; cy = ny; dir = (d + 5) % 8; found = true; break;
-            }
-          }
-          if (!found) break;
-          safety++;
-        } while ((cx !== startX || cy !== startY) && safety < 128000);
-
-        if (contour.length < 4) continue;
-
-        const simplified = ramerDouglasPeucker(contour, 0.25);
-        const stitchScale = 300 / Math.max(pw, ph);
-        const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
-
-        if (points.length >= 3) {
-          const first = points[0], last = points[points.length - 1];
-          if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
-        }
-
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const [px, py] of points) {
-          minX = Math.min(minX, px); minY = Math.min(minY, py);
-          maxX = Math.max(maxX, px); maxY = Math.max(maxY, py);
-        }
-        const bw = maxX - minX, bh = maxY - minY;
-        const area = bw * bh;
-        const isLarge = area > 300 * 300 * 0.15;
-        const isNarrow = (bw < 12 || bh < 12) && !isLarge;
-
-        shapes.push({
-          type: isNarrow ? "satin" : "fill",
-          color: colors[ci],
-          points,
-          pixelCount: comp.length,
-        });
+        components.push({ comp, ci, areaPct, edgeDensity, isDetail });
       }
     }
   }
 
+  console.log(`Found ${components.length} components: ${components.filter(c => c.isDetail).length} detail, ${components.filter(c => !c.isDetail).length} normal`);
+
+  // Pass 2: extract contours with appropriate method
+  const shapes = [];
+  for (const { comp, ci, isDetail } of components) {
+    const mask = new Uint8Array(pw * ph);
+    for (const i of comp) mask[i] = 1;
+
+    let contour = traceContour(mask, pw, ph);
+    if (!contour) continue;
+
+    const stitchScale = 300 / Math.max(pw, ph);
+
+    if (isDetail) {
+      // DETAIL MODE: crop, upscale, trace at high res
+      const b = getComponentBounds(comp, pw, 0.15);
+      const cropW = b.maxX - b.minX + 2 * b.padX;
+      const cropH = b.maxY - b.minY + 2 * b.padY;
+      if (cropW < 10 || cropH < 10) {
+        // Too small to upscale meaningfully — use normal path
+        const simplified = ramerDouglasPeucker(contour, 0.25);
+        const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
+        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes);
+        continue;
+      }
+
+      // Create a crop mask for this component
+      const cropMask = new Uint8Array(cropW * cropH);
+      for (const idx of comp) {
+        const x = idx % pw - b.minX + b.padX;
+        const y = Math.floor(idx / pw) - b.minY + b.padY;
+        if (x >= 0 && x < cropW && y >= 0 && y < cropH) {
+          cropMask[y * cropW + x] = 1;
+        }
+      }
+
+      // Upscale 4x
+      const upW = cropW * 4, upH = cropH * 4;
+      const upMask = new Uint8Array(upW * upH);
+      for (let y = 0; y < cropH; y++) {
+        for (let x = 0; x < cropW; x++) {
+          if (cropMask[y * cropW + x]) {
+            for (let dy = 0; dy < 4; dy++) {
+              for (let dx = 0; dx < 4; dx++) {
+                upMask[(y * 4 + dy) * upW + (x * 4 + dx)] = 1;
+              }
+            }
+          }
+        }
+      }
+
+      // Trace at upscaled resolution
+      const upContour = traceContour(upMask, upW, upH);
+      if (upContour) {
+        // Low epsilon (0.5) at upscaled resolution = very fine detail
+        const simplified = ramerDouglasPeucker(upContour, 0.5);
+        // Scale back down to original crop coordinates, then to stitch space
+        const points = simplified.map(([px, py]) => [
+          Math.round(((px / 4 + b.minX - b.padX) * stitchScale)),
+          Math.round(((py / 4 + b.minY - b.padY) * stitchScale))
+        ]);
+        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes);
+      } else {
+        // Fallback to normal trace
+        const simplified = ramerDouglasPeucker(contour, 0.25);
+        const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
+        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes);
+      }
+    } else {
+      // NORMAL MODE: standard resolution, higher epsilon (2.5) for smoother curves
+      const simplified = ramerDouglasPeucker(contour, 2.5);
+      const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
+      if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes);
+    }
+  }
+
+  // Sort by pixel count (largest first)
   shapes.sort((a, b) => b.pixelCount - a.pixelCount);
-  console.log(`Extracted ${shapes.length} shapes from pixels (${pw}x${ph})`);
-  return shapes;
+
+  // Nearest-neighbor reordering to minimize jump stitches
+  const ordered = nearestNeighborOrder(shapes);
+
+  console.log(`Extracted ${ordered.length} shapes (${components.filter(c => c.isDetail).length} detail, ${components.filter(c => !c.isDetail).length} normal)`);
+  return ordered;
+}
+
+function finalizeShape(points, color, pixelCount, stitchScale, shapes) {
+  // Close polygon
+  if (points.length >= 3) {
+    const first = points[0], last = points[points.length - 1];
+    if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
+  }
+
+  // Calculate physical area in mm^2 (assuming 300 units = ~100mm)
+  const mmScale = 100 / 300; // mm per unit
+  let area = 0;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    area += points[j][0] * points[i][1] - points[i][0] * points[j][1];
+  }
+  area = Math.abs(area) * 0.5 * mmScale * mmScale;
+
+  // Check bounds
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [px, py] of points) {
+    minX = Math.min(minX, px); minY = Math.min(minY, py);
+    maxX = Math.max(maxX, px); maxY = Math.max(maxY, py);
+  }
+  const bw = maxX - minX, bh = maxY - minY;
+  const isLarge = (bw * bh) > 300 * 300 * 0.15;
+  const isNarrow = (bw < 12 || bh < 12) && !isLarge;
+
+  // Auto-satin: small shapes (< 1.5mm^2 area) → satin
+  const isSmallDetail = area < 1.5;
+  const type = (isNarrow || isSmallDetail) ? "satin" : "fill";
+
+  shapes.push({ type, color, points, pixelCount, area });
+}
+
+// Nearest-neighbor ordering to minimize jump stitches
+function nearestNeighborOrder(shapes) {
+  if (shapes.length <= 2) return shapes;
+  const remaining = shapes.map(s => ({ ...s }));
+  const ordered = [];
+  let current = remaining.shift();
+  ordered.push(current);
+
+  while (remaining.length > 0) {
+    let bestIdx = 0, bestDist = Infinity;
+    const lastPoint = current.points[current.points.length - 1] || [0, 0];
+    for (let i = 0; i < remaining.length; i++) {
+      const firstPoint = remaining[i].points[0] || [0, 0];
+      const d = Math.hypot(firstPoint[0] - lastPoint[0], firstPoint[1] - lastPoint[1]);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    current = remaining.splice(bestIdx, 1)[0];
+    ordered.push(current);
+  }
+  return ordered;
 }
 
 async function extractShapesWithGemini(b64, mime, hint = {}) {
@@ -526,7 +702,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     const cleanMime = "image/png";
     const detection = await detectColors(cleanB64, cleanMime);
     const colors = detection.colors;
-    console.log("Colors:", colors, "is_text:", detection.is_text, "is_logo:", detection.is_logo);
+    console.log("is_text:", detection.is_text, "is_logo:", detection.is_logo);
     let shapes;
     let extractionMethod = "pixel";
     try {
@@ -595,7 +771,7 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "7.1" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "7.2" }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Stichai v7.1 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Stichai v7.2 running on port ${PORT}`));
