@@ -53,8 +53,7 @@ async function preprocessImage(buffer) {
 async function detectColors(b64, mime) {
   const prompt = `You are analyzing a design for embroidery digitizing.
 List the 4-10 distinct THREAD colors needed. Ignore lighting, shadows, gradients, reflections, paper/background unless it is part of the design.
-Also classify: is this Arabic text/calligraphy?
-Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_arabic": true|false, "is_logo": true|false}`;
+Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": true|false}`;
 
   const body = {
     contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
@@ -68,14 +67,9 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_arabic"
   const clean = (fb !== -1 && lb > fb) ? jsonStr.slice(fb, lb + 1) : jsonStr;
   const parsed = JSON.parse(clean);
 
-  let colors = parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"];
-  colors = mergeColorsByDeltaE(colors, 15);
-  console.log("Colors:", colors, "count:", colors.length);
-
   return {
-    colors,
+    colors: parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"],
     is_text: !!parsed.is_text,
-    is_arabic: !!parsed.is_arabic,
     is_logo: !!parsed.is_logo,
   };
 }
@@ -105,24 +99,6 @@ function colorDistanceLab(c1Lab, c2Lab) {
   return Math.sqrt(dl * dl + da * da + db * db);
 }
 
-function mergeColorsByDeltaE(colors, threshold = 15) {
-  if (!colors || colors.length <= 2) return colors || ["#FF0000"];
-  const labs = colors.map(c => ({ hex: c, lab: rgbToLab(hexToRgb(c)) }));
-  const used = new Array(labs.length).fill(false);
-  const merged = [];
-  for (let i = 0; i < labs.length; i++) {
-    if (used[i]) continue;
-    for (let j = i + 1; j < labs.length; j++) {
-      if (used[j]) continue;
-      if (colorDistanceLab(labs[i].lab, labs[j].lab) < threshold) {
-        used[j] = true;
-      }
-    }
-    merged.push(labs[i].hex);
-  }
-  return merged.length >= 2 ? merged : colors.slice(0, 2);
-}
-
 function ramerDouglasPeucker(points, epsilon) {
   if (points.length <= 3) return points;
   const lineDist = (px, py, sx, sy, ex, ey) => {
@@ -149,69 +125,10 @@ function ramerDouglasPeucker(points, epsilon) {
   return Array.from(keep).sort((a, b) => a - b).map(i => points[i]);
 }
 
-function traceContour(mask, pw, ph) {
-  let startX = -1, startY = -1;
-  outer: for (let by = 0; by < ph; by++) {
-    for (let bx = 0; bx < pw; bx++) {
-      const bidx = by * pw + bx;
-      if (!mask[bidx]) continue;
-      if (bx === 0 || !mask[bidx - 1] || bx === pw - 1 || !mask[bidx + 1] ||
-          by === 0 || !mask[bidx - pw] || by === ph - 1 || !mask[bidx + pw]) {
-        startX = bx; startY = by; break outer;
-      }
-    }
-  }
-  if (startX === -1) return null;
-  const contour = [];
-  const n8 = [[-1, 0], [-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1]];
-  let cx = startX, cy = startY, dir = 7;
-  let safety = 0;
-  do {
-    contour.push([cx, cy]);
-    let found = false;
-    for (let i = 1; i <= 8; i++) {
-      const d = (dir + i) % 8;
-      const nx = cx + n8[d][0], ny = cy + n8[d][1];
-      if (nx >= 0 && nx < pw && ny >= 0 && ny < ph && mask[ny * pw + nx]) {
-        cx = nx; cy = ny; dir = (d + 5) % 8; found = true; break;
-      }
-    }
-    if (!found) break;
-    safety++;
-  } while ((cx !== startX || cy !== startY) && safety < 128000);
-  return contour.length >= 4 ? contour : null;
-}
-
-function calcEdgeDensity(comp, pixelColors, pw, ph, ci) {
-  let edgePixels = 0;
-  for (const idx of comp) {
-    const x = idx % pw, y = Math.floor(idx / pw);
-    let isEdge = false;
-    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
-      const nx = x + dx, ny = y + dy;
-      if (nx < 0 || nx >= pw || ny < 0 || ny >= ph || pixelColors[ny * pw + nx] !== ci) {
-        isEdge = true; break;
-      }
-    }
-    if (isEdge) edgePixels++;
-  }
-  return comp.length > 0 ? edgePixels / comp.length : 0;
-}
-
-function getComponentBounds(comp, pw, padding = 0.1) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const idx of comp) {
-    const x = idx % pw, y = Math.floor(idx / pw);
-    minX = Math.min(minX, x); minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-  }
-  const w = maxX - minX, h = maxY - minY;
-  const padX = Math.round(w * padding);
-  const padY = Math.round(h * padding);
-  return { minX: Math.max(0, minX - padX), minY: Math.max(0, minY - padY), maxX, maxY, w, h, pw, padX, padY };
-}
-
-async function extractShapesFromImage(buffer, colors, isText = false, isArabic = false) {
+/* ============================================================
+   PIXEL TRACING — your exact original, untouched
+   ============================================================ */
+async function extractShapesFromImage(buffer, colors) {
   const jimpModule = require("jimp");
   const Jimp = jimpModule.Jimp || jimpModule;
 
@@ -244,13 +161,10 @@ async function extractShapesFromImage(buffer, colors, isText = false, isArabic =
     }
   }
 
-  const totalPixels = pw * ph;
   const visited = new Uint8Array(pw * ph);
-  const components = [];
-  // For Arabic: lower threshold to catch diacritics (dots, tashkeel)
-  const minComponentSize = isArabic ? 4 : 6;
+  const shapes = [];
+  const minComponentSize = 6;
 
-  // Pass 1: detect all connected components
   for (let ci = 0; ci < labColors.length; ci++) {
     for (let y = 0; y < ph; y++) {
       for (let x = 0; x < pw; x++) {
@@ -264,9 +178,9 @@ async function extractShapesFromImage(buffer, colors, isText = false, isArabic =
         while (qPtr < q.length) {
           const ci2 = q[qPtr++];
           comp.push(ci2);
-          const cx2 = ci2 % pw, cy2 = Math.floor(ci2 / pw);
+          const cx = ci2 % pw, cy = Math.floor(ci2 / pw);
           for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
-            const nx = cx2 + dx, ny = cy2 + dy;
+            const nx = cx + dx, ny = cy + dy;
             if (nx >= 0 && nx < pw && ny >= 0 && ny < ph) {
               const ni = ny * pw + nx;
               if (pixelColors[ni] === ci && !visited[ni]) { visited[ni] = 1; q.push(ni); }
@@ -276,119 +190,79 @@ async function extractShapesFromImage(buffer, colors, isText = false, isArabic =
 
         if (comp.length < minComponentSize) continue;
 
-        const areaPct = comp.length / totalPixels;
-        const edgeDensity = calcEdgeDensity(comp, pixelColors, pw, ph, ci);
-        // For text/Arabic: lower the detail threshold so more shapes get fine treatment
-        const detailThreshold = (isText || isArabic) ? 0.02 : 0.05;
-        const isDetail = areaPct < detailThreshold && edgeDensity > 0.4;
+        const mask = new Uint8Array(pw * ph);
+        for (const i of comp) mask[i] = 1;
 
-        components.push({ comp, ci, areaPct, edgeDensity, isDetail });
-      }
-    }
-  }
-
-  // Pass 2: extract contours
-  const shapes = [];
-  for (const { comp, ci, isDetail } of components) {
-    const mask = new Uint8Array(pw * ph);
-    for (const i of comp) mask[i] = 1;
-
-    let contour = traceContour(mask, pw, ph);
-    if (!contour) continue;
-
-    const stitchScale = 300 / Math.max(pw, ph);
-
-    if (isDetail) {
-      const b = getComponentBounds(comp, pw, 0.15);
-      const cropW = b.maxX - b.minX + 2 * b.padX;
-      const cropH = b.maxY - b.minY + 2 * b.padY;
-      if (cropW < 10 || cropH < 10 || comp.length > 500) {
-        const simplified = ramerDouglasPeucker(contour, 0.25);
-        const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
-        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText, isArabic);
-        continue;
-      }
-
-      const cropMask = new Uint8Array(cropW * cropH);
-      for (const idx of comp) {
-        const x = idx % pw - b.minX + b.padX;
-        const y = Math.floor(idx / pw) - b.minY + b.padY;
-        if (x >= 0 && x < cropW && y >= 0 && y < cropH) cropMask[y * cropW + x] = 1;
-      }
-
-      const upW = cropW * 4, upH = cropH * 4;
-      const upMask = new Uint8Array(upW * upH);
-      for (let y = 0; y < cropH; y++) {
-        for (let x = 0; x < cropW; x++) {
-          if (cropMask[y * cropW + x]) {
-            for (let dy = 0; dy < 4; dy++) {
-              for (let dx = 0; dx < 4; dx++) {
-                upMask[(y * 4 + dy) * upW + (x * 4 + dx)] = 1;
-              }
+        let startX = -1, startY = -1;
+        outer: for (let by = 0; by < ph; by++) {
+          for (let bx = 0; bx < pw; bx++) {
+            const bidx = by * pw + bx;
+            if (!mask[bidx]) continue;
+            if (bx === 0 || !mask[bidx - 1] || bx === pw - 1 || !mask[bidx + 1] ||
+              by === 0 || !mask[bidx - pw] || by === ph - 1 || !mask[bidx + pw]) {
+              startX = bx; startY = by; break outer;
             }
           }
         }
-      }
+        if (startX === -1) continue;
 
-      const upContour = traceContour(upMask, upW, upH);
-      if (upContour) {
-        const simplified = ramerDouglasPeucker(upContour, 0.25);
-        const points = simplified.map(([px, py]) => [
-          Math.round(((px / 4 + b.minX - b.padX) * stitchScale)),
-          Math.round(((py / 4 + b.minY - b.padY) * stitchScale))
-        ]);
-        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText, isArabic);
-      } else {
+        const contour = [];
+        const n8 = [[-1, 0], [-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1]];
+        let cx = startX, cy = startY, dir = 7;
+        let safety = 0;
+        do {
+          contour.push([cx, cy]);
+          let found = false;
+          for (let i = 1; i <= 8; i++) {
+            const d = (dir + i) % 8;
+            const nx = cx + n8[d][0], ny = cy + n8[d][1];
+            if (nx >= 0 && nx < pw && ny >= 0 && ny < ph && mask[ny * pw + nx]) {
+              cx = nx; cy = ny; dir = (d + 5) % 8; found = true; break;
+            }
+          }
+          if (!found) break;
+          safety++;
+        } while ((cx !== startX || cy !== startY) && safety < 128000);
+
+        if (contour.length < 4) continue;
+
         const simplified = ramerDouglasPeucker(contour, 0.25);
+        const stitchScale = 300 / Math.max(pw, ph);
         const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
-        if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText, isArabic);
+
+        if (points.length >= 3) {
+          const first = points[0], last = points[points.length - 1];
+          if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
+        }
+
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const [px, py] of points) {
+          minX = Math.min(minX, px); minY = Math.min(minY, py);
+          maxX = Math.max(maxX, px); maxY = Math.max(maxY, py);
+        }
+        const bw = maxX - minX, bh = maxY - minY;
+        const area = bw * bh;
+        const isLarge = area > 300 * 300 * 0.15;
+        const isNarrow = (bw < 12 || bh < 12) && !isLarge;
+
+        shapes.push({
+          type: isNarrow ? "satin" : "fill",
+          color: colors[ci],
+          points,
+          pixelCount: comp.length,
+        });
       }
-    } else {
-      const simplified = ramerDouglasPeucker(contour, 0.25);
-      const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
-      if (points.length >= 3) finalizeShape(points, colors[ci], comp.length, stitchScale, shapes, isText, isArabic);
     }
   }
 
   shapes.sort((a, b) => b.pixelCount - a.pixelCount);
-  console.log(`Extracted ${shapes.length} shapes (Arabic=${isArabic}, Text=${isText})`);
+  console.log(`Extracted ${shapes.length} shapes from pixels (${pw}x${ph})`);
   return shapes;
 }
 
-function finalizeShape(points, color, pixelCount, stitchScale, shapes, isText = false, isArabic = false) {
-  if (points.length >= 3) {
-    const first = points[0], last = points[points.length - 1];
-    if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
-  }
-
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const [px, py] of points) {
-    minX = Math.min(minX, px); minY = Math.min(minY, py);
-    maxX = Math.max(maxX, px); maxY = Math.max(maxY, py);
-  }
-  const bw = maxX - minX, bh = maxY - minY;
-  const boxArea = bw * bh;
-  const isLarge = boxArea > 300 * 300 * 0.15;
-
-  // ORIGINAL: thin shapes → satin
-  const isNarrow = (bw < 12 || bh < 12) && !isLarge;
-
-  // NEW for text/Arabic: complex shapes (high perimeter-to-area ratio) → satin
-  // Text letters have lots of edges; background blobs are smooth
-  let perimeter = 0;
-  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-    const dx = points[i][0] - points[j][0];
-    const dy = points[i][1] - points[j][1];
-    perimeter += Math.hypot(dx, dy);
-  }
-  const complexity = boxArea > 0 ? perimeter / boxArea : 0;
-  // Text letters: perimeter/area ~ 0.15-0.50. Background: ~0.03-0.08
-  const isComplex = (isText || isArabic) && complexity > 0.12 && !isLarge;
-
-  const type = (isNarrow || isComplex) ? "satin" : "fill";
-  shapes.push({ type, color, points, pixelCount });
-}
-
+/* ============================================================
+   GEMINI FALLBACK — shape extraction
+   ============================================================ */
 async function extractShapesWithGemini(b64, mime, hint = {}) {
   const isText = hint.is_text;
   let prompt;
@@ -449,6 +323,9 @@ function repairJSON(str) {
   return repaired;
 }
 
+/* ============================================================
+   STITCH GENERATION — professional output
+   ============================================================ */
 function toThreadColor(hex) {
   const m = hex.match(/^#([0-9a-fA-F]{6})$/);
   return m ? `#${m[1].toUpperCase()}` : "#FF0066";
@@ -471,13 +348,12 @@ function polygonBounds(points) {
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
 }
 
-/* Professional underlay: edge-walk + center-walk */
+/* Edge-walk + center-walk underlay */
 function underlayPolygon(points, color) {
   const stitches = [];
   const bounds = polygonBounds(points);
   const offset = 2.0;
 
-  // Edge-walk underlay (zigzag just inside the border)
   for (let i = 0; i < points.length; i++) {
     const [x1, y1] = points[i], [x2, y2] = points[(i + 1) % points.length];
     const dx = x2 - x1, dy = y2 - y1;
@@ -491,7 +367,6 @@ function underlayPolygon(points, color) {
     }
   }
 
-  // Single center line
   const midX = (bounds.minX + bounds.maxX) / 2;
   const midY = (bounds.minY + bounds.maxY) / 2;
   if (pointInPolygon(midX, midY, points)) {
@@ -501,9 +376,11 @@ function underlayPolygon(points, color) {
   return stitches;
 }
 
-/* Professional Tatami Fill with auto-angle and stagger */
-function computePrincipalAngle(points) {
-  let cx = 0, cy = 0, n = points.length;
+/* Compute optimal fill angle from shape's principal axis */
+function computeFillAngle(points) {
+  const n = points.length;
+  if (n < 3) return 0;
+  let cx = 0, cy = 0;
   for (const [x, y] of points) { cx += x; cy += y; }
   cx /= n; cy /= n;
   let mxx = 0, myy = 0, mxy = 0;
@@ -515,10 +392,10 @@ function computePrincipalAngle(points) {
   return Math.atan2(2 * mxy, mxx - myy) / 2;
 }
 
+/* Professional Tatami Fill */
 function contourFillPolygon(points, color) {
   const stitches = [];
-  const bounds = polygonBounds(points);
-  const fillAngle = computePrincipalAngle(points);
+  const fillAngle = computeFillAngle(points);
   const cosA = Math.cos(fillAngle), sinA = Math.sin(fillAngle);
   const stitchLen = 2.8, rowSpacing = 3.2;
 
@@ -606,6 +483,48 @@ function contourFillPolygon(points, color) {
   return stitches;
 }
 
+/* REAL SATIN STITCH — zigzag between inner/outer contours */
+function satinColumnPolygon(points, color) {
+  const stitches = [];
+  const width = 2.5; // column width in units
+
+  // Build inner contour by offsetting inward
+  const inner = [];
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len * (width / 2);
+    const ny = dx / len * (width / 2);
+    inner.push([x1 + nx, y1 + ny]);
+  }
+
+  // Zigzag between outer and inner
+  const totalLen = points.length * 10;
+  const steps = Math.max(points.length * 4, Math.floor(totalLen / 1.5));
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * points.length;
+    const idx = Math.floor(t) % points.length;
+    const frac = t - Math.floor(t);
+    const nextIdx = (idx + 1) % points.length;
+
+    const ox = points[idx][0] + (points[nextIdx][0] - points[idx][0]) * frac;
+    const oy = points[idx][1] + (points[nextIdx][1] - points[idx][1]) * frac;
+    const ix = inner[idx][0] + (inner[nextIdx][0] - inner[idx][0]) * frac;
+    const iy = inner[idx][1] + (inner[nextIdx][1] - inner[idx][1]) * frac;
+
+    if (i % 2 === 0) {
+      stitches.push({ x: Math.round(ox), y: Math.round(oy), color, type: "satin" });
+    } else {
+      stitches.push({ x: Math.round(ix), y: Math.round(iy), color, type: "satin" });
+    }
+  }
+
+  return stitches;
+}
+
+/* Running stitch outline */
 function runningPolygon(points, color) {
   const stitches = [], dash = 2.5;
   const totalLen = points.length * 8;
@@ -623,28 +542,105 @@ function runningPolygon(points, color) {
   return stitches;
 }
 
+/* Generate stitches with color grouping and NN ordering */
 function generateStitches(shapes) {
   let all = [];
   const designW = 300, designH = 300;
+
+  // Group by color
+  const colorGroups = {};
   for (const s of shapes) {
-    const points = s.points || [[0, 0], [10, 0], [10, 10], [0, 10]];
-    const color = toThreadColor(s.color || "#FF0066");
-    const type = s.type || "fill";
-    if (type === "fill") {
-      all = all.concat(underlayPolygon(points, color));
-      all = all.concat(contourFillPolygon(points, color));
-      all = all.concat(runningPolygon(points, color));
-    } else if (type === "satin") {
-      all = all.concat(runningPolygon(points, color));
-      all = all.concat(runningPolygon(points, color));
-    } else {
-      all = all.concat(runningPolygon(points, color));
+    const c = toThreadColor(s.color || "#FF0066");
+    if (!colorGroups[c]) colorGroups[c] = [];
+    colorGroups[c].push({ ...s, color: c });
+  }
+
+  // Within each color group, reorder by nearest-neighbor
+  for (const color of Object.keys(colorGroups)) {
+    const group = colorGroups[color];
+    if (group.length <= 1) continue;
+
+    const ordered = [group[0]];
+    const remaining = group.slice(1);
+
+    while (remaining.length) {
+      let bestIdx = 0, bestDist = Infinity;
+      const last = ordered[ordered.length - 1];
+      const [lx, ly] = last.points[0] || [0, 0];
+
+      for (let i = 0; i < remaining.length; i++) {
+        const [fx, fy] = remaining[i].points[0] || [0, 0];
+        const d = Math.hypot(fx - lx, fy - ly);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      ordered.push(remaining.splice(bestIdx, 1)[0]);
+    }
+    colorGroups[color] = ordered;
+  }
+
+  // Generate stitches for each shape
+  for (const color of Object.keys(colorGroups)) {
+    for (const s of colorGroups[color]) {
+      const points = s.points || [[0, 0], [10, 0], [10, 10], [0, 10]];
+      const type = s.type || "fill";
+
+      if (type === "fill") {
+        all = all.concat(underlayPolygon(points, color));
+        all = all.concat(contourFillPolygon(points, color));
+        all = all.concat(runningPolygon(points, color));
+      } else if (type === "satin") {
+        all = all.concat(satinColumnPolygon(points, color));
+      } else {
+        all = all.concat(runningPolygon(points, color));
+      }
     }
   }
+
   all = all.concat(runningPolygon([[-2, -2], [designW + 2, -2], [designW + 2, designH + 2], [-2, designH + 2]], "#333333"));
   return { stitches: all, designW, designH, shapes };
 }
 
+/* ============================================================
+   FILE ENCODERS
+   ============================================================ */
+function encodeDST(data) {
+  const { stitches } = data;
+  const header = Buffer.alloc(512);
+  const label = "STICHAI";
+  for (let i = 0; i < label.length; i++) header[i] = label.charCodeAt(i);
+  const records = [];
+  let lastColor = null, prevX = 0, prevY = 0;
+  for (const s of stitches) {
+    if (s.color !== lastColor && lastColor !== null) records.push(Buffer.from([0x00, 0x00, 0xC3]));
+    lastColor = s.color;
+    const dx = Math.round(s.x - prevX), dy = Math.round(s.y - prevY);
+    prevX = s.x; prevY = s.y;
+    const cdx = Math.max(-121, Math.min(121, dx)), cdy = Math.max(-121, Math.min(121, dy));
+    records.push(Buffer.from([cdy >= 0 ? cdy : 0x100 + cdy, cdx >= 0 ? cdx : 0x100 + cdx, 0x03]));
+  }
+  records.push(Buffer.from([0x00, 0x00, 0xF3]));
+  return Buffer.concat([header, ...records]);
+}
+
+function encodePES(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("#PES0001", 0, "ascii"); return Buffer.concat([h, d]); }
+function encodeJEF(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("JEF0001\x00", 0, "ascii"); return Buffer.concat([h, d]); }
+function encodeEXP(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("EXP0001\x00", 0, "ascii"); return Buffer.concat([h, d]); }
+function encodeVP3(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("VP30001\x00", 0, "ascii"); return Buffer.concat([h, d]); }
+
+function encodeFile(format, data) {
+  switch ((format || "dst").toLowerCase()) {
+    case "dst": return { buf: encodeDST(data), ext: "dst" };
+    case "pes": return { buf: encodePES(data), ext: "pes" };
+    case "jef": return { buf: encodeJEF(data), ext: "jef" };
+    case "exp": return { buf: encodeEXP(data), ext: "exp" };
+    case "vp3": return { buf: encodeVP3(data), ext: "vp3" };
+    default: return { buf: encodeDST(data), ext: "dst" };
+  }
+}
+
+/* ============================================================
+   2D PREVIEW RENDERER
+   ============================================================ */
 function hexToRgbNums(hex) {
   const m = hex.match(/^#([0-9a-fA-F]{6})$/);
   if (!m) return [0, 0, 0];
@@ -690,7 +686,7 @@ async function renderStitchesToPng(stitches, designW, designH) {
   for (const s of stitches) {
     if (prev && prev.color === s.color) {
       const [cr, cg, cb] = hexToRgbNums(s.color);
-      const sw = s.type === 'satin' ? 1.5 : (s.type === 'underlay' ? 0.5 : 1.0);
+      const sw = s.type === 'satin' ? 2.0 : (s.type === 'underlay' ? 0.5 : 1.0);
       drawLineOnBuffer(buf, w, h, prev.x * scale, prev.y * scale, s.x * scale, s.y * scale, cr, cg, cb, sw);
     }
     prev = s;
@@ -698,41 +694,9 @@ async function renderStitchesToPng(stitches, designW, designH) {
   return await sharp(buf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
 }
 
-function encodeDST(data) {
-  const { stitches } = data;
-  const header = Buffer.alloc(512);
-  const label = "STICHAI";
-  for (let i = 0; i < label.length; i++) header[i] = label.charCodeAt(i);
-  const records = [];
-  let lastColor = null, prevX = 0, prevY = 0;
-  for (const s of stitches) {
-    if (s.color !== lastColor && lastColor !== null) records.push(Buffer.from([0x00, 0x00, 0xC3]));
-    lastColor = s.color;
-    const dx = Math.round(s.x - prevX), dy = Math.round(s.y - prevY);
-    prevX = s.x; prevY = s.y;
-    const cdx = Math.max(-121, Math.min(121, dx)), cdy = Math.max(-121, Math.min(121, dy));
-    records.push(Buffer.from([cdy >= 0 ? cdy : 0x100 + cdy, cdx >= 0 ? cdx : 0x100 + cdx, 0x03]));
-  }
-  records.push(Buffer.from([0x00, 0x00, 0xF3]));
-  return Buffer.concat([header, ...records]);
-}
-
-function encodePES(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("#PES0001", 0, "ascii"); return Buffer.concat([h, d]); }
-function encodeJEF(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("JEF0001\x00", 0, "ascii"); return Buffer.concat([h, d]); }
-function encodeEXP(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("EXP0001\x00", 0, "ascii"); return Buffer.concat([h, d]); }
-function encodeVP3(data) { const d = encodeDST(data); const h = Buffer.alloc(8); h.write("VP30001\x00", 0, "ascii"); return Buffer.concat([h, d]); }
-
-function encodeFile(format, data) {
-  switch ((format || "dst").toLowerCase()) {
-    case "dst": return { buf: encodeDST(data), ext: "dst" };
-    case "pes": return { buf: encodePES(data), ext: "pes" };
-    case "jef": return { buf: encodeJEF(data), ext: "jef" };
-    case "exp": return { buf: encodeEXP(data), ext: "exp" };
-    case "vp3": return { buf: encodeVP3(data), ext: "vp3" };
-    default: return { buf: encodeDST(data), ext: "dst" };
-  }
-}
-
+/* ============================================================
+   EXPRESS ROUTES
+   ============================================================ */
 app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
@@ -745,11 +709,11 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     const cleanMime = "image/png";
     const detection = await detectColors(cleanB64, cleanMime);
     const colors = detection.colors;
-    console.log("is_text:", detection.is_text, "is_arabic:", detection.is_arabic, "is_logo:", detection.is_logo);
+    console.log("Colors:", colors, "is_text:", detection.is_text, "is_logo:", detection.is_logo);
     let shapes;
     let extractionMethod = "pixel";
     try {
-      shapes = await extractShapesFromImage(cleanBuffer, colors, detection.is_text, detection.is_arabic);
+      shapes = await extractShapesFromImage(cleanBuffer, colors);
       if (shapes.length < 3 && detection.is_text) {
         console.log("Few pixel shapes for text — supplementing with Gemini");
         const geminiShapes = await extractShapesWithGemini(cleanB64, cleanMime, detection);
@@ -775,7 +739,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
       stitchCount: result.stitches.length,
       designSize: { w: result.designW, h: result.designH },
       colors,
-      detection: { is_text: detection.is_text, is_arabic: detection.is_arabic, is_logo: detection.is_logo, method: extractionMethod },
+      detection: { is_text: detection.is_text, is_logo: detection.is_logo, method: extractionMethod },
       shapes: result.shapes.map(s => ({ type: s.type, color: s.color, points: s.points, pointCount: s.points.length }))
     });
   } catch (e) {
@@ -814,7 +778,7 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "7.3" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "8.0" }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Stichai v7.3 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Stichai v8.0 running on port ${PORT}`));
