@@ -52,7 +52,7 @@ async function preprocessImage(buffer) {
 
 async function detectColors(b64, mime) {
   const prompt = `You are analyzing a design for embroidery digitizing.
-List only the 4-6 distinct FLAT thread colors needed. Ignore all gradients, shadows, reflections, anti-aliasing, and background. Each color must be a solid flat area in the design.
+List the 4-10 distinct THREAD colors needed. Ignore lighting, shadows, gradients, reflections, paper/background unless it is part of the design.
 Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": true|false}`;
 
   const body = {
@@ -67,13 +67,8 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
   const clean = (fb !== -1 && lb > fb) ? jsonStr.slice(fb, lb + 1) : jsonStr;
   const parsed = JSON.parse(clean);
 
-  const rawColors = parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"];
-  let colors = mergeSimilarColors(rawColors, 28);
-  if (colors.length > 6) colors = colors.slice(0, 6);
-  console.log(`Gemini returned ${rawColors.length} colors, merged to ${colors.length}`);
-
   return {
-    colors,
+    colors: parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"],
     is_text: !!parsed.is_text,
     is_logo: !!parsed.is_logo,
   };
@@ -102,27 +97,6 @@ function colorDistanceLab(c1Lab, c2Lab) {
   const da = c1Lab.a - c2Lab.a;
   const db = c1Lab.b - c2Lab.b;
   return Math.sqrt(dl * dl + da * da + db * db);
-}
-
-function mergeSimilarColors(colors, threshold = 28) {
-  if (!colors || colors.length < 2) return colors || ["#FF0000"];
-  const labs = colors.map(c => ({ hex: c, lab: rgbToLab(hexToRgb(c)) }));
-  const used = new Array(labs.length).fill(false);
-  const merged = [];
-
-  for (let i = 0; i < labs.length; i++) {
-    if (used[i]) continue;
-    for (let j = i + 1; j < labs.length; j++) {
-      if (used[j]) continue;
-      if (colorDistanceLab(labs[i].lab, labs[j].lab) < threshold) {
-        used[j] = true;
-      }
-    }
-    merged.push(labs[i].hex);
-  }
-
-  if (merged.length < 2 && colors.length >= 2) return colors.slice(0, 2);
-  return merged;
 }
 
 function ramerDouglasPeucker(points, epsilon) {
