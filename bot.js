@@ -201,7 +201,7 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
   const visited = new Uint8Array(pw * ph);
   const maskIds = new Uint32Array(pw * ph);
   const shapes = [];
-  const minComponentSize = 20;
+  const minComponentSize = 6;
   let currentMaskId = 1;
 
   console.time("contour-extract");
@@ -294,9 +294,11 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
       const bw = maxX - minX, bh = maxY - minY;
       const area = bw * bh;
 
-      /* v9.1 classification: large shapes = always fill, narrow non-large = satin */
+      /* Classification: large or wide shapes = fill, narrow strokes = satin */
       const isLarge = area > 300 * 300 * 0.15;
-      const isNarrow = (bw < 12 || bh < 12) && !isLarge;
+      const maxDim = Math.max(bw, bh);
+      const minDim = Math.min(bw, bh);
+      const isNarrow = minDim < 12 && maxDim < 80 && !isLarge;
 
       shapes.push({
         type: isNarrow ? "satin" : "fill",
@@ -991,10 +993,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "11.1" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "11.2" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v11.1 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v11.2 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
