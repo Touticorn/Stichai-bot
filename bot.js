@@ -535,12 +535,14 @@ function contourFillPolygon(points, color) {
     for (let k = 0; k + 1 < ints.length; k += 2) {
       let segStart = ints[k], segEnd = ints[k + 1];
       if (segEnd <= segStart) continue;
+      const segWidth = segEnd - segStart;
       if (rowIdx % 2 === 1) {
-        const stagger = rowSpacing * 0.35;
+        /* cap stagger so it doesn't eliminate narrow segments */
+        const stagger = Math.min(rowSpacing * 0.35, segWidth * 0.3);
         segStart += stagger;
         segEnd += stagger;
       }
-      if (segEnd - segStart < 6) continue;
+      if (segEnd - segStart < 3) continue;  /* was 6 — too aggressive */
       const steps = Math.max(1, Math.floor((segEnd - segStart) / stitchLen));
       const dir = (rowIdx % 2 === 0) ? 1 : -1;
       const startX = dir === 1 ? segStart : segEnd, endX = dir === 1 ? segEnd : segStart;
@@ -759,10 +761,17 @@ function generateStitches(shapes) {
       }
 
       if (type === "fill") {
-        all.push(...edgeWalkUnderlay(points, color));
+        /* skip underlay for tiny shapes — they don't need stabilization */
+        const bounds = polygonBounds(points);
+        if (bounds.width * bounds.height > 400) {
+          all.push(...edgeWalkUnderlay(points, color));
+        }
         all.push(...contourFillPolygon(points, color));
       } else if (type === "satin") {
-        all.push(...centerWalkUnderlay(points, color));
+        const bounds = polygonBounds(points);
+        if (bounds.width * bounds.height > 200) {
+          all.push(...centerWalkUnderlay(points, color));
+        }
         all.push(...satinColumnPolygon(points, color));
       } else {
         all.push(...runningPolygon(points, color));
@@ -993,10 +1002,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "11.2" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "11.3" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v11.2 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v11.3 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
