@@ -201,7 +201,7 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
   const visited = new Uint8Array(pw * ph);
   const maskIds = new Uint32Array(pw * ph);
   const shapes = [];
-  const minComponentSize = 6;
+  const minComponentSize = 20;
   let currentMaskId = 1;
 
   console.time("contour-extract");
@@ -426,12 +426,45 @@ function polygonCentroid(points) {
   return [cx * factor, cy * factor];
 }
 
-/* Fix 4: diagonal underlay for fill shapes (45° to fill angle, wide spacing) */
-function underlayFillPolygon(points, color, fillAngle) {
+/* Simple edge-walk underlay — just trace the perimeter inset by 1.5 units */
+function edgeWalkUnderlay(points, color) {
   const stitches = [];
-  const underlayAngle = fillAngle + Math.PI / 4;
-  const cosA = Math.cos(underlayAngle), sinA = Math.sin(underlayAngle);
-  const rowSpacing = 6.0, stitchLen = 4.0;
+  const inset = 1.5;
+  const inner = [];
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len * inset;
+    const ny = dx / len * inset;
+    inner.push([x1 + nx, y1 + ny]);
+  }
+  const totalLen = inner.reduce((sum, p, i) => {
+    const [x1, y1] = p;
+    const [x2, y2] = inner[(i + 1) % inner.length];
+    return sum + Math.hypot(x2 - x1, y2 - y1);
+  }, 0);
+  const steps = Math.max(inner.length, Math.floor(totalLen / 3.5));
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * inner.length;
+    const idx = Math.floor(t) % inner.length;
+    const frac = t - Math.floor(t);
+    const nextIdx = (idx + 1) % inner.length;
+    stitches.push({
+      x: Math.round(inner[idx][0] + (inner[nextIdx][0] - inner[idx][0]) * frac),
+      y: Math.round(inner[idx][1] + (inner[nextIdx][1] - inner[idx][1]) * frac),
+      color, type: "underlay"
+    });
+  }
+  return stitches;
+}
+
+/* Simple center-walk underlay for satin — straight line down the middle */
+function centerWalkUnderlay(points, color) {
+  const stitches = [];
+  const angle = computeFillAngle(points);
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
 
   function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
   function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
@@ -439,50 +472,7 @@ function underlayFillPolygon(points, color, fillAngle) {
   const localPts = points.map(([x, y]) => toLocal(x, y));
   const b = polygonBounds(localPts);
 
-  let rowIdx = 0;
-  for (let ly = b.minY; ly <= b.maxY; ly += rowSpacing) {
-    const ints = [];
-    for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
-      const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
-      if ((y1 <= ly && y2 > ly) || (y2 <= ly && y1 > ly)) {
-        ints.push(x1 + (ly - y1) / (y2 - y1) * (x2 - x1));
-      }
-    }
-    if (ints.length < 2) continue;
-    ints.sort((a, b) => a - b);
-    for (let k = 0; k + 1 < ints.length; k += 2) {
-      let s = ints[k], e = ints[k + 1];
-      if (e <= s || e - s < 4) continue;
-      const steps = Math.max(1, Math.floor((e - s) / stitchLen));
-      const dir = (rowIdx % 2 === 0) ? 1 : -1;
-      const start = dir === 1 ? s : e, end = dir === 1 ? e : s;
-      for (let t = 0; t <= steps; t++) {
-        const f = t / steps;
-        const lx = start + (end - start) * f;
-        const [gx, gy] = toGlobal(lx, ly);
-        stitches.push({ x: Math.round(gx), y: Math.round(gy), color, type: "underlay" });
-      }
-    }
-    rowIdx++;
-  }
-  return stitches;
-}
-
-/* Fix 4: center-run underlay for satin shapes (along principal axis) */
-function underlaySatinPolygon(points, color) {
-  const stitches = [];
-  const angle = computeFillAngle(points);
-  const cosA = Math.cos(angle), sinA = Math.sin(angle);
-  const b = polygonBounds(points);
-
-  // Find centerline by rotating to principal axis and taking midpoints
-  function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
-  function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
-
-  const localPts = points.map(([x, y]) => toLocal(x, y));
-  const lb = polygonBounds(localPts);
-
-  for (let lx = lb.minX; lx <= lb.maxX; lx += 3.0) {
+  for (let lx = b.minX; lx <= b.maxX; lx += 4.0) {
     const ints = [];
     for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
       const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
@@ -666,28 +656,6 @@ function satinPerpendicularColumns(points, color) {
   return stitches;
 }
 
-/* Tie-in: 3 tiny lock stitches at start position to prevent pull-out */
-function tieInStitches(x, y, color) {
-  const s = [];
-  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
-  s.push({ x: Math.round(x + 1), y: Math.round(y), color, type: "tie" });
-  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
-  s.push({ x: Math.round(x - 1), y: Math.round(y), color, type: "tie" });
-  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
-  return s;
-}
-
-/* Tie-off: 3 tiny lock stitches at end to prevent unravel */
-function tieOffStitches(x, y, color) {
-  const s = [];
-  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
-  s.push({ x: Math.round(x - 1), y: Math.round(y), color, type: "tie" });
-  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
-  s.push({ x: Math.round(x + 1), y: Math.round(y), color, type: "tie" });
-  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
-  return s;
-}
-
 /* Fix 6: running stitch walks by true arc length */
 function runningPolygon(points, color) {
   const stitches = [];
@@ -788,25 +756,15 @@ function generateStitches(shapes) {
         all.push({ x: Math.round(sx), y: Math.round(sy), color, type: "trim" });
       }
 
-      // Tie-in lock stitches at shape start
-      const [startX, startY] = points[0] || [0, 0];
-      all.push(...tieInStitches(startX, startY, color));
-
       if (type === "fill") {
-        const fillAngle = computeFillAngle(points);
-        all.push(...underlayFillPolygon(points, color, fillAngle));
+        all.push(...edgeWalkUnderlay(points, color));
         all.push(...contourFillPolygon(points, color));
-        all.push(...runningPolygon(points, color));
       } else if (type === "satin") {
-        all.push(...underlaySatinPolygon(points, color));
+        all.push(...centerWalkUnderlay(points, color));
         all.push(...satinColumnPolygon(points, color));
       } else {
         all.push(...runningPolygon(points, color));
       }
-
-      // Tie-off lock stitches at shape end
-      const [endX, endY] = points[points.length - 1] || [startX, startY];
-      all.push(...tieOffStitches(endX, endY, color));
 
       // Update last position
       if (all.length) {
@@ -931,12 +889,8 @@ async function renderStitchesToPng(stitches, designW, designH) {
   }
   let prev = null;
   for (const s of stitches) {
-    // Don't draw lines from/to tie stitches or trim markers
-    if (s.type === "tie" || s.type === "trim") {
-      prev = null; // break the line chain
-      continue;
-    }
-    if (prev && prev.color === s.color && prev.type !== "tie" && prev.type !== "trim") {
+    if (s.type === "trim") { prev = null; continue; }
+    if (prev && prev.color === s.color && prev.type !== "trim") {
       const [cr, cg, cb] = hexToRgbNums(s.color);
       const sw = s.type === 'satin' ? 2.0 : (s.type === 'underlay' ? 0.5 : 1.0);
       drawLineOnBuffer(buf, w, h, prev.x * scale, prev.y * scale, s.x * scale, s.y * scale, cr, cg, cb, sw);
@@ -1037,10 +991,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "11.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "11.1" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v11.0 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v11.1 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
