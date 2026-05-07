@@ -278,16 +278,6 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
       if (contour.length < 4) continue;
 
       const simplified = ramerDouglasPeucker(contour, 0.25);
-
-      /* Fix 1: compute pixel-space bounds for density ratio */
-      let minX_px = Infinity, minY_px = Infinity, maxX_px = -Infinity, maxY_px = -Infinity;
-      for (const [px, py] of simplified) {
-        minX_px = Math.min(minX_px, px); minY_px = Math.min(minY_px, py);
-        maxX_px = Math.max(maxX_px, px); maxY_px = Math.max(maxY_px, py);
-      }
-      const bboxPixelArea = (maxX_px - minX_px) * (maxY_px - minY_px);
-      const density = bboxPixelArea > 0 ? pixelCount / bboxPixelArea : 1;
-
       const stitchScale = 300 / Math.max(pw, ph);
       const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
 
@@ -302,12 +292,14 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
         maxX = Math.max(maxX, px); maxY = Math.max(maxY, py);
       }
       const bw = maxX - minX, bh = maxY - minY;
+      const area = bw * bh;
 
-      /* Fix 1: density < 0.18 = truly thin/hollow stroke → satin */
-      const isSatin = density < 0.18 || (bw < 8 || bh < 8);
+      /* v9.1 classification: large shapes = always fill, narrow non-large = satin */
+      const isLarge = area > 300 * 300 * 0.15;
+      const isNarrow = (bw < 12 || bh < 12) && !isLarge;
 
       shapes.push({
-        type: isSatin ? "satin" : "fill",
+        type: isNarrow ? "satin" : "fill",
         color: colors[ci],
         points,
         pixelCount,
@@ -434,12 +426,12 @@ function polygonCentroid(points) {
   return [cx * factor, cy * factor];
 }
 
-/* Fix 4: diagonal underlay for fill shapes (45° to fill angle) */
+/* Fix 4: diagonal underlay for fill shapes (45° to fill angle, wide spacing) */
 function underlayFillPolygon(points, color, fillAngle) {
   const stitches = [];
   const underlayAngle = fillAngle + Math.PI / 4;
   const cosA = Math.cos(underlayAngle), sinA = Math.sin(underlayAngle);
-  const rowSpacing = 4.5, stitchLen = 3.5;
+  const rowSpacing = 6.0, stitchLen = 4.0;
 
   function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
   function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
@@ -572,12 +564,26 @@ function contourFillPolygon(points, color) {
   return stitches;
 }
 
-/* Satin stitch — perimeter-offset zigzag (bounded within shape) */
+/* Pro satin: perpendicular columns with pull compensation.
+   Elongated strokes use principal-axis raycasting.
+   Compact shapes fall back to perimeter zigzag. */
 function satinColumnPolygon(points, color) {
+  const b = polygonBounds(points);
+  const bw = b.width, bh = b.height;
+  const aspect = Math.max(bw, bh) / Math.min(bw, bh);
+
+  // Compact shapes: perimeter zigzag (bounded, predictable)
+  if (aspect < 2.0 || points.length < 8) {
+    return satinPerimeterZigzag(points, color);
+  }
+
+  // Elongated strokes: perpendicular needle passes
+  return satinPerpendicularColumns(points, color);
+}
+
+function satinPerimeterZigzag(points, color) {
   const stitches = [];
   const width = 2.5;
-
-  // Build inner contour by offsetting inward
   const inner = [];
   for (let i = 0; i < points.length; i++) {
     const [x1, y1] = points[i];
@@ -588,8 +594,6 @@ function satinColumnPolygon(points, color) {
     const ny = dx / len * (width / 2);
     inner.push([x1 + nx, y1 + ny]);
   }
-
-  // Zigzag between outer and inner
   const totalLen = points.length * 10;
   const steps = Math.max(points.length * 4, Math.floor(totalLen / 1.5));
   for (let i = 0; i <= steps; i++) {
@@ -597,20 +601,91 @@ function satinColumnPolygon(points, color) {
     const idx = Math.floor(t) % points.length;
     const frac = t - Math.floor(t);
     const nextIdx = (idx + 1) % points.length;
-
     const ox = points[idx][0] + (points[nextIdx][0] - points[idx][0]) * frac;
     const oy = points[idx][1] + (points[nextIdx][1] - points[idx][1]) * frac;
     const ix = inner[idx][0] + (inner[nextIdx][0] - inner[idx][0]) * frac;
     const iy = inner[idx][1] + (inner[nextIdx][1] - inner[idx][1]) * frac;
-
     if (i % 2 === 0) {
       stitches.push({ x: Math.round(ox), y: Math.round(oy), color, type: "satin" });
     } else {
       stitches.push({ x: Math.round(ix), y: Math.round(iy), color, type: "satin" });
     }
   }
+  return stitches;
+}
+
+function satinPerpendicularColumns(points, color) {
+  const stitches = [];
+  const angle = computeFillAngle(points);
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+  const stepSize = 1.5; // stitch density along length
+  const pullComp = 0.6; // widen each column by 0.6 units
+
+  function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
+  function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
+
+  const localPts = points.map(([x, y]) => toLocal(x, y));
+  const b = polygonBounds(localPts);
+
+  for (let lx = b.minX; lx <= b.maxX; lx += stepSize) {
+    const ints = [];
+    for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
+      const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
+      if ((x1 <= lx && x2 > lx) || (x2 <= lx && x1 > lx)) {
+        ints.push(y1 + (lx - x1) / (x2 - x1) * (y2 - y1));
+      }
+    }
+    if (ints.length < 2) continue;
+    ints.sort((a, b) => a - b);
+
+    // Find the pair of intersections closest together = stroke width
+    let yLeft, yRight, bestGap = Infinity;
+    for (let i = 0; i < ints.length - 1; i++) {
+      const gap = ints[i + 1] - ints[i];
+      if (gap < bestGap && gap > 0.8) {
+        bestGap = gap;
+        yLeft = ints[i];
+        yRight = ints[i + 1];
+      }
+    }
+    if (!yLeft || !yRight) continue;
+
+    // Pull compensation: widen the column
+    const mid = (yLeft + yRight) / 2;
+    const half = (yRight - yLeft) / 2;
+    const compHalf = half + pullComp;
+    const outLeft = mid - compHalf;
+    const outRight = mid + compHalf;
+
+    const [gx1, gy1] = toGlobal(lx, outLeft);
+    const [gx2, gy2] = toGlobal(lx, outRight);
+    stitches.push({ x: Math.round(gx1), y: Math.round(gy1), color, type: "satin" });
+    stitches.push({ x: Math.round(gx2), y: Math.round(gy2), color, type: "satin" });
+  }
 
   return stitches;
+}
+
+/* Tie-in: 3 tiny lock stitches at start position to prevent pull-out */
+function tieInStitches(x, y, color) {
+  const s = [];
+  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
+  s.push({ x: Math.round(x + 1), y: Math.round(y), color, type: "tie" });
+  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
+  s.push({ x: Math.round(x - 1), y: Math.round(y), color, type: "tie" });
+  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
+  return s;
+}
+
+/* Tie-off: 3 tiny lock stitches at end to prevent unravel */
+function tieOffStitches(x, y, color) {
+  const s = [];
+  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
+  s.push({ x: Math.round(x - 1), y: Math.round(y), color, type: "tie" });
+  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
+  s.push({ x: Math.round(x + 1), y: Math.round(y), color, type: "tie" });
+  s.push({ x: Math.round(x), y: Math.round(y), color, type: "tie" });
+  return s;
 }
 
 /* Fix 6: running stitch walks by true arc length */
@@ -713,6 +788,10 @@ function generateStitches(shapes) {
         all.push({ x: Math.round(sx), y: Math.round(sy), color, type: "trim" });
       }
 
+      // Tie-in lock stitches at shape start
+      const [startX, startY] = points[0] || [0, 0];
+      all.push(...tieInStitches(startX, startY, color));
+
       if (type === "fill") {
         const fillAngle = computeFillAngle(points);
         all.push(...underlayFillPolygon(points, color, fillAngle));
@@ -724,6 +803,10 @@ function generateStitches(shapes) {
       } else {
         all.push(...runningPolygon(points, color));
       }
+
+      // Tie-off lock stitches at shape end
+      const [endX, endY] = points[points.length - 1] || [startX, startY];
+      all.push(...tieOffStitches(endX, endY, color));
 
       // Update last position
       if (all.length) {
@@ -848,7 +931,12 @@ async function renderStitchesToPng(stitches, designW, designH) {
   }
   let prev = null;
   for (const s of stitches) {
-    if (prev && prev.color === s.color) {
+    // Don't draw lines from/to tie stitches or trim markers
+    if (s.type === "tie" || s.type === "trim") {
+      prev = null; // break the line chain
+      continue;
+    }
+    if (prev && prev.color === s.color && prev.type !== "tie" && prev.type !== "trim") {
       const [cr, cg, cb] = hexToRgbNums(s.color);
       const sw = s.type === 'satin' ? 2.0 : (s.type === 'underlay' ? 0.5 : 1.0);
       drawLineOnBuffer(buf, w, h, prev.x * scale, prev.y * scale, s.x * scale, s.y * scale, cr, cg, cb, sw);
@@ -949,10 +1037,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "10.1" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "11.0" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v10.1 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v11.0 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
