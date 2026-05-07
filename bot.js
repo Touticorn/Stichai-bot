@@ -495,7 +495,10 @@ function contourFillPolygon(points, color) {
     rowIdx++;
   }
 
-  // Inner passes for density
+  // Inner passes for density — skip for small shapes where they add no value
+  const shapeArea = (lBounds.maxX - lBounds.minX) * (lBounds.maxY - lBounds.minY);
+  if (shapeArea < 1500) return stitches; // small shape: one pass is enough
+
   for (let pass = 1; pass <= 2; pass++) {
     const inset = pass * rowSpacing * 0.6;
     const innerBounds = {
@@ -600,7 +603,7 @@ function runningPolygon(points, color) {
 
 /* Generate stitches with color grouping and NN ordering */
 function generateStitches(shapes) {
-  let all = [];
+  const all = [];
   const designW = 300, designH = 300;
 
   // Group by color
@@ -634,25 +637,25 @@ function generateStitches(shapes) {
     colorGroups[color] = ordered;
   }
 
-  // Generate stitches for each shape
+  // Generate stitches for each shape — push in-place, never concat
   for (const color of Object.keys(colorGroups)) {
     for (const s of colorGroups[color]) {
       const points = s.points || [[0, 0], [10, 0], [10, 10], [0, 10]];
       const type = s.type || "fill";
 
       if (type === "fill") {
-        all = all.concat(underlayPolygon(points, color));
-        all = all.concat(contourFillPolygon(points, color));
-        all = all.concat(runningPolygon(points, color));
+        all.push(...underlayPolygon(points, color));
+        all.push(...contourFillPolygon(points, color));
+        all.push(...runningPolygon(points, color));
       } else if (type === "satin") {
-        all = all.concat(satinColumnPolygon(points, color));
+        all.push(...satinColumnPolygon(points, color));
       } else {
-        all = all.concat(runningPolygon(points, color));
+        all.push(...runningPolygon(points, color));
       }
     }
   }
 
-  all = all.concat(runningPolygon([[-2, -2], [designW + 2, -2], [designW + 2, designH + 2], [-2, designH + 2]], "#333333"));
+  all.push(...runningPolygon([[-2, -2], [designW + 2, -2], [designW + 2, designH + 2], [-2, designH + 2]], "#333333"));
   return { stitches: all, designW, designH, shapes };
 }
 
@@ -841,10 +844,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "9.1" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "9.2" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v9.1 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v9.2 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
