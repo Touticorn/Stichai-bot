@@ -140,6 +140,78 @@ function ramerDouglasPeucker(points, epsilon) {
   return Array.from(keep).sort((a, b) => a - b).map(i => points[i]);
 }
 
+/* Measure median cross-stroke width perpendicular to principal axis */
+function measureCrossStrokeWidth(points) {
+  const angle = computeFillAngle(points);
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+
+  function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
+
+  const localPts = points.map(([x, y]) => toLocal(x, y));
+  const b = polygonBounds(localPts);
+  const widths = [];
+  const samples = Math.max(10, Math.floor((b.maxX - b.minX) / 4));
+
+  for (let i = 0; i <= samples; i++) {
+    const lx = b.minX + (b.maxX - b.minX) * (i / samples);
+    const ints = [];
+    for (let j = 0, k = localPts.length - 1; j < localPts.length; k = j++) {
+      const [x1, y1] = localPts[j], [x2, y2] = localPts[k];
+      if ((x1 <= lx && x2 > lx) || (x2 <= lx && x1 > lx)) {
+        ints.push(y1 + (lx - x1) / (x2 - x1) * (y2 - y1));
+      }
+    }
+    if (ints.length >= 2) {
+      ints.sort((a, b) => a - b);
+      widths.push(ints[ints.length - 1] - ints[0]);
+    }
+  }
+
+  if (widths.length === 0) return Infinity;
+  widths.sort((a, b) => a - b);
+  return widths[Math.floor(widths.length / 2)];
+}
+
+/* Group same-color shapes whose bounding boxes overlap or are within margin */
+function groupShapesByProximity(shapes, margin = 2.0) {
+  const byColor = {};
+  for (const s of shapes) {
+    if (!byColor[s.color]) byColor[s.color] = [];
+    byColor[s.color].push(s);
+  }
+
+  const result = [];
+  for (const color of Object.keys(byColor)) {
+    const list = byColor[color];
+    const visited = new Set();
+
+    for (let i = 0; i < list.length; i++) {
+      if (visited.has(i)) continue;
+      const group = [list[i]];
+      visited.add(i);
+      const queue = [i];
+
+      while (queue.length) {
+        const gi = queue.shift();
+        const bg = polygonBounds(list[gi].points);
+        for (let j = 0; j < list.length; j++) {
+          if (visited.has(j)) continue;
+          const bj = polygonBounds(list[j].points);
+          const overlapX = !(bg.maxX + margin < bj.minX || bj.maxX + margin < bg.minX);
+          const overlapY = !(bg.maxY + margin < bj.minY || bj.maxY + margin < bg.minY);
+          if (overlapX && overlapY) {
+            visited.add(j);
+            queue.push(j);
+            group.push(list[j]);
+          }
+        }
+      }
+      result.push({ color, shapes: group });
+    }
+  }
+  return result;
+}
+
 /* ============================================================
    PIXEL TRACING — optimized single-pass scan + boundary healing
    ============================================================ */
@@ -160,7 +232,8 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
   const pixelColors = new Int16Array(pw * ph);
   pixelColors.fill(-1);
 
-  console.time("pixel-classify");
+  const tid = Math.random().toString(36).slice(2, 5);
+  console.time(`pixel-classify-${tid}`);
   const data = image.bitmap.data;
   for (let y = 0; y < ph; y++) {
     const rowOff = y * pw * 4;
@@ -176,9 +249,9 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
       if (bestDist < 35) pixelColors[outOff + x] = bestIdx;
     }
   }
-  console.timeEnd("pixel-classify");
+  console.timeEnd(`pixel-classify-${tid}`);
 
-  console.time("heal");
+  console.time(`heal-${tid}`);
   for (let y = 1; y < ph - 1; y++) {
     const row = y * pw;
     for (let x = 1; x < pw - 1; x++) {
@@ -196,7 +269,7 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
       if (bestCnt >= 3) pixelColors[idx] = best;
     }
   }
-  console.timeEnd("heal");
+  console.timeEnd(`heal-${tid}`);
 
   const visited = new Uint8Array(pw * ph);
   const maskIds = new Uint32Array(pw * ph);
@@ -204,7 +277,7 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
   const minComponentSize = 6;
   let currentMaskId = 1;
 
-  console.time("contour-extract");
+  console.time(`contour-extract-${tid}`);
   for (let y = 0; y < ph; y++) {
     const row = y * pw;
     for (let x = 0; x < pw; x++) {
@@ -294,27 +367,50 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
       const bw = maxX - minX, bh = maxY - minY;
       const area = bw * bh;
 
-      /* Classification: large or wide shapes = fill, narrow strokes = satin */
-      const isLarge = area > 300 * 300 * 0.15;
-      const maxDim = Math.max(bw, bh);
-      const minDim = Math.min(bw, bh);
-      const isNarrow = minDim < 12 && maxDim < 80 && !isLarge;
-
+      /* Defer classification — store raw geometry for group-aware routing */
       shapes.push({
-        type: isNarrow ? "satin" : "fill",
+        type: "unknown", // will be set after grouping
         color: colors[ci],
         points,
         pixelCount,
+        _bbox: { minX, minY, maxX, maxY, width: bw, height: bh, area },
       });
     }
   }
 
   shapes.sort((a, b) => b.pixelCount - a.pixelCount);
-  console.timeEnd("contour-extract");
+  console.timeEnd(`contour-extract-${tid}`);
 
-  const satinCount = shapes.filter(s => s.type === "satin").length;
-  const fillCount = shapes.filter(s => s.type === "fill").length;
-  console.log(`Shape types: ${satinCount} satin, ${fillCount} fill`);
+  /* === PROFESSIONAL CLASSIFICATION ===
+     1. Group same-color adjacent shapes
+     2. Large groups (>13500 area) → all fill
+     3. Small groups → classify by median cross-stroke width
+        - width < 8 units → satin (narrow column)
+        - width >= 8 units → fill (wide area)
+  */
+  console.time("classify");
+  const groups = groupShapesByProximity(shapes, 2.0);
+  let satinCount = 0, fillCount = 0;
+
+  for (const group of groups) {
+    const totalArea = group.shapes.reduce((sum, s) => sum + s._bbox.area, 0);
+    const isLargeGroup = totalArea > 300 * 300 * 0.15; // > 13500
+
+    for (const s of group.shapes) {
+      if (isLargeGroup) {
+        s.type = "fill";
+        fillCount++;
+      } else {
+        const crossWidth = measureCrossStrokeWidth(s.points);
+        /* Narrow cross-stroke = satin column; wide = fill */
+        s.type = (crossWidth < 8 && s._bbox.area < 13500) ? "satin" : "fill";
+        if (s.type === "satin") satinCount++; else fillCount++;
+      }
+    }
+  }
+
+  console.timeEnd("classify");
+  console.log(`Shape types: ${satinCount} satin, ${fillCount} fill (${groups.length} groups from ${shapes.length} raw shapes)`);
 
   console.log(`Extracted ${shapes.length} shapes from pixels (${pw}x${ph})`);
   return shapes;
@@ -428,36 +524,44 @@ function polygonCentroid(points) {
   return [cx * factor, cy * factor];
 }
 
-/* Simple edge-walk underlay — just trace the perimeter inset by 1.5 units */
-function edgeWalkUnderlay(points, color) {
+/* Perpendicular underlay for fill — runs at 90° to fill angle */
+function underlayFillPolygon(points, color, fillAngle) {
   const stitches = [];
-  const inset = 1.5;
-  const inner = [];
-  for (let i = 0; i < points.length; i++) {
-    const [x1, y1] = points[i];
-    const [x2, y2] = points[(i + 1) % points.length];
-    const dx = x2 - x1, dy = y2 - y1;
-    const len = Math.hypot(dx, dy) || 1;
-    const nx = -dy / len * inset;
-    const ny = dx / len * inset;
-    inner.push([x1 + nx, y1 + ny]);
-  }
-  const totalLen = inner.reduce((sum, p, i) => {
-    const [x1, y1] = p;
-    const [x2, y2] = inner[(i + 1) % inner.length];
-    return sum + Math.hypot(x2 - x1, y2 - y1);
-  }, 0);
-  const steps = Math.max(inner.length, Math.floor(totalLen / 3.5));
-  for (let i = 0; i <= steps; i++) {
-    const t = (i / steps) * inner.length;
-    const idx = Math.floor(t) % inner.length;
-    const frac = t - Math.floor(t);
-    const nextIdx = (idx + 1) % inner.length;
-    stitches.push({
-      x: Math.round(inner[idx][0] + (inner[nextIdx][0] - inner[idx][0]) * frac),
-      y: Math.round(inner[idx][1] + (inner[nextIdx][1] - inner[idx][1]) * frac),
-      color, type: "underlay"
-    });
+  const underlayAngle = fillAngle + Math.PI / 2; // perpendicular
+  const cosA = Math.cos(underlayAngle), sinA = Math.sin(underlayAngle);
+  const rowSpacing = 5.0, stitchLen = 4.0;
+
+  function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
+  function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
+
+  const localPts = points.map(([x, y]) => toLocal(x, y));
+  const b = polygonBounds(localPts);
+
+  let rowIdx = 0;
+  for (let ly = b.minY; ly <= b.maxY; ly += rowSpacing) {
+    const ints = [];
+    for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
+      const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
+      if ((y1 <= ly && y2 > ly) || (y2 <= ly && y1 > ly)) {
+        ints.push(x1 + (ly - y1) / (y2 - y1) * (x2 - x1));
+      }
+    }
+    if (ints.length < 2) continue;
+    ints.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < ints.length; k += 2) {
+      let s = ints[k], e = ints[k + 1];
+      if (e <= s || e - s < 4) continue;
+      const steps = Math.max(1, Math.floor((e - s) / stitchLen));
+      const dir = (rowIdx % 2 === 0) ? 1 : -1;
+      const start = dir === 1 ? s : e, end = dir === 1 ? e : s;
+      for (let t = 0; t <= steps; t++) {
+        const f = t / steps;
+        const lx = start + (end - start) * f;
+        const [gx, gy] = toGlobal(lx, ly);
+        stitches.push({ x: Math.round(gx), y: Math.round(gy), color, type: "underlay" });
+      }
+    }
+    rowIdx++;
   }
   return stitches;
 }
@@ -761,10 +865,10 @@ function generateStitches(shapes) {
       }
 
       if (type === "fill") {
-        /* skip underlay for tiny shapes — they don't need stabilization */
+        const fillAngle = computeFillAngle(points);
         const bounds = polygonBounds(points);
-        if (bounds.width * bounds.height > 400) {
-          all.push(...edgeWalkUnderlay(points, color));
+        if (bounds.width * bounds.height > 300) {
+          all.push(...underlayFillPolygon(points, color, fillAngle));
         }
         all.push(...contourFillPolygon(points, color));
       } else if (type === "satin") {
@@ -921,16 +1025,17 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
   res.setTimeout(0);
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
-    console.time("preprocess");
+    const reqId = Math.random().toString(36).slice(2, 6);
+    console.time(`preprocess-${reqId}`);
     const cleanBuffer = await preprocessImage(req.file.buffer);
-    console.timeEnd("preprocess");
+    console.timeEnd(`preprocess-${reqId}`);
     
     const cleanB64 = cleanBuffer.toString("base64");
     const cleanMime = "image/png";
     
-    console.time("gemini-colors");
+    console.time(`gemini-colors-${reqId}`);
     const detection = await detectColors(cleanB64, cleanMime);
-    console.timeEnd("gemini-colors");
+    console.timeEnd(`gemini-colors-${reqId}`);
     
     const colors = detection.colors;
     console.log("Colors:", colors, "is_text:", detection.is_text, "is_logo:", detection.is_logo);
@@ -1002,10 +1107,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "11.3" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "12.0" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v11.3 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v12.0 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
