@@ -140,78 +140,6 @@ function ramerDouglasPeucker(points, epsilon) {
   return Array.from(keep).sort((a, b) => a - b).map(i => points[i]);
 }
 
-/* Measure median cross-stroke width perpendicular to principal axis */
-function measureCrossStrokeWidth(points) {
-  const angle = computeFillAngle(points);
-  const cosA = Math.cos(angle), sinA = Math.sin(angle);
-
-  function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
-
-  const localPts = points.map(([x, y]) => toLocal(x, y));
-  const b = polygonBounds(localPts);
-  const widths = [];
-  const samples = Math.max(10, Math.floor((b.maxX - b.minX) / 4));
-
-  for (let i = 0; i <= samples; i++) {
-    const lx = b.minX + (b.maxX - b.minX) * (i / samples);
-    const ints = [];
-    for (let j = 0, k = localPts.length - 1; j < localPts.length; k = j++) {
-      const [x1, y1] = localPts[j], [x2, y2] = localPts[k];
-      if ((x1 <= lx && x2 > lx) || (x2 <= lx && x1 > lx)) {
-        ints.push(y1 + (lx - x1) / (x2 - x1) * (y2 - y1));
-      }
-    }
-    if (ints.length >= 2) {
-      ints.sort((a, b) => a - b);
-      widths.push(ints[ints.length - 1] - ints[0]);
-    }
-  }
-
-  if (widths.length === 0) return Infinity;
-  widths.sort((a, b) => a - b);
-  return widths[Math.floor(widths.length / 2)];
-}
-
-/* Group same-color shapes whose bounding boxes overlap or are within margin */
-function groupShapesByProximity(shapes, margin = 2.0) {
-  const byColor = {};
-  for (const s of shapes) {
-    if (!byColor[s.color]) byColor[s.color] = [];
-    byColor[s.color].push(s);
-  }
-
-  const result = [];
-  for (const color of Object.keys(byColor)) {
-    const list = byColor[color];
-    const visited = new Set();
-
-    for (let i = 0; i < list.length; i++) {
-      if (visited.has(i)) continue;
-      const group = [list[i]];
-      visited.add(i);
-      const queue = [i];
-
-      while (queue.length) {
-        const gi = queue.shift();
-        const bg = polygonBounds(list[gi].points);
-        for (let j = 0; j < list.length; j++) {
-          if (visited.has(j)) continue;
-          const bj = polygonBounds(list[j].points);
-          const overlapX = !(bg.maxX + margin < bj.minX || bj.maxX + margin < bg.minX);
-          const overlapY = !(bg.maxY + margin < bj.minY || bj.maxY + margin < bg.minY);
-          if (overlapX && overlapY) {
-            visited.add(j);
-            queue.push(j);
-            group.push(list[j]);
-          }
-        }
-      }
-      result.push({ color, shapes: group });
-    }
-  }
-  return result;
-}
-
 /* ============================================================
    PIXEL TRACING — optimized single-pass scan + boundary healing
    ============================================================ */
@@ -367,13 +295,15 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
       const bw = maxX - minX, bh = maxY - minY;
       const area = bw * bh;
 
-      /* Defer classification — store raw geometry for group-aware routing */
+      /* v9.1 classification: large shapes = always fill, narrow non-large = satin */
+      const isLarge = area > 300 * 300 * 0.15;
+      const isNarrow = (bw < 12 || bh < 12) && !isLarge;
+
       shapes.push({
-        type: "unknown", // will be set after grouping
+        type: isNarrow ? "satin" : "fill",
         color: colors[ci],
         points,
         pixelCount,
-        _bbox: { minX, minY, maxX, maxY, width: bw, height: bh, area },
       });
     }
   }
@@ -381,36 +311,9 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
   shapes.sort((a, b) => b.pixelCount - a.pixelCount);
   console.timeEnd(`contour-extract-${tid}`);
 
-  /* === PROFESSIONAL CLASSIFICATION ===
-     1. Group same-color adjacent shapes
-     2. Large groups (>13500 area) → all fill
-     3. Small groups → classify by median cross-stroke width
-        - width < 8 units → satin (narrow column)
-        - width >= 8 units → fill (wide area)
-  */
-  console.time("classify");
-  const groups = groupShapesByProximity(shapes, 2.0);
-  let satinCount = 0, fillCount = 0;
-
-  for (const group of groups) {
-    const totalArea = group.shapes.reduce((sum, s) => sum + s._bbox.area, 0);
-    const isLargeGroup = totalArea > 300 * 300 * 0.15; // > 13500
-
-    for (const s of group.shapes) {
-      if (isLargeGroup) {
-        s.type = "fill";
-        fillCount++;
-      } else {
-        const crossWidth = measureCrossStrokeWidth(s.points);
-        /* Narrow cross-stroke = satin column; wide = fill */
-        s.type = (crossWidth < 8 && s._bbox.area < 13500) ? "satin" : "fill";
-        if (s.type === "satin") satinCount++; else fillCount++;
-      }
-    }
-  }
-
-  console.timeEnd("classify");
-  console.log(`Shape types: ${satinCount} satin, ${fillCount} fill (${groups.length} groups from ${shapes.length} raw shapes)`);
+  const satinCount = shapes.filter(s => s.type === "satin").length;
+  const fillCount = shapes.filter(s => s.type === "fill").length;
+  console.log(`Shape types: ${satinCount} satin, ${fillCount} fill`);
 
   console.log(`Extracted ${shapes.length} shapes from pixels (${pw}x${ph})`);
   return shapes;
@@ -524,12 +427,10 @@ function polygonCentroid(points) {
   return [cx * factor, cy * factor];
 }
 
-/* Perpendicular underlay for fill — runs at 90° to fill angle */
+/* Simple underlay — center-walk down the principal axis of the shape */
 function underlayFillPolygon(points, color, fillAngle) {
   const stitches = [];
-  const underlayAngle = fillAngle + Math.PI / 2; // perpendicular
-  const cosA = Math.cos(underlayAngle), sinA = Math.sin(underlayAngle);
-  const rowSpacing = 5.0, stitchLen = 4.0;
+  const cosA = Math.cos(fillAngle), sinA = Math.sin(fillAngle);
 
   function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
   function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
@@ -537,31 +438,19 @@ function underlayFillPolygon(points, color, fillAngle) {
   const localPts = points.map(([x, y]) => toLocal(x, y));
   const b = polygonBounds(localPts);
 
-  let rowIdx = 0;
-  for (let ly = b.minY; ly <= b.maxY; ly += rowSpacing) {
+  for (let lx = b.minX; lx <= b.maxX; lx += 5.0) {
     const ints = [];
     for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
       const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
-      if ((y1 <= ly && y2 > ly) || (y2 <= ly && y1 > ly)) {
-        ints.push(x1 + (ly - y1) / (y2 - y1) * (x2 - x1));
+      if ((x1 <= lx && x2 > lx) || (x2 <= lx && x1 > lx)) {
+        ints.push(y1 + (lx - x1) / (x2 - x1) * (y2 - y1));
       }
     }
     if (ints.length < 2) continue;
     ints.sort((a, b) => a - b);
-    for (let k = 0; k + 1 < ints.length; k += 2) {
-      let s = ints[k], e = ints[k + 1];
-      if (e <= s || e - s < 4) continue;
-      const steps = Math.max(1, Math.floor((e - s) / stitchLen));
-      const dir = (rowIdx % 2 === 0) ? 1 : -1;
-      const start = dir === 1 ? s : e, end = dir === 1 ? e : s;
-      for (let t = 0; t <= steps; t++) {
-        const f = t / steps;
-        const lx = start + (end - start) * f;
-        const [gx, gy] = toGlobal(lx, ly);
-        stitches.push({ x: Math.round(gx), y: Math.round(gy), color, type: "underlay" });
-      }
-    }
-    rowIdx++;
+    const midY = (ints[0] + ints[ints.length - 1]) / 2;
+    const [gx, gy] = toGlobal(lx, midY);
+    stitches.push({ x: Math.round(gx), y: Math.round(gy), color, type: "underlay" });
   }
   return stitches;
 }
@@ -662,24 +551,8 @@ function contourFillPolygon(points, color) {
   return stitches;
 }
 
-/* Pro satin: perpendicular columns with pull compensation.
-   Elongated strokes use principal-axis raycasting.
-   Compact shapes fall back to perimeter zigzag. */
+/* Simple satin — perimeter-offset zigzag (bounded within shape) */
 function satinColumnPolygon(points, color) {
-  const b = polygonBounds(points);
-  const bw = b.width, bh = b.height;
-  const aspect = Math.max(bw, bh) / Math.min(bw, bh);
-
-  // Compact shapes: perimeter zigzag (bounded, predictable)
-  if (aspect < 2.0 || points.length < 8) {
-    return satinPerimeterZigzag(points, color);
-  }
-
-  // Elongated strokes: perpendicular needle passes
-  return satinPerpendicularColumns(points, color);
-}
-
-function satinPerimeterZigzag(points, color) {
   const stitches = [];
   const width = 2.5;
   const inner = [];
@@ -709,58 +582,6 @@ function satinPerimeterZigzag(points, color) {
       stitches.push({ x: Math.round(ix), y: Math.round(iy), color, type: "satin" });
     }
   }
-  return stitches;
-}
-
-function satinPerpendicularColumns(points, color) {
-  const stitches = [];
-  const angle = computeFillAngle(points);
-  const cosA = Math.cos(angle), sinA = Math.sin(angle);
-  const stepSize = 1.5; // stitch density along length
-  const pullComp = 0.6; // widen each column by 0.6 units
-
-  function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
-  function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
-
-  const localPts = points.map(([x, y]) => toLocal(x, y));
-  const b = polygonBounds(localPts);
-
-  for (let lx = b.minX; lx <= b.maxX; lx += stepSize) {
-    const ints = [];
-    for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
-      const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
-      if ((x1 <= lx && x2 > lx) || (x2 <= lx && x1 > lx)) {
-        ints.push(y1 + (lx - x1) / (x2 - x1) * (y2 - y1));
-      }
-    }
-    if (ints.length < 2) continue;
-    ints.sort((a, b) => a - b);
-
-    // Find the pair of intersections closest together = stroke width
-    let yLeft, yRight, bestGap = Infinity;
-    for (let i = 0; i < ints.length - 1; i++) {
-      const gap = ints[i + 1] - ints[i];
-      if (gap < bestGap && gap > 0.8) {
-        bestGap = gap;
-        yLeft = ints[i];
-        yRight = ints[i + 1];
-      }
-    }
-    if (!yLeft || !yRight) continue;
-
-    // Pull compensation: widen the column
-    const mid = (yLeft + yRight) / 2;
-    const half = (yRight - yLeft) / 2;
-    const compHalf = half + pullComp;
-    const outLeft = mid - compHalf;
-    const outRight = mid + compHalf;
-
-    const [gx1, gy1] = toGlobal(lx, outLeft);
-    const [gx2, gy2] = toGlobal(lx, outRight);
-    stitches.push({ x: Math.round(gx1), y: Math.round(gy1), color, type: "satin" });
-    stitches.push({ x: Math.round(gx2), y: Math.round(gy2), color, type: "satin" });
-  }
-
   return stitches;
 }
 
@@ -1107,10 +928,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "12.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "12.1" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v12.0 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v12.1 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
