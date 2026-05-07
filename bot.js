@@ -303,8 +303,8 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
       }
       const bw = maxX - minX, bh = maxY - minY;
 
-      /* Fix 1: density < 0.35 = thin/hollow stroke → satin */
-      const isSatin = density < 0.35 || (bw < 12 && bh < 12);
+      /* Fix 1: density < 0.18 = truly thin/hollow stroke → satin */
+      const isSatin = density < 0.18 || (bw < 8 || bh < 8);
 
       shapes.push({
         type: isSatin ? "satin" : "fill",
@@ -572,43 +572,42 @@ function contourFillPolygon(points, color) {
   return stitches;
 }
 
-/* Fix 2: satin stitch using principal axis + perpendicular needle passes */
+/* Satin stitch — perimeter-offset zigzag (bounded within shape) */
 function satinColumnPolygon(points, color) {
   const stitches = [];
-  const angle = computeFillAngle(points);
-  const cosA = Math.cos(angle), sinA = Math.sin(angle);
-  const stitchWidth = 2.0;
+  const width = 2.5;
 
-  function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
-  function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
+  // Build inner contour by offsetting inward
+  const inner = [];
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i];
+    const [x2, y2] = points[(i + 1) % points.length];
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len * (width / 2);
+    const ny = dx / len * (width / 2);
+    inner.push([x1 + nx, y1 + ny]);
+  }
 
-  const localPts = points.map(([x, y]) => toLocal(x, y));
-  const b = polygonBounds(localPts);
+  // Zigzag between outer and inner
+  const totalLen = points.length * 10;
+  const steps = Math.max(points.length * 4, Math.floor(totalLen / 1.5));
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * points.length;
+    const idx = Math.floor(t) % points.length;
+    const frac = t - Math.floor(t);
+    const nextIdx = (idx + 1) % points.length;
 
-  // Walk along the length axis (X in local space), raycast perpendicular at each step
-  for (let lx = b.minX; lx <= b.maxX; lx += stitchWidth) {
-    const ints = [];
-    for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
-      const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
-      if ((x1 <= lx && x2 > lx) || (x2 <= lx && x1 > lx)) {
-        ints.push(y1 + (lx - x1) / (x2 - x1) * (y2 - y1));
-      }
+    const ox = points[idx][0] + (points[nextIdx][0] - points[idx][0]) * frac;
+    const oy = points[idx][1] + (points[nextIdx][1] - points[idx][1]) * frac;
+    const ix = inner[idx][0] + (inner[nextIdx][0] - inner[idx][0]) * frac;
+    const iy = inner[idx][1] + (inner[nextIdx][1] - inner[idx][1]) * frac;
+
+    if (i % 2 === 0) {
+      stitches.push({ x: Math.round(ox), y: Math.round(oy), color, type: "satin" });
+    } else {
+      stitches.push({ x: Math.round(ix), y: Math.round(iy), color, type: "satin" });
     }
-    if (ints.length < 2) continue;
-    ints.sort((a, b) => a - b);
-
-    // Take the widest span (first and last intersections)
-    const yLeft = ints[0];
-    const yRight = ints[ints.length - 1];
-
-    // Skip if span is too narrow (degenerate)
-    if (Math.abs(yRight - yLeft) < 1.5) continue;
-
-    // Emit needle pass: left → right
-    const [gx1, gy1] = toGlobal(lx, yLeft);
-    const [gx2, gy2] = toGlobal(lx, yRight);
-    stitches.push({ x: Math.round(gx1), y: Math.round(gy1), color, type: "satin" });
-    stitches.push({ x: Math.round(gx2), y: Math.round(gy2), color, type: "satin" });
   }
 
   return stitches;
@@ -950,10 +949,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "10.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "10.1" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v10.0 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v10.1 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
