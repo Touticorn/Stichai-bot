@@ -67,10 +67,26 @@ Return ONLY: {"colors":["#RRGGBB","#RRGGBB"], "is_text": true|false, "is_logo": 
   const parsed = JSON.parse(clean);
 
   return {
-    colors: parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"],
+    colors: deduplicateColors(parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"]),
     is_text: !!parsed.is_text,
     is_logo: !!parsed.is_logo,
   };
+}
+
+function deduplicateColors(colors) {
+  const unique = [];
+  const labs = colors.map(c => rgbToLab(hexToRgb(c)));
+  for (let i = 0; i < colors.length; i++) {
+    let duplicate = false;
+    for (let j = 0; j < unique.length; j++) {
+      if (colorDistanceLab(labs[i], rgbToLab(hexToRgb(unique[j]))) < 20) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (!duplicate) unique.push(colors[i]);
+  }
+  return unique.length ? unique : ["#FF0000", "#FFFFFF", "#0000FF"];
 }
 
 function hexToRgb(hex) {
@@ -292,22 +308,9 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
   shapes.sort((a, b) => b.pixelCount - a.pixelCount);
   console.timeEnd("contour-extract");
 
-  if (isText && shapes.length > 3) {
-    const medianPixel = shapes.map(s => s.pixelCount).sort((a, b) => a - b)[Math.floor(shapes.length / 2)];
-    const bgThreshold = Math.max(medianPixel * 5, 200);
-    let bgCount = 0;
-    for (const s of shapes) {
-      if (s.pixelCount > bgThreshold && bgCount < 2) {
-        s.type = "fill";
-        bgCount++;
-      } else if (s.pixelCount > 15) {
-        s.type = "satin";
-      }
-    }
-    const satinCount = shapes.filter(s => s.type === "satin").length;
-    const fillCount = shapes.filter(s => s.type === "fill").length;
-    console.log(`Text reclassify: ${satinCount} satin, ${fillCount} fill (threshold=${bgThreshold})`);
-  }
+  const satinCount = shapes.filter(s => s.type === "satin").length;
+  const fillCount = shapes.filter(s => s.type === "fill").length;
+  console.log(`Shape types: ${satinCount} satin, ${fillCount} fill`);
 
   console.log(`Extracted ${shapes.length} shapes from pixels (${pw}x${ph})`);
   return shapes;
@@ -838,10 +841,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "9.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "9.1" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v9.0 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v9.1 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
