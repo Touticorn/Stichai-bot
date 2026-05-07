@@ -31,8 +31,7 @@ async function geminiPost(body, timeoutMs, primaryModel, retries = 3) {
       }
     }
   }
-  console.log(`All retries failed for ${primaryModel}, trying ${FLASH_MODEL}`);
-  return axios.post(makeUrl(FLASH_MODEL), body, { timeout: timeoutMs });
+  throw lastErr;
 }
 
 const jobs = new Map();
@@ -126,9 +125,9 @@ function ramerDouglasPeucker(points, epsilon) {
 }
 
 /* ============================================================
-   PIXEL TRACING — your exact original, untouched
+   PIXEL TRACING — optimized single-pass scan + boundary healing
    ============================================================ */
-async function extractShapesFromImage(buffer, colors) {
+async function extractShapesFromImage(buffer, colors, isText = false) {
   const jimpModule = require("jimp");
   const Jimp = jimpModule.Jimp || jimpModule;
 
@@ -143,119 +142,173 @@ async function extractShapesFromImage(buffer, colors) {
 
   const labColors = colors.map(c => rgbToLab(hexToRgb(c)));
   const pixelColors = new Int16Array(pw * ph);
-  for (let i = 0; i < pw * ph; i++) pixelColors[i] = -1;
+  pixelColors.fill(-1);
 
+  console.time("pixel-classify");
+  const data = image.bitmap.data;
   for (let y = 0; y < ph; y++) {
+    const rowOff = y * pw * 4;
+    const outOff = y * pw;
     for (let x = 0; x < pw; x++) {
-      const idx = image.getPixelIndex(x, y);
-      const r = image.bitmap.data[idx];
-      const g = image.bitmap.data[idx + 1];
-      const b = image.bitmap.data[idx + 2];
-      const pixLab = rgbToLab({ r, g, b });
+      const i = rowOff + (x << 2);
+      const pixLab = rgbToLab({ r: data[i], g: data[i + 1], b: data[i + 2] });
       let bestIdx = 0, bestDist = Infinity;
       for (let c = 0; c < labColors.length; c++) {
         const d = colorDistanceLab(pixLab, labColors[c]);
         if (d < bestDist) { bestDist = d; bestIdx = c; }
       }
-      if (bestDist < 35) pixelColors[y * pw + x] = bestIdx;
+      if (bestDist < 35) pixelColors[outOff + x] = bestIdx;
     }
   }
+  console.timeEnd("pixel-classify");
+
+  console.time("heal");
+  for (let y = 1; y < ph - 1; y++) {
+    const row = y * pw;
+    for (let x = 1; x < pw - 1; x++) {
+      const idx = row + x;
+      if (pixelColors[idx] !== -1) continue;
+      const c0 = pixelColors[idx - 1];
+      const c1 = pixelColors[idx + 1];
+      const c2 = pixelColors[idx - pw];
+      const c3 = pixelColors[idx + pw];
+      let best = -1, bestCnt = 0;
+      if (c0 !== -1) { const n = 1 + (c0 === c1) + (c0 === c2) + (c0 === c3); if (n > bestCnt) { bestCnt = n; best = c0; } }
+      if (c1 !== -1 && c1 !== c0) { const n = 1 + (c1 === c0) + (c1 === c2) + (c1 === c3); if (n > bestCnt) { bestCnt = n; best = c1; } }
+      if (c2 !== -1 && c2 !== c0 && c2 !== c1) { const n = 1 + (c2 === c0) + (c2 === c1) + (c2 === c3); if (n > bestCnt) { bestCnt = n; best = c2; } }
+      if (c3 !== -1 && c3 !== c0 && c3 !== c1 && c3 !== c2) { const n = 1 + (c3 === c0) + (c3 === c1) + (c3 === c2); if (n > bestCnt) { bestCnt = n; best = c3; } }
+      if (bestCnt >= 3) pixelColors[idx] = best;
+    }
+  }
+  console.timeEnd("heal");
 
   const visited = new Uint8Array(pw * ph);
+  const maskIds = new Uint32Array(pw * ph);
   const shapes = [];
   const minComponentSize = 6;
+  let currentMaskId = 1;
 
-  for (let ci = 0; ci < labColors.length; ci++) {
-    for (let y = 0; y < ph; y++) {
-      for (let x = 0; x < pw; x++) {
-        const idx = y * pw + x;
-        if (pixelColors[idx] !== ci || visited[idx]) continue;
+  console.time("contour-extract");
+  for (let y = 0; y < ph; y++) {
+    const row = y * pw;
+    for (let x = 0; x < pw; x++) {
+      const idx = row + x;
+      const ci = pixelColors[idx];
+      if (ci === -1 || visited[idx]) continue;
 
-        const comp = [];
-        const q = [idx];
-        let qPtr = 0;
-        visited[idx] = 1;
-        while (qPtr < q.length) {
-          const ci2 = q[qPtr++];
-          comp.push(ci2);
-          const cx = ci2 % pw, cy = Math.floor(ci2 / pw);
-          for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
-            const nx = cx + dx, ny = cy + dy;
-            if (nx >= 0 && nx < pw && ny >= 0 && ny < ph) {
-              const ni = ny * pw + nx;
-              if (pixelColors[ni] === ci && !visited[ni]) { visited[ni] = 1; q.push(ni); }
-            }
+      const q = [idx];
+      let qPtr = 0;
+      let pixelCount = 0;
+      let startX = -1, startY = -1;
+      visited[idx] = 1;
+      maskIds[idx] = currentMaskId;
+
+      while (qPtr < q.length) {
+        const ci2 = q[qPtr++];
+        pixelCount++;
+        const cx = ci2 % pw;
+        const cy = (ci2 / pw) | 0;
+
+        if (startX === -1) {
+          if (cx === 0 || pixelColors[ci2 - 1] !== ci || cx === pw - 1 || pixelColors[ci2 + 1] !== ci ||
+              cy === 0 || pixelColors[ci2 - pw] !== ci || cy === ph - 1 || pixelColors[ci2 + pw] !== ci) {
+            startX = cx; startY = cy;
           }
         }
 
-        if (comp.length < minComponentSize) continue;
-
-        const mask = new Uint8Array(pw * ph);
-        for (const i of comp) mask[i] = 1;
-
-        let startX = -1, startY = -1;
-        outer: for (let by = 0; by < ph; by++) {
-          for (let bx = 0; bx < pw; bx++) {
-            const bidx = by * pw + bx;
-            if (!mask[bidx]) continue;
-            if (bx === 0 || !mask[bidx - 1] || bx === pw - 1 || !mask[bidx + 1] ||
-              by === 0 || !mask[bidx - pw] || by === ph - 1 || !mask[bidx + pw]) {
-              startX = bx; startY = by; break outer;
-            }
-          }
+        if (cx > 0) {
+          const ni = ci2 - 1;
+          if (!visited[ni] && pixelColors[ni] === ci) { visited[ni] = 1; maskIds[ni] = currentMaskId; q.push(ni); }
         }
-        if (startX === -1) continue;
-
-        const contour = [];
-        const n8 = [[-1, 0], [-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1]];
-        let cx = startX, cy = startY, dir = 7;
-        let safety = 0;
-        do {
-          contour.push([cx, cy]);
-          let found = false;
-          for (let i = 1; i <= 8; i++) {
-            const d = (dir + i) % 8;
-            const nx = cx + n8[d][0], ny = cy + n8[d][1];
-            if (nx >= 0 && nx < pw && ny >= 0 && ny < ph && mask[ny * pw + nx]) {
-              cx = nx; cy = ny; dir = (d + 5) % 8; found = true; break;
-            }
-          }
-          if (!found) break;
-          safety++;
-        } while ((cx !== startX || cy !== startY) && safety < 128000);
-
-        if (contour.length < 4) continue;
-
-        const simplified = ramerDouglasPeucker(contour, 0.25);
-        const stitchScale = 300 / Math.max(pw, ph);
-        const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
-
-        if (points.length >= 3) {
-          const first = points[0], last = points[points.length - 1];
-          if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
+        if (cx < pw - 1) {
+          const ni = ci2 + 1;
+          if (!visited[ni] && pixelColors[ni] === ci) { visited[ni] = 1; maskIds[ni] = currentMaskId; q.push(ni); }
         }
-
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const [px, py] of points) {
-          minX = Math.min(minX, px); minY = Math.min(minY, py);
-          maxX = Math.max(maxX, px); maxY = Math.max(maxY, py);
+        if (cy > 0) {
+          const ni = ci2 - pw;
+          if (!visited[ni] && pixelColors[ni] === ci) { visited[ni] = 1; maskIds[ni] = currentMaskId; q.push(ni); }
         }
-        const bw = maxX - minX, bh = maxY - minY;
-        const area = bw * bh;
-        const isLarge = area > 300 * 300 * 0.15;
-        const isNarrow = (bw < 12 || bh < 12) && !isLarge;
-
-        shapes.push({
-          type: isNarrow ? "satin" : "fill",
-          color: colors[ci],
-          points,
-          pixelCount: comp.length,
-        });
+        if (cy < ph - 1) {
+          const ni = ci2 + pw;
+          if (!visited[ni] && pixelColors[ni] === ci) { visited[ni] = 1; maskIds[ni] = currentMaskId; q.push(ni); }
+        }
       }
+
+      if (pixelCount < minComponentSize || startX === -1) {
+        currentMaskId++;
+        continue;
+      }
+
+      const contour = [];
+      const n8 = [[-1, 0], [-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1]];
+      let cx = startX, cy = startY, dir = 7;
+      let safety = 0;
+      const inMask = (mx, my) => mx >= 0 && mx < pw && my >= 0 && my < ph && maskIds[my * pw + mx] === currentMaskId;
+
+      do {
+        contour.push([cx, cy]);
+        let found = false;
+        for (let i = 1; i <= 8; i++) {
+          const d = (dir + i) & 7;
+          const nx = cx + n8[d][0], ny = cy + n8[d][1];
+          if (inMask(nx, ny)) { cx = nx; cy = ny; dir = (d + 5) & 7; found = true; break; }
+        }
+        if (!found) break;
+        safety++;
+      } while ((cx !== startX || cy !== startY) && safety < 500000);
+
+      currentMaskId++;
+
+      if (contour.length < 4) continue;
+
+      const simplified = ramerDouglasPeucker(contour, 0.25);
+      const stitchScale = 300 / Math.max(pw, ph);
+      const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
+
+      if (points.length >= 3) {
+        const first = points[0], last = points[points.length - 1];
+        if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
+      }
+
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const [px, py] of points) {
+        minX = Math.min(minX, px); minY = Math.min(minY, py);
+        maxX = Math.max(maxX, px); maxY = Math.max(maxY, py);
+      }
+      const bw = maxX - minX, bh = maxY - minY;
+      const area = bw * bh;
+      const isLarge = area > 300 * 300 * 0.15;
+      const isNarrow = (bw < 12 || bh < 12) && !isLarge;
+
+      shapes.push({
+        type: isNarrow ? "satin" : "fill",
+        color: colors[ci],
+        points,
+        pixelCount,
+      });
     }
   }
 
   shapes.sort((a, b) => b.pixelCount - a.pixelCount);
+  console.timeEnd("contour-extract");
+
+  if (isText && shapes.length > 3) {
+    const medianPixel = shapes.map(s => s.pixelCount).sort((a, b) => a - b)[Math.floor(shapes.length / 2)];
+    const bgThreshold = Math.max(medianPixel * 5, 200);
+    let bgCount = 0;
+    for (const s of shapes) {
+      if (s.pixelCount > bgThreshold && bgCount < 2) {
+        s.type = "fill";
+        bgCount++;
+      } else if (s.pixelCount > 15) {
+        s.type = "satin";
+      }
+    }
+    const satinCount = shapes.filter(s => s.type === "satin").length;
+    const fillCount = shapes.filter(s => s.type === "fill").length;
+    console.log(`Text reclassify: ${satinCount} satin, ${fillCount} fill (threshold=${bgThreshold})`);
+  }
+
   console.log(`Extracted ${shapes.length} shapes from pixels (${pw}x${ph})`);
   return shapes;
 }
@@ -701,19 +754,26 @@ app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
 app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
+  res.setTimeout(0);
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
-    console.log("Preprocessing image...");
+    console.time("preprocess");
     const cleanBuffer = await preprocessImage(req.file.buffer);
+    console.timeEnd("preprocess");
+    
     const cleanB64 = cleanBuffer.toString("base64");
     const cleanMime = "image/png";
+    
+    console.time("gemini-colors");
     const detection = await detectColors(cleanB64, cleanMime);
+    console.timeEnd("gemini-colors");
+    
     const colors = detection.colors;
     console.log("Colors:", colors, "is_text:", detection.is_text, "is_logo:", detection.is_logo);
     let shapes;
     let extractionMethod = "pixel";
     try {
-      shapes = await extractShapesFromImage(cleanBuffer, colors);
+      shapes = await extractShapesFromImage(cleanBuffer, colors, detection.is_text);
       if (shapes.length < 3 && detection.is_text) {
         console.log("Few pixel shapes for text — supplementing with Gemini");
         const geminiShapes = await extractShapesWithGemini(cleanB64, cleanMime, detection);
@@ -778,7 +838,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "8.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "9.0" }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Stichai v8.0 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v9.0 running on port ${PORT}`));
+server.timeout = 120000;
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
