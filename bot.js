@@ -88,13 +88,9 @@ Rules:
   const bg = parsed.background || "#FFFFFF";
   const colors = deduplicateColors(parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"]);
   
-  // Remove background color from thread colors if present
-  const bgLab = rgbToLab(hexToRgb(bg));
-  const filtered = colors.filter(c => colorDistanceLab(rgbToLab(hexToRgb(c)), bgLab) > 15);
-  
   return {
     background: bg,
-    colors: filtered.length ? filtered : colors,
+    colors: colors,
     is_text: !!parsed.is_text,
     is_logo: !!parsed.is_logo,
   };
@@ -262,7 +258,7 @@ function ramerDouglasPeucker(points, epsilon) {
   return Array.from(keep).sort((a, b) => a - b).map(i => points[i]);
 }
 
-async function extractShapesFromImage(buffer, colors, bgColor) {
+async function extractShapesFromImage(buffer, colors, isText = false) {
   const jimpModule = require("jimp");
   const Jimp = jimpModule.Jimp || jimpModule;
 
@@ -291,12 +287,6 @@ async function extractShapesFromImage(buffer, colors, bgColor) {
     for (let x = 0; x < pw; x++) {
       const i = rowOff + (x << 2);
       const pixLab = rgbToLab({ r: data[i], g: data[i + 1], b: data[i + 2] });
-      
-      // Skip background pixels
-      if (bgLab && colorDistanceLab(pixLab, bgLab) < 25) {
-        pixelColors[outOff + x] = -1;
-        continue;
-      }
       
       let bestIdx = 0, bestDist = Infinity;
       for (let c = 0; c < labColors.length; c++) {
@@ -410,7 +400,7 @@ async function extractShapesFromImage(buffer, colors, bgColor) {
         currentMaskId++;
         if (contour.length < 4) continue;
 
-        const simplified = ramerDouglasPeucker(contour, 0.25);
+        const simplified = ramerDouglasPeucker(contour, 0.2);
         const stitchScale = 300 / Math.max(pw, ph);
         const points = simplified.map(([px, py]) => [Math.round(px * stitchScale), Math.round(py * stitchScale)]);
 
@@ -464,6 +454,24 @@ async function extractShapesFromImage(buffer, colors, bgColor) {
       if (allInside) { contained = true; break; }
     }
     if (!contained) filtered.push(s);
+  }
+
+  // === TEXT RECLASSIFICATION ===
+  // When image contains text: largest shapes = background (fill), rest = text (satin)
+  if (isText && filtered.length > 3) {
+    const byColor = {};
+    for (const s of filtered) {
+      if (!byColor[s.color]) byColor[s.color] = [];
+      byColor[s.color].push(s);
+    }
+    for (const color of Object.keys(byColor)) {
+      const list = byColor[color];
+      list.sort((a, b) => b.pixelCount - a.pixelCount);
+      // Largest shape = background fill, all others = satin text
+      for (let i = 0; i < list.length; i++) {
+        list[i].type = (i === 0 && list[i].pixelCount > 500) ? "fill" : "satin";
+      }
+    }
   }
 
   const satinCount = filtered.filter(s => s.type === "satin").length;
@@ -749,6 +757,52 @@ function generateStitches(shapes) {
 }
 
 /* ============================================================
+   QUALITY VALIDATION — check stitch density, jumps, warnings
+   ============================================================ */
+function validateQuality(stitches) {
+  const warnings = [];
+  let totalLen = 0, stitchCount = 0, maxJump = 0, longJumps = 0;
+  let prev = null;
+  
+  for (const s of stitches) {
+    if (s.type === "trim") { prev = null; continue; }
+    if (prev && prev.type !== "trim") {
+      const d = Math.hypot(s.x - prev.x, s.y - prev.y);
+      totalLen += d;
+      stitchCount++;
+      if (d > maxJump) maxJump = d;
+      if (d > 10) longJumps++;
+    }
+    prev = s;
+  }
+  
+  const avgLen = stitchCount > 0 ? totalLen / stitchCount : 0;
+  const stitchDensity = avgLen > 0 ? 1 / avgLen : 0; // stitches per mm approx
+  
+  // Density checks
+  if (avgLen > 4.0) warnings.push(`Stitches too long (avg ${avgLen.toFixed(1)}mm) — may gap on fabric`);
+  if (avgLen < 1.5) warnings.push(`Stitches too dense (avg ${avgLen.toFixed(1)}mm) — may pucker or break needles`);
+  
+  // Jump checks
+  if (maxJump > 30) warnings.push(`Very long jump (${maxJump.toFixed(1)}mm) — thread may tangle`);
+  if (longJumps > 20) warnings.push(`${longJumps} long jumps (>10mm) — add trims or reorder shapes`);
+  
+  // Count checks
+  if (stitchCount > 50000) warnings.push(`Very high stitch count (${stitchCount}) — may exceed machine memory`);
+  if (stitchCount < 100) warnings.push(`Very low stitch count (${stitchCount}) — design may be incomplete`);
+  
+  return {
+    avgStitchLength: avgLen.toFixed(1),
+    maxJump: maxJump.toFixed(1),
+    longJumpCount: longJumps,
+    stitchCount,
+    density: stitchDensity.toFixed(2),
+    warnings,
+    passed: warnings.length === 0,
+  };
+}
+
+/* ============================================================
    FILE ENCODERS
    ============================================================ */
 function stitchRecord(dx, dy) {
@@ -758,16 +812,33 @@ function stitchRecord(dx, dy) {
 }
 
 function encodeDST(data) {
-  const { stitches } = data;
-  const header = Buffer.alloc(512);
-  const label = "STICHAI";
-  for (let i = 0; i < label.length; i++) header[i] = label.charCodeAt(i);
+  const { stitches, designW, designH } = data;
+  const header = Buffer.alloc(512, 0x20); // space-padded
+  const label = "Stichai";
+  header.write(label.slice(0, 16), 0, "ascii");
+  
+  // Build records and count stats
   const records = [];
   let lastColor = null, prevX = 0, prevY = 0;
+  let stitchCount = 0, colorChangeCount = 0;
+  let minX = 0, maxX = 0, minY = 0, maxY = 0;
+  let absX = 0, absY = 0;
 
   for (const s of stitches) {
-    if (s.color !== lastColor && lastColor !== null) records.push(Buffer.from([0x00, 0x00, 0xC3]));
+    // Track bounds
+    absX += s.x - prevX;
+    absY += s.y - prevY;
+    if (absX < minX) minX = absX;
+    if (absX > maxX) maxX = absX;
+    if (absY < minY) minY = absY;
+    if (absY > maxY) maxY = absY;
+
+    if (s.color !== lastColor && lastColor !== null) {
+      records.push(Buffer.from([0x00, 0x00, 0xC3]));
+      colorChangeCount++;
+    }
     lastColor = s.color;
+
     if (s.type === "trim") {
       records.push(Buffer.from([0x00, 0x00, 0xC3]));
       records.push(Buffer.from([0x00, 0x00, 0xC3]));
@@ -781,8 +852,25 @@ function encodeDST(data) {
     const dx = Math.round(s.x - prevX), dy = Math.round(s.y - prevY);
     prevX = s.x; prevY = s.y;
     records.push(stitchRecord(dx, dy));
+    stitchCount++;
   }
   records.push(Buffer.from([0x00, 0x00, 0xF3]));
+  stitchCount++;
+
+  // Write proper Tajima header
+  header.writeInt32LE(stitchCount, 20);        // stitch count
+  header.writeInt32LE(colorChangeCount, 24);   // color changes
+  header.writeInt16LE(Math.round(maxX - minX) * 10, 28);  // width * 10
+  header.writeInt16LE(Math.round(maxY - minY) * 10, 32);  // height * 10
+  header.writeInt16LE(Math.round(minX) * 10, 36);         // min X * 10
+  header.writeInt16LE(Math.round(maxX) * 10, 40);         // max X * 10
+  header.writeInt16LE(Math.round(minY) * 10, 44);         // min Y * 10
+  header.writeInt16LE(Math.round(maxY) * 10, 48);         // max Y * 10
+  header.writeInt16LE(0, 52);                   // axis adjust X
+  header.writeInt16LE(0, 54);                   // axis adjust Y
+  header.write("(c)Stichai", 56, "ascii");      // copyright
+  header.writeInt16LE(colorChangeCount + 1, 88); // number of colors
+
   return Buffer.concat([header, ...records]);
 }
 
@@ -901,7 +989,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     } catch (e) {
       console.log(`Gemini extraction failed (${e.message}), falling back to pixel tracing`);
       console.time(`pixel-trace-${reqId}`);
-      shapes = await extractShapesFromImage(cleanBuffer, analysis.colors, analysis.background);
+      shapes = await extractShapesFromImage(cleanBuffer, analysis.colors, analysis.is_text);
       console.timeEnd(`pixel-trace-${reqId}`);
       extractionMethod = "pixel";
     }
@@ -914,32 +1002,23 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     jobs.set(id, result);
     
     // === STEP 4: QUALITY AUDIT ===
+    const validation = validateQuality(result.stitches);
     const audit = {
       totalStitches: result.stitches.length,
       shapeCount: shapes.length,
       colorCount: [...new Set(shapes.map(s => toThreadColor(s.color)))].length,
       satinShapes: shapes.filter(s => s.type === "satin").length,
       fillShapes: shapes.filter(s => s.type === "fill").length,
-      avgStitchLength: 0,
-      maxJump: 0,
+      avgStitchLength: validation.avgStitchLength,
+      maxJump: validation.maxJump,
+      longJumps: validation.longJumpCount,
+      density: validation.density,
+      warnings: validation.warnings,
+      passed: validation.passed,
     };
     
-    let totalLen = 0, stitchCount = 0, maxJump = 0;
-    let prev = null;
-    for (const s of result.stitches) {
-      if (s.type === "trim") { prev = null; continue; }
-      if (prev && prev.type !== "trim") {
-        const d = Math.hypot(s.x - prev.x, s.y - prev.y);
-        totalLen += d;
-        stitchCount++;
-        if (d > maxJump) maxJump = d;
-      }
-      prev = s;
-    }
-    audit.avgStitchLength = stitchCount > 0 ? (totalLen / stitchCount).toFixed(1) : 0;
-    audit.maxJump = maxJump.toFixed(1);
-    
-    console.log(`AUDIT: ${audit.totalStitches} stitches, ${audit.shapeCount} shapes, avg stitch ${audit.avgStitchLength}mm, max jump ${audit.maxJump}mm`);
+    console.log(`AUDIT: ${audit.totalStitches} stitches, ${audit.shapeCount} shapes, avg stitch ${audit.avgStitchLength}mm, max jump ${audit.maxJump}mm, warnings: ${audit.warnings.length}`);
+    for (const w of audit.warnings) console.log(`  ⚠ ${w}`);
     
     return res.json({
       success: true,
@@ -990,10 +1069,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "14.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "14.2" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v14.0 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v14.2 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
