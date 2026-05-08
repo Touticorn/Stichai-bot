@@ -703,7 +703,9 @@ function contourFillPolygon(points, color) {
   const stitches = [];
   const fillAngle = computeFillAngle(points);
   const cosA = Math.cos(fillAngle), sinA = Math.sin(fillAngle);
-  const stitchLen = 3.5, rowSpacing = 3.5;
+  /* Professional density: ~4,000-15,000 stitches total
+     4.5mm spacing matches digiembroidery.com standards */
+  const stitchLen = 4.5, rowSpacing = 4.5;
   function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
   function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
   const localPts = points.map(([x, y]) => toLocal(x, y));
@@ -757,7 +759,8 @@ function satinColumnPolygon(points, color) {
     inner.push([x1 + nx, y1 + ny]);
   }
   const totalLen = points.length * 10;
-  const steps = Math.max(points.length * 3, Math.floor(totalLen / 2.0));
+  /* Professional satin density */
+  const steps = Math.max(points.length * 2, Math.floor(totalLen / 3.0));
   for (let i = 0; i <= steps; i++) {
     const t = (i / steps) * points.length;
     const idx = Math.floor(t) % points.length;
@@ -789,12 +792,18 @@ function generateStitches(shapes) {
     colorGroups[c].push({ ...s, color: c });
   }
 
-  // NN order
-  for (const color of Object.keys(colorGroups)) {
-    const group = colorGroups[color];
-    if (group.length <= 1) continue;
-    const ordered = [group[0]];
-    const remaining = group.slice(1);
+  // NN order within each color group — start from shape closest to entry
+  function nnOrderGroup(group, entryX, entryY) {
+    if (group.length <= 1) return group;
+    // Find closest to entry
+    let startIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < group.length; i++) {
+      const [cx, cy] = group[i].centroid;
+      const d = Math.hypot(cx - entryX, cy - entryY);
+      if (d < bestDist) { bestDist = d; startIdx = i; }
+    }
+    const ordered = [group[startIdx]];
+    const remaining = group.filter((_, i) => i !== startIdx);
     while (remaining.length) {
       let bestIdx = 0, bestDist = Infinity;
       const [lx, ly] = ordered[ordered.length - 1].centroid;
@@ -805,14 +814,39 @@ function generateStitches(shapes) {
       }
       ordered.push(remaining.splice(bestIdx, 1)[0]);
     }
+    return ordered;
+  }
+
+  // Cross-group NN ordering: process color groups by proximity
+  const groupColors = Object.keys(colorGroups);
+  const orderedColors = [];
+  let entryX = 0, entryY = 0;
+
+  while (groupColors.length) {
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < groupColors.length; i++) {
+      const g = colorGroups[groupColors[i]];
+      for (const s of g) {
+        const [cx, cy] = s.centroid;
+        const d = Math.hypot(cx - entryX, cy - entryY);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+    }
+    const color = groupColors.splice(bestIdx, 1)[0];
+    const ordered = nnOrderGroup(colorGroups[color], entryX, entryY);
     colorGroups[color] = ordered;
+    orderedColors.push(color);
+    // Update entry = last shape's end point
+    const lastShape = ordered[ordered.length - 1];
+    const lastPt = lastShape.points[lastShape.points.length - 1] || lastShape.centroid;
+    entryX = lastPt[0]; entryY = lastPt[1];
   }
 
   // Generate with jump capping
   let lastX = 0, lastY = 0;
   const maxJump = 25;
 
-  for (const color of Object.keys(colorGroups)) {
+  for (const color of orderedColors) {
     for (const s of colorGroups[color]) {
       const points = s.points || [[0, 0], [10, 0], [10, 10], [0, 10]];
       const type = s.type || "fill";
@@ -839,6 +873,24 @@ function generateStitches(shapes) {
 
       if (all.length) { const last = all[all.length - 1]; lastX = last.x; lastY = last.y; }
     }
+  }
+
+  // Trim before border to prevent huge jump
+  const borderStart = [-2, -2];
+  const borderJump = Math.hypot(borderStart[0] - lastX, borderStart[1] - lastY);
+  if (borderJump > maxJump && all.length > 0) {
+    all.push({ x: Math.round(lastX), y: Math.round(lastY), color: "#333333", type: "trim" });
+    const steps = Math.ceil(borderJump / maxJump);
+    for (let i = 1; i < steps; i++) {
+      const f = i / steps;
+      all.push({
+        x: Math.round(lastX + (borderStart[0] - lastX) * f),
+        y: Math.round(lastY + (borderStart[1] - lastY) * f),
+        color: "#333333", type: "trim"
+      });
+    }
+  } else if (borderJump > 10 && all.length > 0) {
+    all.push({ x: -2, y: -2, color: "#333333", type: "trim" });
   }
 
   all.push(...runningPolygon([[-2, -2], [designW + 2, -2], [designW + 2, designH + 2], [-2, designH + 2]], "#333333"));
@@ -1026,7 +1078,8 @@ async function renderStitchesToPng(stitches, designW, designH) {
     if (s.type === "trim") { prev = null; continue; }
     if (prev && prev.color === s.color && prev.type !== "trim") {
       const dist = Math.hypot(s.x - prev.x, s.y - prev.y);
-      if (dist < 15) {
+      /* Skip: long jumps, border running stitch */
+      if (dist < 20 && s.color !== "#333333") {
         const [cr, cg, cb] = hexToRgbNums(s.color);
         const sw = s.type === 'satin' ? 2.0 : (s.type === 'underlay' ? 0.5 : 1.0);
         drawLineOnBuffer(buf, w, h, prev.x * scale, prev.y * scale, s.x * scale, s.y * scale, cr, cg, cb, sw);
@@ -1174,10 +1227,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "15.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "15.1" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v15.0 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v15.1 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
