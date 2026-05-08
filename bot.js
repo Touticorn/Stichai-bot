@@ -2,14 +2,25 @@ const express = require("express");
 const multer = require("multer");
 const axios = require("axios");
 const path = require("path");
+const fs = require("fs");
 const sharp = require("sharp");
+const { exec } = require("child_process");
+const { promisify } = require("util");
+const execAsync = promisify(exec);
+const xml2js = require("xml2js");
 const app = express();
 
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const FLASH_MODEL = "gemini-2.5-flash";
 const PRO_MODEL = "gemini-2.5-pro";
+const VTRACER_BIN = path.join(__dirname, "vtracer");
 
+const jobs = new Map();
+
+/* ============================================================
+   GEMINI API
+   ============================================================ */
 function makeUrl(model) {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
 }
@@ -34,41 +45,184 @@ async function geminiPost(body, timeoutMs, primaryModel, retries = 3) {
   throw lastErr;
 }
 
-const jobs = new Map();
-
 /* ============================================================
-   PROFESSIONAL PREPROCESSING PIPELINE
+   VTRACER SVG VECTORIZATION
    ============================================================ */
-
-async function preprocessImage(buffer) {
-  return sharp(buffer)
-    .rotate()
-    .resize(2000, 2000, { fit: "inside", withoutEnlargargement: false })
-    .linear(1.15, -10)
-    .normalize()
-    .modulate({ saturation: 1.7 })
-    .median(1)
-    .sharpen({ sigma: 1.2, m1: 1.5, m2: 2.5 })
-    .toFormat("png")
-    .toBuffer();
+async function vtracerToSvg(pngBuffer) {
+  if (!fs.existsSync(VTRACER_BIN)) return null;
+  
+  const tmpIn = path.join("/tmp", `vt_in_${Date.now()}.png`);
+  const tmpOut = path.join("/tmp", `vt_out_${Date.now()}.svg`);
+  
+  try {
+    await fs.promises.writeFile(tmpIn, pngBuffer);
+    const { stdout, stderr } = await execAsync(
+      `"${VTRACER_BIN}" -i "${tmpIn}" -o "${tmpOut}" --colormode binary --mode polygon`,
+      { timeout: 30000 }
+    );
+    const svg = await fs.promises.readFile(tmpOut, "utf-8");
+    await fs.promises.unlink(tmpIn).catch(() => {});
+    await fs.promises.unlink(tmpOut).catch(() => {});
+    return svg;
+  } catch (e) {
+    await fs.promises.unlink(tmpIn).catch(() => {});
+    await fs.promises.unlink(tmpOut).catch(() => {});
+    console.log(`VTracer failed: ${e.message}`);
+    return null;
+  }
 }
 
-/* Detect background color + thread colors using Gemini */
+async function parseSvgPaths(svgString, colors) {
+  const shapes = [];
+  try {
+    const parser = new xml2js.Parser({ explicitArray: false });
+    const svg = await parser.parseStringPromise(svgString);
+    
+    if (!svg.svg) return shapes;
+    const width = parseFloat(svg.svg.$.width) || 300;
+    const height = parseFloat(svg.svg.$.height) || 300;
+    const scale = 300 / Math.max(width, height);
+    
+    // Extract paths
+    const paths = svg.svg.path || [];
+    const pathArray = Array.isArray(paths) ? paths : [paths];
+    
+    for (const p of pathArray) {
+      if (!p || !p.$.d) continue;
+      const points = parseSvgPathData(p.$.d, scale);
+      if (points.length < 3) continue;
+      
+      const color = p.$.fill || colors[0];
+      const type = detectSvgPathType(points);
+      
+      shapes.push({ type, color, points, pixelCount: 100 });
+    }
+    
+    // Extract polygons
+    const polys = svg.svg.polygon || [];
+    const polyArray = Array.isArray(polys) ? polys : [polys];
+    
+    for (const p of polyArray) {
+      if (!p || !p.$.points) continue;
+      const points = parseSvgPolygonPoints(p.$.points, scale);
+      if (points.length < 3) continue;
+      
+      const color = p.$.fill || colors[0];
+      const type = detectSvgPathType(points);
+      
+      shapes.push({ type, color, points, pixelCount: 100 });
+    }
+  } catch (e) {
+    console.log(`SVG parse error: ${e.message}`);
+  }
+  return shapes;
+}
+
+function parseSvgPathData(d, scale) {
+  const points = [];
+  const cmds = d.match(/[MmLlHhVvCcSsQqTtAaZz][^MmLlHhVvCcSsQqTtAaZz]*/g) || [];
+  let cx = 0, cy = 0, sx = 0, sy = 0;
+  
+  for (const cmd of cmds) {
+    const type = cmd[0];
+    const nums = cmd.slice(1).trim().split(/[\s,]+/).map(Number).filter(n => !isNaN(n));
+    
+    switch (type) {
+      case 'M':
+        cx = nums[0]; cy = nums[1];
+        sx = cx; sy = cy;
+        points.push([Math.round(cx * scale), Math.round(cy * scale)]);
+        break;
+      case 'L':
+        for (let i = 0; i < nums.length; i += 2) {
+          cx = nums[i]; cy = nums[i + 1];
+          points.push([Math.round(cx * scale), Math.round(cy * scale)]);
+        }
+        break;
+      case 'H':
+        cx = nums[0];
+        points.push([Math.round(cx * scale), Math.round(cy * scale)]);
+        break;
+      case 'V':
+        cy = nums[0];
+        points.push([Math.round(cx * scale), Math.round(cy * scale)]);
+        break;
+      case 'C': {
+        // Cubic bezier - sample points
+        for (let i = 0; i < nums.length; i += 6) {
+          const x1 = nums[i], y1 = nums[i + 1];
+          const x2 = nums[i + 2], y2 = nums[i + 3];
+          const x3 = nums[i + 4], y3 = nums[i + 5];
+          for (let t = 0.1; t <= 1; t += 0.2) {
+            const bx = (1 - t) * (1 - t) * (1 - t) * cx + 3 * (1 - t) * (1 - t) * t * x1 +
+                        3 * (1 - t) * t * t * x2 + t * t * t * x3;
+            const by = (1 - t) * (1 - t) * (1 - t) * cy + 3 * (1 - t) * (1 - t) * t * y1 +
+                        3 * (1 - t) * t * t * y2 + t * t * t * y3;
+            points.push([Math.round(bx * scale), Math.round(by * scale)]);
+          }
+          cx = x3; cy = y3;
+        }
+        break;
+      }
+      case 'Q': {
+        // Quadratic bezier
+        for (let i = 0; i < nums.length; i += 4) {
+          const x1 = nums[i], y1 = nums[i + 1];
+          const x2 = nums[i + 2], y2 = nums[i + 3];
+          for (let t = 0.1; t <= 1; t += 0.2) {
+            const bx = (1 - t) * (1 - t) * cx + 2 * (1 - t) * t * x1 + t * t * x2;
+            const by = (1 - t) * (1 - t) * cy + 2 * (1 - t) * t * y1 + t * t * y2;
+            points.push([Math.round(bx * scale), Math.round(by * scale)]);
+          }
+          cx = x2; cy = y2;
+        }
+        break;
+      }
+      case 'Z':
+      case 'z':
+        if (points.length) points.push([...points[0]]);
+        break;
+    }
+  }
+  
+  return ramerDouglasPeucker(points, 0.3);
+}
+
+function parseSvgPolygonPoints(pts, scale) {
+  const coords = pts.trim().split(/[\s,]+/).map(Number).filter(n => !isNaN(n));
+  const points = [];
+  for (let i = 0; i < coords.length; i += 2) {
+    points.push([Math.round(coords[i] * scale), Math.round(coords[i + 1] * scale)]);
+  }
+  if (points.length > 1) points.push([...points[0]]);
+  return points;
+}
+
+function detectSvgPathType(points) {
+  const b = polygonBounds(points);
+  const maxDim = Math.max(b.width, b.height);
+  const minDim = Math.min(b.width, b.height);
+  // Narrow shapes = satin, wide shapes = fill
+  if (minDim < 15 && maxDim < 120) return "satin";
+  return "fill";
+}
+
+/* ============================================================
+   GEMINI ANALYSIS — colors, background, text detection
+   ============================================================ */
 async function analyzeImage(b64, mime) {
   const prompt = `You are a professional embroidery digitizer. Analyze this image and identify:
 
-1. BACKGROUND color (the paper/surface behind the design) - this will be REMOVED
-2. DESIGN colors (the actual thread colors needed for embroidery)
+1. BACKGROUND color (the surface behind the design) — this will be REMOVED
+2. DESIGN colors (actual thread colors needed for embroidery)
 
 Return ONLY valid JSON:
 {"background":"#RRGGBB","colors":["#RRGGBB","#RRGGBB",...],"is_text":true|false,"is_logo":true|false}
 
-Rules:
-- Background is usually white, off-white, transparent, or the dominant area surrounding the design
-- Colors should be 3-8 distinct thread colors
-- Ignore lighting, shadows, reflections
-- is_text = true if image contains readable text or lettering
-- is_logo = true if image contains a brand logo or emblem`;
+- Background is usually white, off-white, or dominant surrounding color
+- Colors: 3-8 distinct thread colors for the actual design
+- is_text = true if image has readable text/lettering
+- is_logo = true if image has a brand logo or emblem`;
 
   const body = {
     contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
@@ -85,39 +239,35 @@ Rules:
   try { parsed = JSON.parse(jsonStr); }
   catch (e) { parsed = JSON.parse(repairJSON(jsonStr)); }
   
-  const bg = parsed.background || "#FFFFFF";
   const colors = deduplicateColors(parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"]);
   
   return {
-    background: bg,
-    colors: colors,
+    background: parsed.background || "#FFFFFF",
+    colors,
     is_text: !!parsed.is_text,
     is_logo: !!parsed.is_logo,
   };
 }
 
-/* ============================================================
-   GEMINI SHAPE EXTRACTION — primary path
-   ============================================================ */
-async function extractShapesWithGemini(b64, mime, colors, isText, isLogo) {
+async function extractGeminiShapes(b64, mime, colors, isText, isLogo) {
   const colorList = colors.join(", ");
   const prompt = `You are a professional embroidery digitizer using Wilcom/Hatch standards.
 
-Extract ALL distinct embroiderable shapes from this image using these thread colors: ${colorList}
+Extract ALL distinct embroiderable shapes using these thread colors: ${colorList}
 
-For each shape, provide:
+For each shape provide:
 - **type**: "satin" for text, letters, thin strokes, borders (width < 7mm)
 - **type**: "fill" for solid blocks, backgrounds, wide areas (width >= 7mm)
 - **color**: exact hex from the color list
 - **points**: polygon boundary [x,y] in 0-300 coordinate space
 
 CRITICAL RULES:
-1. Text/letters → ALWAYS "satin", each letter is a separate shape
+1. Text/letters → ALWAYS "satin", each letter = separate shape
 2. Large solid backgrounds → ALWAYS "fill"
-3. Merge adjacent pieces of the same color into unified shapes
-4. Return maximum 25 shapes total
-5. Background has already been removed - only return design shapes
-6. Return shapes in embroidery order: backgrounds first, then details on top
+3. Merge adjacent pieces of same color when possible
+4. Maximum 25 shapes
+5. Background already removed — only return design shapes
+6. Order: backgrounds first, then details on top
 
 Return ONLY:
 {"shapes":[{"type":"fill|satin","color":"#hex","points":[[x,y],[x,y],...]},...]}`;
@@ -144,7 +294,6 @@ Return ONLY:
     const first = points[0], last = points[points.length - 1];
     if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
     
-    // Quality check: skip tiny or degenerate shapes
     const b = polygonBounds(points);
     if (b.width < 2 || b.height < 2) continue;
     if (points.length < 4) continue;
@@ -157,27 +306,6 @@ Return ONLY:
     });
   }
   return shapes;
-}
-
-function repairJSON(str) {
-  let openBraces = 0, openBrackets = 0, inString = false, escaped = false;
-  for (const ch of str) {
-    if (escaped) { escaped = false; continue; }
-    if (ch === '\\') { escaped = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === '{') openBraces++;
-    if (ch === '}') openBraces--;
-    if (ch === '[') openBrackets++;
-    if (ch === ']') openBrackets--;
-  }
-  let repaired = str;
-  const trimmed = repaired.trim(), lastChar = trimmed[trimmed.length - 1];
-  if (lastChar === ',') repaired += '"x":0}';
-  else if (lastChar !== '}' && lastChar !== ']') repaired += '0}';
-  for (let i = 0; i < openBraces; i++) repaired += '}';
-  for (let i = 0; i < openBrackets; i++) repaired += ']';
-  return repaired;
 }
 
 /* ============================================================
@@ -202,24 +330,18 @@ function rgbToLab({ r, g, b }) {
 }
 
 function colorDistanceLab(c1Lab, c2Lab) {
-  const dl = c1Lab.l - c2Lab.l;
-  const da = c1Lab.a - c2Lab.a;
-  const db = c1Lab.b - c2Lab.b;
-  return Math.sqrt(dl * dl + da * da + db * db);
+  return Math.sqrt((c1Lab.l - c2Lab.l) ** 2 + (c1Lab.a - c2Lab.a) ** 2 + (c1Lab.b - c2Lab.b) ** 2);
 }
 
 function deduplicateColors(colors) {
   const unique = [];
   const labs = colors.map(c => rgbToLab(hexToRgb(c)));
   for (let i = 0; i < colors.length; i++) {
-    let duplicate = false;
+    let dup = false;
     for (let j = 0; j < unique.length; j++) {
-      if (colorDistanceLab(labs[i], rgbToLab(hexToRgb(unique[j]))) < 20) {
-        duplicate = true;
-        break;
-      }
+      if (colorDistanceLab(labs[i], rgbToLab(hexToRgb(unique[j]))) < 20) { dup = true; break; }
     }
-    if (!duplicate) unique.push(colors[i]);
+    if (!dup) unique.push(colors[i]);
   }
   return unique.length ? unique : ["#FF0000", "#FFFFFF", "#0000FF"];
 }
@@ -229,8 +351,45 @@ function toThreadColor(hex) {
   return m ? `#${m[1].toUpperCase()}` : "#FF0066";
 }
 
+function repairJSON(str) {
+  let openBraces = 0, openBrackets = 0, inString = false, escaped = false;
+  for (const ch of str) {
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\') { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') openBraces++;
+    if (ch === '}') openBraces--;
+    if (ch === '[') openBrackets++;
+    if (ch === ']') openBrackets--;
+  }
+  let repaired = str;
+  const trimmed = repaired.trim(), lastChar = trimmed[trimmed.length - 1];
+  if (lastChar === ',') repaired += '"x":0}';
+  else if (lastChar !== '}' && lastChar !== ']') repaired += '0}';
+  for (let i = 0; i < openBraces; i++) repaired += '}';
+  for (let i = 0; i < openBrackets; i++) repaired += ']';
+  return repaired;
+}
+
 /* ============================================================
-   PIXEL TRACING — fallback with background removal + quantization
+   PREPROCESSING
+   ============================================================ */
+async function preprocessImage(buffer) {
+  return sharp(buffer)
+    .rotate()
+    .resize(2000, 2000, { fit: "inside", withoutEnlargement: false })
+    .linear(1.15, -10)
+    .normalize()
+    .modulate({ saturation: 1.7 })
+    .median(1)
+    .sharpen({ sigma: 1.2, m1: 1.5, m2: 2.5 })
+    .toFormat("png")
+    .toBuffer();
+}
+
+/* ============================================================
+   PIXEL TRACING — final fallback
    ============================================================ */
 function ramerDouglasPeucker(points, epsilon) {
   if (points.length <= 3) return points;
@@ -258,13 +417,12 @@ function ramerDouglasPeucker(points, epsilon) {
   return Array.from(keep).sort((a, b) => a - b).map(i => points[i]);
 }
 
-async function extractShapesFromImage(buffer, colors, isText = false) {
+async function extractPixelShapes(buffer, colors, isText = false) {
   const jimpModule = require("jimp");
   const Jimp = jimpModule.Jimp || jimpModule;
 
   const image = await Jimp.read(buffer);
   const origW = image.bitmap.width, origH = image.bitmap.height;
-
   const procSize = 1600;
   const scale = Math.min(procSize / origW, procSize / origH);
   const pw = Math.max(1, Math.round(origW * scale));
@@ -275,24 +433,21 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
   const pixelColors = new Int16Array(pw * ph);
   pixelColors.fill(-1);
 
+  // Classify pixels
   const tid = Math.random().toString(36).slice(2, 5);
   console.time(`pixel-classify-${tid}`);
   const data = image.bitmap.data;
-  
-  // Classify each pixel to nearest thread color, exclude background
   for (let y = 0; y < ph; y++) {
     const rowOff = y * pw * 4;
     const outOff = y * pw;
     for (let x = 0; x < pw; x++) {
       const i = rowOff + (x << 2);
       const pixLab = rgbToLab({ r: data[i], g: data[i + 1], b: data[i + 2] });
-      
       let bestIdx = 0, bestDist = Infinity;
       for (let c = 0; c < labColors.length; c++) {
         const d = colorDistanceLab(pixLab, labColors[c]);
         if (d < bestDist) { bestDist = d; bestIdx = c; }
       }
-      // Only assign if reasonably close to a thread color
       if (bestDist < 40) pixelColors[outOff + x] = bestIdx;
     }
   }
@@ -305,10 +460,8 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
     for (let x = 1; x < pw - 1; x++) {
       const idx = row + x;
       if (pixelColors[idx] !== -1) continue;
-      const c0 = pixelColors[idx - 1];
-      const c1 = pixelColors[idx + 1];
-      const c2 = pixelColors[idx - pw];
-      const c3 = pixelColors[idx + pw];
+      const c0 = pixelColors[idx - 1], c1 = pixelColors[idx + 1];
+      const c2 = pixelColors[idx - pw], c3 = pixelColors[idx + pw];
       let best = -1, bestCnt = 0;
       if (c0 !== -1) { const n = 1 + (c0 === c1) + (c0 === c2) + (c0 === c3); if (n > bestCnt) { bestCnt = n; best = c0; } }
       if (c1 !== -1 && c1 !== c0) { const n = 1 + (c1 === c0) + (c1 === c2) + (c1 === c3); if (n > bestCnt) { bestCnt = n; best = c1; } }
@@ -319,12 +472,12 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
   }
   console.timeEnd(`heal-${tid}`);
 
-  // Gap-tolerant BFS + contour extraction
+  // BFS contour extraction with gap tolerance
   const shapes = [];
   const minComponentSize = 12;
   let currentMaskId = 1;
 
-  console.time(`contour-extract-${tid}`);
+  console.time(`contour-${tid}`);
   for (let ci = 0; ci < labColors.length; ci++) {
     const visited = new Uint8Array(pw * ph);
     const maskIds = new Uint32Array(pw * ph);
@@ -334,7 +487,6 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
         const idx = y * pw + x;
         if (pixelColors[idx] !== ci || visited[idx]) continue;
 
-        // BFS with 8-connected + 2px gap tolerance
         const q = [idx];
         let qPtr = 0;
         let pixelCount = 0;
@@ -377,7 +529,7 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
           continue;
         }
 
-        // Contour tracing
+        // Contour
         const contour = [];
         const n8 = [[-1, 0], [-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1]];
         let cx = startX, cy = startY, dir = 7;
@@ -408,7 +560,6 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
           if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
         }
 
-        // Bounds + classification
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const [px, py] of points) {
           minX = Math.min(minX, px); minY = Math.min(minY, py);
@@ -422,41 +573,30 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
       }
     }
   }
+  console.timeEnd(`contour-${tid}`);
 
-  shapes.sort((a, b) => b.pixelCount - a.pixelCount);
-  console.timeEnd(`contour-extract-${tid}`);
-
-  // === QUALITY FILTER ===
-  // Remove: tiny shapes, shapes contained in larger same-color shapes, degenerate polygons
+  // Quality filter
   const filtered = [];
   for (const s of shapes) {
     const b = polygonBounds(s.points);
-    // Skip tiny shapes
     if (b.width < 3 || b.height < 3) continue;
     if (s.pixelCount < 20) continue;
     if (s.points.length < 4) continue;
-    // Skip shapes fully contained within a larger same-color shape
     let contained = false;
     for (const other of shapes) {
-      if (other === s) continue;
-      if (other.color !== s.color) continue;
+      if (other === s || other.color !== s.color) continue;
       const ob = polygonBounds(other.points);
       if (ob.area <= b.area) continue;
-      // Check if s is fully inside other (loose check)
-      let allInside = true;
+      let allIn = true;
       for (const [px, py] of s.points) {
-        if (px < ob.minX || px > ob.maxX || py < ob.minY || py > ob.maxY) {
-          allInside = false;
-          break;
-        }
+        if (px < ob.minX || px > ob.maxX || py < ob.minY || py > ob.maxY) { allIn = false; break; }
       }
-      if (allInside) { contained = true; break; }
+      if (allIn) { contained = true; break; }
     }
     if (!contained) filtered.push(s);
   }
 
-  // === TEXT RECLASSIFICATION ===
-  // When image contains text: largest shapes = background (fill), rest = text (satin)
+  // Text reclassification
   if (isText && filtered.length > 3) {
     const byColor = {};
     for (const s of filtered) {
@@ -466,27 +606,24 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
     for (const color of Object.keys(byColor)) {
       const list = byColor[color];
       list.sort((a, b) => b.pixelCount - a.pixelCount);
-      // Largest shape = background fill, all others = satin text
       for (let i = 0; i < list.length; i++) {
         list[i].type = (i === 0 && list[i].pixelCount > 500) ? "fill" : "satin";
       }
     }
   }
 
-  const satinCount = filtered.filter(s => s.type === "satin").length;
-  const fillCount = filtered.filter(s => s.type === "fill").length;
-  console.log(`Pixel shapes: ${satinCount} satin, ${fillCount} fill, ${filtered.length} total (filtered from ${shapes.length})`);
-
+  console.log(`Pixel: ${filtered.filter(s => s.type === "satin").length} satin, ${filtered.filter(s => s.type === "fill").length} fill, ${filtered.length} total`);
   return filtered;
 }
 
 /* ============================================================
-   STITCH GENERATION
+   STITCH GENERATION — professional fill/satin/underlay
    ============================================================ */
 function polygonBounds(points) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const [x, y] of points) {
-    minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
   }
   return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY, area: (maxX - minX) * (maxY - minY) };
 }
@@ -496,9 +633,7 @@ function polygonCentroid(points) {
   for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
     const [x1, y1] = points[i], [x2, y2] = points[j];
     const cross = x1 * y2 - x2 * y1;
-    cx += (x1 + x2) * cross;
-    cy += (y1 + y2) * cross;
-    a += cross;
+    cx += (x1 + x2) * cross; cy += (y1 + y2) * cross; a += cross;
   }
   a *= 0.5;
   if (Math.abs(a) < 0.001) {
@@ -536,50 +671,30 @@ function pointInPolygon(x, y, points) {
 
 function underlayFillPolygon(points, color) {
   const stitches = [];
-  const angle = computeFillAngle(points);
-  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+  const inset = 1.5;
+  const inner = [];
   for (let i = 0; i < points.length; i++) {
     const [x1, y1] = points[i], [x2, y2] = points[(i + 1) % points.length];
     const dx = x2 - x1, dy = y2 - y1;
     const len = Math.hypot(dx, dy) || 1;
-    const nx = -dy / len * 1.5, ny = dx / len * 1.5;
-    const ix1 = x1 + nx, iy1 = y1 + ny;
-    const ix2 = x2 + nx, iy2 = y2 + ny;
-    if (pointInPolygon((ix1 + ix2) / 2, (iy1 + iy2) / 2, points)) {
-      stitches.push({ x: Math.round(ix1), y: Math.round(iy1), color, type: "underlay" });
-      stitches.push({ x: Math.round(ix2), y: Math.round(iy2), color, type: "underlay" });
-    }
+    const nx = -dy / len * inset, ny = dx / len * inset;
+    inner.push([x1 + nx, y1 + ny]);
   }
-  const b = polygonBounds(points);
-  const midX = (b.minX + b.maxX) / 2, midY = (b.minY + b.maxY) / 2;
-  if (pointInPolygon(b.minX, midY, points)) {
-    stitches.push({ x: Math.round(b.minX), y: Math.round(midY), color, type: "underlay" });
-    stitches.push({ x: Math.round(b.maxX), y: Math.round(midY), color, type: "underlay" });
-  }
-  return stitches;
-}
-
-function underlaySatinPolygon(points, color) {
-  const stitches = [];
-  const angle = computeFillAngle(points);
-  const cosA = Math.cos(angle), sinA = Math.sin(angle);
-  function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
-  function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
-  const localPts = points.map(([x, y]) => toLocal(x, y));
-  const b = polygonBounds(localPts);
-  for (let lx = b.minX; lx <= b.maxX; lx += 8.0) {
-    const ints = [];
-    for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
-      const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
-      if ((x1 <= lx && x2 > lx) || (x2 <= lx && x1 > lx)) {
-        ints.push(y1 + (lx - x1) / (x2 - x1) * (y2 - y1));
-      }
-    }
-    if (ints.length < 2) continue;
-    ints.sort((a, b) => a - b);
-    const midY = (ints[0] + ints[ints.length - 1]) / 2;
-    const [gx, gy] = toGlobal(lx, midY);
-    stitches.push({ x: Math.round(gx), y: Math.round(gy), color, type: "underlay" });
+  const totalLen = inner.reduce((sum, p, i) => {
+    const [x1, y1] = p, [x2, y2] = inner[(i + 1) % inner.length];
+    return sum + Math.hypot(x2 - x1, y2 - y1);
+  }, 0);
+  const steps = Math.max(inner.length, Math.floor(totalLen / 6));
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * inner.length;
+    const idx = Math.floor(t) % inner.length;
+    const frac = t - Math.floor(t);
+    const nextIdx = (idx + 1) % inner.length;
+    stitches.push({
+      x: Math.round(inner[idx][0] + (inner[nextIdx][0] - inner[idx][0]) * frac),
+      y: Math.round(inner[idx][1] + (inner[nextIdx][1] - inner[idx][1]) * frac),
+      color, type: "underlay"
+    });
   }
   return stitches;
 }
@@ -588,8 +703,6 @@ function contourFillPolygon(points, color) {
   const stitches = [];
   const fillAngle = computeFillAngle(points);
   const cosA = Math.cos(fillAngle), sinA = Math.sin(fillAngle);
-  /* Professional density: 0.4-0.5mm row spacing
-     At 300 units ≈ 76mm, 3.5mm spacing = ~43 rows */
   const stitchLen = 3.5, rowSpacing = 3.5;
   function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
   function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
@@ -637,12 +750,10 @@ function satinColumnPolygon(points, color) {
   const width = 2.5;
   const inner = [];
   for (let i = 0; i < points.length; i++) {
-    const [x1, y1] = points[i];
-    const [x2, y2] = points[(i + 1) % points.length];
+    const [x1, y1] = points[i], [x2, y2] = points[(i + 1) % points.length];
     const dx = x2 - x1, dy = y2 - y1;
     const len = Math.hypot(dx, dy) || 1;
-    const nx = -dy / len * (width / 2);
-    const ny = dx / len * (width / 2);
+    const nx = -dy / len * (width / 2), ny = dx / len * (width / 2);
     inner.push([x1 + nx, y1 + ny]);
   }
   const totalLen = points.length * 10;
@@ -665,6 +776,76 @@ function satinColumnPolygon(points, color) {
   return stitches;
 }
 
+function generateStitches(shapes) {
+  const all = [];
+  const designW = 300, designH = 300;
+
+  for (const s of shapes) s.centroid = polygonCentroid(s.points);
+
+  const colorGroups = {};
+  for (const s of shapes) {
+    const c = toThreadColor(s.color || "#FF0066");
+    if (!colorGroups[c]) colorGroups[c] = [];
+    colorGroups[c].push({ ...s, color: c });
+  }
+
+  // NN order
+  for (const color of Object.keys(colorGroups)) {
+    const group = colorGroups[color];
+    if (group.length <= 1) continue;
+    const ordered = [group[0]];
+    const remaining = group.slice(1);
+    while (remaining.length) {
+      let bestIdx = 0, bestDist = Infinity;
+      const [lx, ly] = ordered[ordered.length - 1].centroid;
+      for (let i = 0; i < remaining.length; i++) {
+        const [cx, cy] = remaining[i].centroid;
+        const d = Math.hypot(cx - lx, cy - ly);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      ordered.push(remaining.splice(bestIdx, 1)[0]);
+    }
+    colorGroups[color] = ordered;
+  }
+
+  // Generate with jump capping
+  let lastX = 0, lastY = 0;
+  const maxJump = 25;
+
+  for (const color of Object.keys(colorGroups)) {
+    for (const s of colorGroups[color]) {
+      const points = s.points || [[0, 0], [10, 0], [10, 10], [0, 10]];
+      const type = s.type || "fill";
+      const [sx, sy] = points[0] || [0, 0];
+      const jump = Math.hypot(sx - lastX, sy - lastY);
+
+      if (jump > maxJump && all.length > 0) {
+        all.push({ x: Math.round(lastX), y: Math.round(lastY), color, type: "trim" });
+        const steps = Math.ceil(jump / maxJump);
+        for (let i = 1; i < steps; i++) {
+          const f = i / steps;
+          all.push({ x: Math.round(lastX + (sx - lastX) * f), y: Math.round(lastY + (sy - lastY) * f), color, type: "trim" });
+        }
+      } else if (jump > 10 && all.length > 0) {
+        all.push({ x: Math.round(sx), y: Math.round(sy), color, type: "trim" });
+      }
+
+      if (type === "fill") {
+        all.push(...underlayFillPolygon(points, color));
+        all.push(...contourFillPolygon(points, color));
+      } else {
+        all.push(...satinColumnPolygon(points, color));
+      }
+
+      if (all.length) { const last = all[all.length - 1]; lastX = last.x; lastY = last.y; }
+    }
+  }
+
+  all.push(...runningPolygon([[-2, -2], [designW + 2, -2], [designW + 2, designH + 2], [-2, designH + 2]], "#333333"));
+  return { stitches: all, designW, designH, shapes };
+}
+
+// Simple running stitch
 function runningPolygon(points, color) {
   const stitches = [];
   if (points.length < 2) return stitches;
@@ -694,169 +875,37 @@ function runningPolygon(points, color) {
   return stitches;
 }
 
-/* Generate stitches */
-function generateStitches(shapes) {
-  const all = [];
-  const designW = 300, designH = 300;
-  // Precompute centroids
-  for (const s of shapes) {
-    s.centroid = polygonCentroid(s.points || [[0, 0], [10, 0], [10, 10], [0, 10]]);
-  }
-
-  // Group by color
-  const colorGroups = {};
-  for (const s of shapes) {
-    const c = toThreadColor(s.color || "#FF0066");
-    if (!colorGroups[c]) colorGroups[c] = [];
-    colorGroups[c].push({ ...s, color: c });
-  }
-
-  // NN order within each color group, starting from shape closest to group entry point
-  function nnOrder(group, entryX, entryY) {
-    if (group.length <= 1) return group;
-    // Find closest to entry point
-    let startIdx = 0, startDist = Infinity;
-    for (let i = 0; i < group.length; i++) {
-      const [cx, cy] = group[i].centroid;
-      const d = Math.hypot(cx - entryX, cy - entryY);
-      if (d < startDist) { startDist = d; startIdx = i; }
-    }
-    const ordered = [group[startIdx]];
-    const remaining = group.filter((_, i) => i !== startIdx);
-    while (remaining.length) {
-      let bestIdx = 0, bestDist = Infinity;
-      const [lx, ly] = ordered[ordered.length - 1].centroid;
-      for (let i = 0; i < remaining.length; i++) {
-        const [cx, cy] = remaining[i].centroid;
-        const d = Math.hypot(cx - lx, cy - ly);
-        if (d < bestDist) { bestDist = d; bestIdx = i; }
-      }
-      ordered.push(remaining.splice(bestIdx, 1)[0]);
-    }
-    return ordered;
-  }
-
-  // Order color groups by NN: start from (0,0), find closest group's first shape
-  const groupColors = Object.keys(colorGroups);
-  const orderedGroups = [];
-  let entryX = 0, entryY = 0;
-  while (groupColors.length) {
-    let bestIdx = 0, bestDist = Infinity;
-    for (let i = 0; i < groupColors.length; i++) {
-      const g = colorGroups[groupColors[i]];
-      for (const s of g) {
-        const [cx, cy] = s.centroid;
-        const d = Math.hypot(cx - entryX, cy - entryY);
-        if (d < bestDist) { bestDist = d; bestIdx = i; }
-      }
-    }
-    const color = groupColors.splice(bestIdx, 1)[0];
-    const ordered = nnOrder(colorGroups[color], entryX, entryY);
-    colorGroups[color] = ordered;
-    orderedGroups.push(color);
-    // Entry point for next group = last shape's end
-    const lastShape = ordered[ordered.length - 1];
-    const lastPt = lastShape.points[lastShape.points.length - 1] || lastShape.centroid;
-    entryX = lastPt[0]; entryY = lastPt[1];
-  }
-
-  // Generate stitches with jump capping
-  let lastX = 0, lastY = 0;
-  const maxJump = 25; // cap jumps at 25mm
-
-  for (const color of orderedGroups) {
-    for (const s of colorGroups[color]) {
-      const points = s.points || [[0, 0], [10, 0], [10, 10], [0, 10]];
-      const type = s.type || "fill";
-      const [sx, sy] = points[0] || [0, 0];
-      const jump = Math.hypot(sx - lastX, sy - lastY);
-
-      if (jump > maxJump && all.length > 0) {
-        // Add trim at current position, then break jump into segments
-        all.push({ x: Math.round(lastX), y: Math.round(lastY), color, type: "trim" });
-        // Intermediate points along the jump
-        const steps = Math.ceil(jump / maxJump);
-        for (let i = 1; i < steps; i++) {
-          const f = i / steps;
-          all.push({
-            x: Math.round(lastX + (sx - lastX) * f),
-            y: Math.round(lastY + (sy - lastY) * f),
-            color, type: "trim"
-          });
-        }
-      } else if (jump > 10 && all.length > 0) {
-        all.push({ x: Math.round(sx), y: Math.round(sy), color, type: "trim" });
-      }
-
-      if (type === "fill") {
-        all.push(...underlayFillPolygon(points, color));
-        all.push(...contourFillPolygon(points, color));
-      } else if (type === "satin") {
-        all.push(...underlaySatinPolygon(points, color));
-        all.push(...satinColumnPolygon(points, color));
-      } else {
-        all.push(...runningPolygon(points, color));
-      }
-
-      if (all.length) { const last = all[all.length - 1]; lastX = last.x; lastY = last.y; }
-    }
-  }
-
-  all.push(...runningPolygon([[-2, -2], [designW + 2, -2], [designW + 2, designH + 2], [-2, designH + 2]], "#333333"));
-  return { stitches: all, designW, designH, shapes };
-}
-
 /* ============================================================
-   QUALITY VALIDATION — check stitch density, jumps, warnings
+   QUALITY VALIDATION
    ============================================================ */
 function validateQuality(stitches) {
   const warnings = [];
   let totalLen = 0, stitchCount = 0, maxJump = 0, longJumps = 0;
   let prev = null;
-  
+
   for (const s of stitches) {
-    // Measure ALL consecutive stitch distances (including trim jumps)
     if (prev) {
       const d = Math.hypot(s.x - prev.x, s.y - prev.y);
       if (d > maxJump) maxJump = d;
       if (d > 10) longJumps++;
-      // Only count real stitches for density (not trim markers)
-      if (s.type !== "trim" && prev.type !== "trim") {
-        totalLen += d;
-        stitchCount++;
-      }
+      if (s.type !== "trim" && prev.type !== "trim") { totalLen += d; stitchCount++; }
     }
     prev = s;
   }
-  
+
   const avgLen = stitchCount > 0 ? totalLen / stitchCount : 0;
-  const stitchDensity = avgLen > 0 ? 1 / avgLen : 0; // stitches per mm approx
-  
-  // Density checks
-  if (avgLen > 4.0) warnings.push(`Stitches too long (avg ${avgLen.toFixed(1)}mm) — may gap on fabric`);
-  if (avgLen < 1.5) warnings.push(`Stitches too dense (avg ${avgLen.toFixed(1)}mm) — may pucker or break needles`);
-  
-  // Jump checks
-  if (maxJump > 30) warnings.push(`Very long jump (${maxJump.toFixed(1)}mm) — thread may tangle`);
-  if (longJumps > 20) warnings.push(`${longJumps} long jumps (>10mm) — add trims or reorder shapes`);
-  
-  // Count checks
-  if (stitchCount > 50000) warnings.push(`Very high stitch count (${stitchCount}) — may exceed machine memory`);
-  if (stitchCount < 100) warnings.push(`Very low stitch count (${stitchCount}) — design may be incomplete`);
-  
-  return {
-    avgStitchLength: avgLen.toFixed(1),
-    maxJump: maxJump.toFixed(1),
-    longJumpCount: longJumps,
-    stitchCount,
-    density: stitchDensity.toFixed(2),
-    warnings,
-    passed: warnings.length === 0,
-  };
+  if (avgLen > 4.0) warnings.push(`Stitches too long (avg ${avgLen.toFixed(1)}mm)`);
+  if (avgLen < 1.5) warnings.push(`Stitches too dense (avg ${avgLen.toFixed(1)}mm)`);
+  if (maxJump > 30) warnings.push(`Very long jump (${maxJump.toFixed(1)}mm)`);
+  if (longJumps > 20) warnings.push(`${longJumps} long jumps — add more trims`);
+  if (stitchCount > 50000) warnings.push(`High stitch count (${stitchCount})`);
+  if (stitchCount < 100) warnings.push(`Low stitch count (${stitchCount})`);
+
+  return { avgStitchLength: avgLen.toFixed(1), maxJump: maxJump.toFixed(1), longJumpCount: longJumps, stitchCount, density: (avgLen > 0 ? 1 / avgLen : 0).toFixed(2), warnings, passed: warnings.length === 0 };
 }
 
 /* ============================================================
-   FILE ENCODERS
+   FILE ENCODERS — proper Tajima DST
    ============================================================ */
 function stitchRecord(dx, dy) {
   const cdx = Math.max(-121, Math.min(121, Math.round(dx)));
@@ -865,31 +914,20 @@ function stitchRecord(dx, dy) {
 }
 
 function encodeDST(data) {
-  const { stitches, designW, designH } = data;
-  const header = Buffer.alloc(512, 0x20); // space-padded
-  const label = "Stichai";
-  header.write(label.slice(0, 16), 0, "ascii");
-  
-  // Build records and count stats
+  const { stitches } = data;
+  const header = Buffer.alloc(512, 0x20);
+  header.write("Stichai", 0, "ascii");
   const records = [];
   let lastColor = null, prevX = 0, prevY = 0;
   let stitchCount = 0, colorChangeCount = 0;
-  let minX = 0, maxX = 0, minY = 0, maxY = 0;
-  let absX = 0, absY = 0;
+  let minX = 0, maxX = 0, minY = 0, maxY = 0, absX = 0, absY = 0;
 
   for (const s of stitches) {
-    // Track bounds
-    absX += s.x - prevX;
-    absY += s.y - prevY;
-    if (absX < minX) minX = absX;
-    if (absX > maxX) maxX = absX;
-    if (absY < minY) minY = absY;
-    if (absY > maxY) maxY = absY;
+    absX += s.x - prevX; absY += s.y - prevY;
+    if (absX < minX) minX = absX; if (absX > maxX) maxX = absX;
+    if (absY < minY) minY = absY; if (absY > maxY) maxY = absY;
 
-    if (s.color !== lastColor && lastColor !== null) {
-      records.push(Buffer.from([0x00, 0x00, 0xC3]));
-      colorChangeCount++;
-    }
+    if (s.color !== lastColor && lastColor !== null) { records.push(Buffer.from([0x00, 0x00, 0xC3])); colorChangeCount++; }
     lastColor = s.color;
 
     if (s.type === "trim") {
@@ -910,19 +948,16 @@ function encodeDST(data) {
   records.push(Buffer.from([0x00, 0x00, 0xF3]));
   stitchCount++;
 
-  // Write proper Tajima header
-  header.writeInt32LE(stitchCount, 20);        // stitch count
-  header.writeInt32LE(colorChangeCount, 24);   // color changes
-  header.writeInt16LE(Math.round(maxX - minX) * 10, 28);  // width * 10
-  header.writeInt16LE(Math.round(maxY - minY) * 10, 32);  // height * 10
-  header.writeInt16LE(Math.round(minX) * 10, 36);         // min X * 10
-  header.writeInt16LE(Math.round(maxX) * 10, 40);         // max X * 10
-  header.writeInt16LE(Math.round(minY) * 10, 44);         // min Y * 10
-  header.writeInt16LE(Math.round(maxY) * 10, 48);         // max Y * 10
-  header.writeInt16LE(0, 52);                   // axis adjust X
-  header.writeInt16LE(0, 54);                   // axis adjust Y
-  header.write("(c)Stichai", 56, "ascii");      // copyright
-  header.writeInt16LE(colorChangeCount + 1, 88); // number of colors
+  header.writeInt32LE(stitchCount, 20);
+  header.writeInt32LE(colorChangeCount, 24);
+  header.writeInt16LE(Math.round((maxX - minX) * 10), 28);
+  header.writeInt16LE(Math.round((maxY - minY) * 10), 32);
+  header.writeInt16LE(Math.round(minX) * 10, 36);
+  header.writeInt16LE(Math.round(maxX) * 10, 40);
+  header.writeInt16LE(Math.round(minY) * 10, 44);
+  header.writeInt16LE(Math.round(maxY) * 10, 48);
+  header.write("(c)Stichai", 56, "ascii");
+  header.writeInt16LE(colorChangeCount + 1, 88);
 
   return Buffer.concat([header, ...records]);
 }
@@ -944,7 +979,7 @@ function encodeFile(format, data) {
 }
 
 /* ============================================================
-   2D PREVIEW RENDERER
+   PREVIEW RENDERER
    ============================================================ */
 function hexToRgbNums(hex) {
   const m = hex.match(/^#([0-9a-fA-F]{6})$/);
@@ -984,16 +1019,13 @@ async function renderStitchesToPng(stitches, designW, designH) {
   const w = Math.round(designW * scale);
   const h = Math.round(designH * scale);
   const buf = Buffer.alloc(w * h * 4);
-  for (let i = 0; i < w * h * 4; i += 4) {
-    buf[i] = 245; buf[i + 1] = 242; buf[i + 2] = 235; buf[i + 3] = 255;
-  }
+  for (let i = 0; i < w * h * 4; i += 4) { buf[i] = 245; buf[i + 1] = 242; buf[i + 2] = 235; buf[i + 3] = 255; }
+
   let prev = null;
   for (const s of stitches) {
     if (s.type === "trim") { prev = null; continue; }
     if (prev && prev.color === s.color && prev.type !== "trim") {
-      const dx = s.x - prev.x, dy = s.y - prev.y;
-      const dist = Math.hypot(dx, dy);
-      // Skip drawing very long jumps in preview (they're just connection moves)
+      const dist = Math.hypot(s.x - prev.x, s.y - prev.y);
       if (dist < 15) {
         const [cr, cg, cb] = hexToRgbNums(s.color);
         const sw = s.type === 'satin' ? 2.0 : (s.type === 'underlay' ? 0.5 : 1.0);
@@ -1013,84 +1045,86 @@ app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
 app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
   res.setTimeout(0);
+  let reqId = Math.random().toString(36).slice(2, 6);
+
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
-    const reqId = Math.random().toString(36).slice(2, 6);
-    
+
     console.time(`preprocess-${reqId}`);
     const cleanBuffer = await preprocessImage(req.file.buffer);
     console.timeEnd(`preprocess-${reqId}`);
-    
+
     const cleanB64 = cleanBuffer.toString("base64");
     const cleanMime = "image/png";
-    
-    // === STEP 1: PROFESSIONAL ANALYSIS ===
-    // Gemini detects: background color, thread colors, text/logo flags
+
+    // Step 1: Analyze image
     console.time(`gemini-analyze-${reqId}`);
     const analysis = await analyzeImage(cleanB64, cleanMime);
     console.timeEnd(`gemini-analyze-${reqId}`);
-    console.log(`Background: ${analysis.background}, Colors: ${analysis.colors.join(", ")}, Text: ${analysis.is_text}, Logo: ${analysis.is_logo}`);
-    
-    // === STEP 2: SHAPE EXTRACTION ===
-    // PRIMARY: Gemini extracts shapes with proper polygons + types
-    // FALLBACK: Pixel tracing with background removal + color quantization
+    console.log(`Background: ${analysis.background}, Colors: ${analysis.colors.join(", ")}, Text: ${analysis.is_text}`);
+
+    // Step 2: Shape extraction — try multiple methods in order
     let shapes = [];
-    let extractionMethod = "gemini";
-    
+    let extractionMethod = "none";
+
+    // Try 1: VTracer SVG
     try {
-      console.time(`gemini-shapes-${reqId}`);
-      shapes = await extractShapesWithGemini(cleanB64, cleanMime, analysis.colors, analysis.is_text, analysis.is_logo);
-      console.timeEnd(`gemini-shapes-${reqId}`);
-      console.log(`Gemini shapes: ${shapes.length}`);
-      
-      // Force text shapes to satin when image contains text
+      console.time(`vtracer-${reqId}`);
+      const svg = await vtracerToSvg(cleanBuffer);
+      if (svg) {
+        shapes = await parseSvgPaths(svg, analysis.colors);
+        console.timeEnd(`vtracer-${reqId}`);
+        if (shapes.length >= 3) {
+          extractionMethod = "vtracer";
+          console.log(`VTracer shapes: ${shapes.length}`);
+        }
+      }
+    } catch (e) { console.log(`VTracer failed: ${e.message}`); }
+
+    // Try 2: Gemini shape extraction
+    if (shapes.length < 3) {
+      try {
+        console.time(`gemini-shapes-${reqId}`);
+        shapes = await extractGeminiShapes(cleanB64, cleanMime, analysis.colors, analysis.is_text, analysis.is_logo);
+        console.timeEnd(`gemini-shapes-${reqId}`);
+        if (shapes.length >= 3) {
+          extractionMethod = "gemini";
+          console.log(`Gemini shapes: ${shapes.length}`);
+        }
+      } catch (e) { console.log(`Gemini shapes failed: ${e.message}`); }
+    }
+
+    // Try 3: Pixel tracing fallback
+    if (shapes.length < 3) {
+      console.time(`pixel-trace-${reqId}`);
+      shapes = await extractPixelShapes(cleanBuffer, analysis.colors, analysis.is_text);
+      console.timeEnd(`pixel-trace-${reqId}`);
+      extractionMethod = "pixel";
+    }
+
+    if (!shapes.length) return res.status(500).json({ error: "No shapes extracted from image" });
+
+    // Force text to satin
     if (analysis.is_text) {
       for (const s of shapes) {
         const b = polygonBounds(s.points);
-        const maxDim = Math.max(b.width, b.height);
-        const minDim = Math.min(b.width, b.height);
-        // Text letters: narrow in one dimension, not huge
-        if (minDim < 80 && maxDim < 200 && s.type === "fill") {
+        if (Math.min(b.width, b.height) < 80 && Math.max(b.width, b.height) < 200 && s.type === "fill") {
           s.type = "satin";
         }
       }
     }
-    
-    if (shapes.length < 3) throw new Error("Too few Gemini shapes");
-    } catch (e) {
-      console.log(`Gemini extraction failed (${e.message}), falling back to pixel tracing`);
-      console.time(`pixel-trace-${reqId}`);
-      shapes = await extractShapesFromImage(cleanBuffer, analysis.colors, analysis.is_text);
-      console.timeEnd(`pixel-trace-${reqId}`);
-      extractionMethod = "pixel";
-    }
-    
-    if (!shapes.length) return res.status(500).json({ error: "No shapes extracted" });
-    
-    // === STEP 3: STITCH GENERATION ===
+
+    // Step 3: Generate stitches
     const result = generateStitches(shapes);
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     jobs.set(id, result);
-    
-    // === STEP 4: QUALITY AUDIT ===
+
+    // Step 4: Quality audit
     const validation = validateQuality(result.stitches);
-    const audit = {
-      totalStitches: result.stitches.length,
-      shapeCount: shapes.length,
-      colorCount: [...new Set(shapes.map(s => toThreadColor(s.color)))].length,
-      satinShapes: shapes.filter(s => s.type === "satin").length,
-      fillShapes: shapes.filter(s => s.type === "fill").length,
-      avgStitchLength: validation.avgStitchLength,
-      maxJump: validation.maxJump,
-      longJumps: validation.longJumpCount,
-      density: validation.density,
-      warnings: validation.warnings,
-      passed: validation.passed,
-    };
-    
-    console.log(`AUDIT: ${audit.totalStitches} stitches, ${audit.shapeCount} shapes, avg stitch ${audit.avgStitchLength}mm, max jump ${audit.maxJump}mm, warnings: ${audit.warnings.length}`);
-    for (const w of audit.warnings) console.log(`  ⚠ ${w}`);
-    
+
+    console.log(`AUDIT: ${result.stitches.length} stitches, ${shapes.length} shapes, method: ${extractionMethod}`);
+    for (const w of validation.warnings) console.log(`  ⚠ ${w}`);
+
     return res.json({
       success: true,
       id,
@@ -1100,12 +1134,13 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
       stitchCount: result.stitches.length,
       designSize: { w: result.designW, h: result.designH },
       colors: [...new Set(shapes.map(s => toThreadColor(s.color)))],
-      detection: { method: extractionMethod, background: analysis.background },
-      audit,
+      extraction: { method: extractionMethod },
+      audit: validation,
       shapes: result.shapes.map(s => ({ type: s.type, color: s.color, pointCount: s.points.length }))
     });
+
   } catch (e) {
-    console.error("/generate-embroidery error:", e.message);
+    console.error(`/generate-embroidery error [${reqId}]:`, e.message);
     return res.status(500).json({ error: e.message });
   }
 });
@@ -1113,7 +1148,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
 app.get("/preview/:id", (req, res) => {
   const data = jobs.get(req.params.id);
   if (!data) return res.status(404).json({ error: "Not found" });
-  return res.json({ stitches: data.stitches, designW: data.designW, designH: data.designH, shapes: data.shapes });
+  return res.json({ stitches: data.stitches, designW: data.designW, designH: data.designH });
 });
 
 app.get("/preview-image/:id", async (req, res) => {
@@ -1125,7 +1160,6 @@ app.get("/preview-image/:id", async (req, res) => {
     res.setHeader("Cache-Control", "public, max-age=300");
     return res.send(png);
   } catch (e) {
-    console.error("Preview image error:", e.message);
     return res.status(500).json({ error: e.message });
   }
 });
@@ -1140,10 +1174,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "14.6" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "15.0" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v14.6 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v15.0 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
