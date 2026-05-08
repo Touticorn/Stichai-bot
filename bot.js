@@ -991,9 +991,14 @@ async function renderStitchesToPng(stitches, designW, designH) {
   for (const s of stitches) {
     if (s.type === "trim") { prev = null; continue; }
     if (prev && prev.color === s.color && prev.type !== "trim") {
-      const [cr, cg, cb] = hexToRgbNums(s.color);
-      const sw = s.type === 'satin' ? 2.0 : (s.type === 'underlay' ? 0.5 : 1.0);
-      drawLineOnBuffer(buf, w, h, prev.x * scale, prev.y * scale, s.x * scale, s.y * scale, cr, cg, cb, sw);
+      const dx = s.x - prev.x, dy = s.y - prev.y;
+      const dist = Math.hypot(dx, dy);
+      // Skip drawing very long jumps in preview (they're just connection moves)
+      if (dist < 15) {
+        const [cr, cg, cb] = hexToRgbNums(s.color);
+        const sw = s.type === 'satin' ? 2.0 : (s.type === 'underlay' ? 0.5 : 1.0);
+        drawLineOnBuffer(buf, w, h, prev.x * scale, prev.y * scale, s.x * scale, s.y * scale, cr, cg, cb, sw);
+      }
     }
     prev = s;
   }
@@ -1038,7 +1043,20 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
       console.timeEnd(`gemini-shapes-${reqId}`);
       console.log(`Gemini shapes: ${shapes.length}`);
       
-      if (shapes.length < 3) throw new Error("Too few Gemini shapes");
+      // Force text shapes to satin when image contains text
+    if (analysis.is_text) {
+      for (const s of shapes) {
+        const b = polygonBounds(s.points);
+        const maxDim = Math.max(b.width, b.height);
+        const minDim = Math.min(b.width, b.height);
+        // Text letters: narrow in one dimension, not huge
+        if (minDim < 80 && maxDim < 200 && s.type === "fill") {
+          s.type = "satin";
+        }
+      }
+    }
+    
+    if (shapes.length < 3) throw new Error("Too few Gemini shapes");
     } catch (e) {
       console.log(`Gemini extraction failed (${e.message}), falling back to pixel tracing`);
       console.time(`pixel-trace-${reqId}`);
@@ -1122,10 +1140,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "14.5" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "14.6" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v14.5 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v14.6 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
