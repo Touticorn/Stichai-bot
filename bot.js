@@ -567,7 +567,7 @@ function underlaySatinPolygon(points, color) {
   function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
   const localPts = points.map(([x, y]) => toLocal(x, y));
   const b = polygonBounds(localPts);
-  for (let lx = b.minX; lx <= b.maxX; lx += 4.0) {
+  for (let lx = b.minX; lx <= b.maxX; lx += 8.0) {
     const ints = [];
     for (let i = 0, j = localPts.length - 1; i < localPts.length; j = i++) {
       const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
@@ -588,7 +588,10 @@ function contourFillPolygon(points, color) {
   const stitches = [];
   const fillAngle = computeFillAngle(points);
   const cosA = Math.cos(fillAngle), sinA = Math.sin(fillAngle);
-  const stitchLen = 2.8, rowSpacing = 2.5;
+  /* Professional density: ~1,300-6,000 stitches per inch
+     300 units ≈ 3.5", so stitchLen=5.0, rowSpacing=5.0 gives
+     ~3,600 stitches per fill shape — matches pro standards */
+  const stitchLen = 5.0, rowSpacing = 5.0;
   function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
   function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
   const localPts = points.map(([x, y]) => toLocal(x, y));
@@ -643,8 +646,9 @@ function satinColumnPolygon(points, color) {
     const ny = dx / len * (width / 2);
     inner.push([x1 + nx, y1 + ny]);
   }
+  /* Professional satin: wider zigzag spacing */
   const totalLen = points.length * 10;
-  const steps = Math.max(points.length * 4, Math.floor(totalLen / 1.5));
+  const steps = Math.max(points.length * 2, Math.floor(totalLen / 2.5));
   for (let i = 0; i <= steps; i++) {
     const t = (i / steps) * points.length;
     const idx = Math.floor(t) % points.length;
@@ -675,7 +679,8 @@ function runningPolygon(points, color) {
     cumLen += len;
   }
   if (cumLen < 1) return stitches;
-  const spacing = 2.5;
+  /* Professional running stitch spacing */
+  const spacing = 4.0;
   const steps = Math.max(1, Math.floor(cumLen / spacing));
   for (let s = 0; s <= steps; s++) {
     const target = (s / steps) * cumLen;
@@ -696,10 +701,12 @@ function runningPolygon(points, color) {
 function generateStitches(shapes) {
   const all = [];
   const designW = 300, designH = 300;
+  // Precompute centroids
   for (const s of shapes) {
     s.centroid = polygonCentroid(s.points || [[0, 0], [10, 0], [10, 10], [0, 10]]);
   }
 
+  // Group by color
   const colorGroups = {};
   for (const s of shapes) {
     const c = toThreadColor(s.color || "#FF0066");
@@ -707,33 +714,80 @@ function generateStitches(shapes) {
     colorGroups[c].push({ ...s, color: c });
   }
 
-  for (const color of Object.keys(colorGroups)) {
-    const group = colorGroups[color];
-    if (group.length > 1) {
-      const ordered = [group[0]];
-      const remaining = group.slice(1);
-      while (remaining.length) {
-        let bestIdx = 0, bestDist = Infinity;
-        const [lx, ly] = ordered[ordered.length - 1].centroid;
-        for (let i = 0; i < remaining.length; i++) {
-          const [cx, cy] = remaining[i].centroid;
-          const d = Math.hypot(cx - lx, cy - ly);
-          if (d < bestDist) { bestDist = d; bestIdx = i; }
-        }
-        ordered.push(remaining.splice(bestIdx, 1)[0]);
-      }
-      colorGroups[color] = ordered;
+  // NN order within each color group, starting from shape closest to group entry point
+  function nnOrder(group, entryX, entryY) {
+    if (group.length <= 1) return group;
+    // Find closest to entry point
+    let startIdx = 0, startDist = Infinity;
+    for (let i = 0; i < group.length; i++) {
+      const [cx, cy] = group[i].centroid;
+      const d = Math.hypot(cx - entryX, cy - entryY);
+      if (d < startDist) { startDist = d; startIdx = i; }
     }
+    const ordered = [group[startIdx]];
+    const remaining = group.filter((_, i) => i !== startIdx);
+    while (remaining.length) {
+      let bestIdx = 0, bestDist = Infinity;
+      const [lx, ly] = ordered[ordered.length - 1].centroid;
+      for (let i = 0; i < remaining.length; i++) {
+        const [cx, cy] = remaining[i].centroid;
+        const d = Math.hypot(cx - lx, cy - ly);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      ordered.push(remaining.splice(bestIdx, 1)[0]);
+    }
+    return ordered;
   }
 
+  // Order color groups by NN: start from (0,0), find closest group's first shape
+  const groupColors = Object.keys(colorGroups);
+  const orderedGroups = [];
+  let entryX = 0, entryY = 0;
+  while (groupColors.length) {
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < groupColors.length; i++) {
+      const g = colorGroups[groupColors[i]];
+      for (const s of g) {
+        const [cx, cy] = s.centroid;
+        const d = Math.hypot(cx - entryX, cy - entryY);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+    }
+    const color = groupColors.splice(bestIdx, 1)[0];
+    const ordered = nnOrder(colorGroups[color], entryX, entryY);
+    colorGroups[color] = ordered;
+    orderedGroups.push(color);
+    // Entry point for next group = last shape's end
+    const lastShape = ordered[ordered.length - 1];
+    const lastPt = lastShape.points[lastShape.points.length - 1] || lastShape.centroid;
+    entryX = lastPt[0]; entryY = lastPt[1];
+  }
+
+  // Generate stitches with jump capping
   let lastX = 0, lastY = 0;
-  for (const color of Object.keys(colorGroups)) {
+  const maxJump = 25; // cap jumps at 25mm
+
+  for (const color of orderedGroups) {
     for (const s of colorGroups[color]) {
       const points = s.points || [[0, 0], [10, 0], [10, 10], [0, 10]];
       const type = s.type || "fill";
       const [sx, sy] = points[0] || [0, 0];
       const jump = Math.hypot(sx - lastX, sy - lastY);
-      if (jump > 10 && all.length > 0) {
+
+      if (jump > maxJump && all.length > 0) {
+        // Add trim at current position, then break jump into segments
+        all.push({ x: Math.round(lastX), y: Math.round(lastY), color, type: "trim" });
+        // Intermediate points along the jump
+        const steps = Math.ceil(jump / maxJump);
+        for (let i = 1; i < steps; i++) {
+          const f = i / steps;
+          all.push({
+            x: Math.round(lastX + (sx - lastX) * f),
+            y: Math.round(lastY + (sy - lastY) * f),
+            color, type: "trim"
+          });
+        }
+      } else if (jump > 10 && all.length > 0) {
         all.push({ x: Math.round(sx), y: Math.round(sy), color, type: "trim" });
       }
 
@@ -1068,10 +1122,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "14.2" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "14.4" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v14.2 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v14.4 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
