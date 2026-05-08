@@ -272,7 +272,6 @@ async function extractShapesFromImage(buffer, colors, isText = false) {
   image.resize(pw, ph);
 
   const labColors = colors.map(c => rgbToLab(hexToRgb(c)));
-  const bgLab = bgColor ? rgbToLab(hexToRgb(bgColor)) : null;
   const pixelColors = new Int16Array(pw * ph);
   pixelColors.fill(-1);
 
