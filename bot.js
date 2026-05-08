@@ -588,10 +588,9 @@ function contourFillPolygon(points, color) {
   const stitches = [];
   const fillAngle = computeFillAngle(points);
   const cosA = Math.cos(fillAngle), sinA = Math.sin(fillAngle);
-  /* Professional density: ~1,300-6,000 stitches per inch
-     300 units ≈ 3.5", so stitchLen=5.0, rowSpacing=5.0 gives
-     ~3,600 stitches per fill shape — matches pro standards */
-  const stitchLen = 5.0, rowSpacing = 5.0;
+  /* Professional density: 0.4-0.5mm row spacing
+     At 300 units ≈ 76mm, 3.5mm spacing = ~43 rows */
+  const stitchLen = 3.5, rowSpacing = 3.5;
   function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
   function toGlobal(lx, ly) { return [lx * cosA - ly * sinA, lx * sinA + ly * cosA]; }
   const localPts = points.map(([x, y]) => toLocal(x, y));
@@ -646,9 +645,8 @@ function satinColumnPolygon(points, color) {
     const ny = dx / len * (width / 2);
     inner.push([x1 + nx, y1 + ny]);
   }
-  /* Professional satin: wider zigzag spacing */
   const totalLen = points.length * 10;
-  const steps = Math.max(points.length * 2, Math.floor(totalLen / 2.5));
+  const steps = Math.max(points.length * 3, Math.floor(totalLen / 2.0));
   for (let i = 0; i <= steps; i++) {
     const t = (i / steps) * points.length;
     const idx = Math.floor(t) % points.length;
@@ -679,8 +677,7 @@ function runningPolygon(points, color) {
     cumLen += len;
   }
   if (cumLen < 1) return stitches;
-  /* Professional running stitch spacing */
-  const spacing = 4.0;
+  const spacing = 3.0;
   const steps = Math.max(1, Math.floor(cumLen / spacing));
   for (let s = 0; s <= steps; s++) {
     const target = (s / steps) * cumLen;
@@ -818,13 +815,16 @@ function validateQuality(stitches) {
   let prev = null;
   
   for (const s of stitches) {
-    if (s.type === "trim") { prev = null; continue; }
-    if (prev && prev.type !== "trim") {
+    // Measure ALL consecutive stitch distances (including trim jumps)
+    if (prev) {
       const d = Math.hypot(s.x - prev.x, s.y - prev.y);
-      totalLen += d;
-      stitchCount++;
       if (d > maxJump) maxJump = d;
       if (d > 10) longJumps++;
+      // Only count real stitches for density (not trim markers)
+      if (s.type !== "trim" && prev.type !== "trim") {
+        totalLen += d;
+        stitchCount++;
+      }
     }
     prev = s;
   }
@@ -1122,10 +1122,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "14.4" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "14.5" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v14.4 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v14.5 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
