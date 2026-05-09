@@ -28,7 +28,7 @@ const jobs = new Map();
 const previewCache = new Map();
 
 /* ============================================================
-   GEMINI COLOR DETECTION – no grey, vibrant only
+   GEMINI COLOR DETECTION – research-backed prompt
    ============================================================ */
 async function detectColors(b64, mime) {
   const prompt = `Examine this image carefully. Your task is to identify ONLY the thread colors that are ACTUALLY VISIBLE in the design.
@@ -160,6 +160,7 @@ function toThreadColor(hex) {
 
 /* ============================================================
    PIXEL TRACING – catches tiny details, adaptive fill classification
+   FIXED: Uses area-based fill/satin logic instead of defaulting to satin
    ============================================================ */
 function ramerDouglasPeucker(points, epsilon) {
   if (points.length <= 3) return points;
@@ -343,11 +344,13 @@ async function extractPixelShapes(buffer, colors, isText) {
     if (!contained) filtered.push(s);
   }
 
-  if (isText && filtered.length > 3) {
+  // FIXED: Use area-based fill/satin classification
+  // Wide shapes (>2000 sq units) get fill; narrow shapes get satin
+  if (filtered.length > 3) {
     for (const s of filtered) {
       const b = polygonBounds(s.points);
-      const narrow = Math.min(b.width, b.height) < 18;
-      if (!narrow && s.pixelCount > 200) {
+      const area = b.width * b.height;
+      if (area > 2000) {
         s.type = "fill";
       } else {
         s.type = "satin";
@@ -693,7 +696,7 @@ async function renderStitchesToPng(stitches, dw, dh) {
     if (st.type === "trim") { prev = null; continue; }
     if (prev && prev.color === st.color && prev.type !== "trim") {
       const dist = Math.hypot(st.x-prev.x, st.y-prev.y);
-      if (dist < 15 && st.color !== "#333333") {
+      if (dist < 30 && st.color !== "#333333") {
         const m = st.color.match(/^#([0-9a-fA-F]{6})$/);
         const [cr, cg, cb] = m ? [parseInt(m[1].slice(0,2),16), parseInt(m[1].slice(2,4),16), parseInt(m[1].slice(4,6),16)] : [0,0,0];
         const sw = st.type === "satin" ? 2 : 1;
@@ -821,8 +824,8 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "28.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "29.0" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v28 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v29 running on port ${PORT}`));
 server.timeout = 180000;
