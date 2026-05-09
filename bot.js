@@ -844,14 +844,21 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     const analysisB64 = analysisBuffer.toString("base64");
     
     console.time(`analyze-${reqId}`);
-    let analysis;
-    try {
-      analysis = await analyzeImage(analysisB64, "image/png");
-    } catch (e) {
-      console.log(`Analysis failed: ${e.message}, using defaults`);
-      analysis = { background: "#FFFFFF", colors: ["#FF0000", "#000000", "#FFFFFF", "#FFD700"], is_text: true, is_logo: true };
-    }
-    console.timeEnd(`analyze-${reqId}`);
+let analysis;
+for (let attempt = 0; attempt < 3; attempt++) {
+  try {
+    analysis = await analyzeImage(analysisB64, "image/png");
+    break;
+  } catch (e) {
+    console.log(`Analysis attempt ${attempt+1} failed: ${e.message}`);
+    if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+  }
+}
+if (!analysis) {
+  console.log("All analysis attempts failed, using defaults");
+  analysis = { background: "#FFFFFF", colors: ["#FF0000", "#000000", "#FFFFFF", "#FFD700"], is_text: true, is_logo: true };
+}
+console.timeEnd(`analyze-${reqId}`);
     console.log(`Colors: ${analysis.colors.join(", ")}, Text: ${analysis.is_text}`);
     
     console.time(`shapes-${reqId}`);
