@@ -292,14 +292,15 @@ is_logo = true if image has emblem, crown, shield, or brand mark`;
   // ✨ Force at least 5 colors, add black if text detected and no dark color found
   let colors = deduplicateColors(parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"]);
   
-  if (parsed.is_text && colors.length < 4) {
-    const hasDark = colors.some(c => {
-      const rgb = hexToRgb(c);
-      return (rgb.r + rgb.g + rgb.b) < 200; // Dark color threshold
-    });
-    if (!hasDark) {
-      colors.push("#000000"); // Add black for text
-    }
+  if (parsed.is_text) {
+  const hasBlack = colors.some(c => {
+    const rgb = hexToRgb(c);
+    return (rgb.r + rgb.g + rgb.b) < 100; // Stricter: only true black/dark gray
+  });
+  if (!hasBlack) {
+    console.log("Added #000000 for text");
+    colors.unshift("#000000");
+  }
   }
   
   // Ensure minimum 4 colors for complex designs
@@ -421,7 +422,7 @@ function deduplicateColors(colors) {
     let dup = false;
     for (let j = 0; j < unique.length; j++) {
       // ✨ Stricter dedup threshold to keep similar colors separate
-      if (colorDistanceLab(labs[i], rgbToLab(hexToRgb(unique[j]))) < 12) { dup = true; break; }
+      if (colorDistanceLab(labs[i], rgbToLab(hexToRgb(unique[j]))) < 20) { dup = true; break; }
     }
     if (!dup) unique.push(colors[i]);
   }
@@ -563,7 +564,7 @@ async function extractPixelShapes(buffer, colors, isText = false) {
 
   // ✨ IMPROVEMENT 3: Lower min component size for emblems and small details
   const shapes = [];
-  const minComponentSize = 5;  // Was 8, lowered to catch crown details
+  const minComponentSize = 3;  // Was 8, lowered to catch crown details
   let currentMaskId = 1;
 
   console.time(`contour-${tid}`);
