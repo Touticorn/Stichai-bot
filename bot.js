@@ -408,7 +408,7 @@ function contourFillPolygon(points, color) {
   const stitches = [];
   const angle = computeFillAngle(points);
   const cosA = Math.cos(angle), sinA = Math.sin(angle);
-  const rowSpacing = 3.5, stitchSpacing = 3.0;
+  const rowSpacing = 2.8, stitchSpacing = 2.5;
 
   function toLocal(x, y) { return [x*cosA + y*sinA, -x*sinA + y*cosA]; }
   function toGlobal(lx, ly) { return [lx*cosA - ly*sinA, lx*sinA + ly*cosA]; }
@@ -502,24 +502,38 @@ function generateStitches(shapes) {
   }
 
   let lastX = 0, lastY = 0;
-  for (const color of Object.keys(groups)) {
-    for (const s of groups[color]) {
-      const pts = s.points;
-      const [sx, sy] = pts[0];
-      const jump = Math.hypot(sx-lastX, sy-lastY);
-      if (jump > 20 && all.length) {
-        all.push({ x: Math.round(lastX), y: Math.round(lastY), color, type: "trim" });
-        all.push({ x: Math.round(sx), y: Math.round(sy), color, type: "trim" });
-      }
-      if (s.type === "fill") {
-        all.push(...underlayFillPolygon(pts, color));
-        all.push(...contourFillPolygon(pts, color));
-      } else {
-        all.push(...satinColumnPolygon(pts, color));
-      }
-      if (all.length) { const l = all[all.length-1]; lastX = l.x; lastY = l.y; }
+for (const color of Object.keys(groups)) {
+  // Nearest-neighbor order within each color group
+  const ordered = [groups[color][0]];
+  const remaining = groups[color].slice(1);
+  while (remaining.length) {
+    let bestIdx = 0, bestDist = Infinity;
+    const [lx, ly] = ordered[ordered.length - 1].centroid;
+    for (let i = 0; i < remaining.length; i++) {
+      const [cx, cy] = remaining[i].centroid;
+      const d = Math.hypot(cx - lx, cy - ly);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
     }
+    ordered.push(remaining.splice(bestIdx, 1)[0]);
   }
+
+  for (const s of ordered) {
+    const pts = s.points;
+    const [sx, sy] = pts[0];
+    const jump = Math.hypot(sx - lastX, sy - lastY);
+    if (jump > 20 && all.length) {
+      all.push({ x: Math.round(lastX), y: Math.round(lastY), color, type: "trim" });
+      all.push({ x: Math.round(sx), y: Math.round(sy), color, type: "trim" });
+    }
+    if (s.type === "fill") {
+      all.push(...underlayFillPolygon(pts, color));
+      all.push(...contourFillPolygon(pts, color));
+    } else {
+      all.push(...satinColumnPolygon(pts, color));
+    }
+    if (all.length) { const l = all[all.length - 1]; lastX = l.x; lastY = l.y; }
+  }
+}
   all.push(...runningPolygon([[-2,-2],[designW+2,-2],[designW+2,designH+2],[-2,designH+2]], "#333333"));
   return { stitches: all, designW, designH, shapes };
 }
