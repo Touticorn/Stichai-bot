@@ -952,53 +952,36 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     // Gemini analysis on posterized image
     const analysisB64 = posterized.buffer.toString("base64");
     
-    console.time(`analyze-${reqId}`);
-    let analysis;
-    for (let attempt=0; attempt<3; attempt++) {
-      try {
-        analysis = await analyzeImage(analysisB64, "image/png");
-        break;
-      } catch (e) {
-        console.log(`Analysis attempt ${attempt+1} failed: ${e.message}`);
-        if (attempt<2) await new Promise(r => setTimeout(r, 2000));
-      }
-    }
-    
-    // Use posterize colors if Gemini failed
-    if (!analysis || !analysis.colors || analysis.colors.length < 2) {
-      console.log("Using posterized colors");
-      analysis = {
-        background: "#FFFFFF",
-        colors: posterized.colors,
-        is_text: analysis?.is_text ?? true,
-        is_logo: analysis?.is_logo ?? true,
-        source: "posterize"
-      };
-    }
-    console.timeEnd(`analyze-${reqId}`);
-    console.log(`Colors: ${analysis.colors.join(", ")}, Text: ${analysis.is_text}, Logo: ${analysis.is_logo}`);
-    
-    // Skip Gemini shape extraction — posterized pixel tracer is better
-    console.time(`shapes-${reqId}`);
-    const shapes = await extractPixelShapes(posterized.buffer, analysis.colors, analysis.is_text);
-    console.timeEnd(`shapes-${reqId}`);
-    
-    if (!shapes.length) return res.status(500).json({ error: "No shapes extracted" });
-    
-    // === STAGE 3: AGENTIC REVIEW (Suture-style quality check) ===
-    console.time(`review-${reqId}`);
-    let review;
-    try {
-      review = await agenticReview(shapes, analysis);
-      if (review && !review.ok) {
-        const before = shapes.length;
-        shapes = applyAgentReview(shapes, review);
-        console.log(`Agent review: ${before} → ${shapes.length} shapes`);
-      }
-    } catch (e) {
-      console.log(`Review skipped: ${e.message}`);
-    }
-    console.timeEnd(`review-${reqId}`);
+    // === STAGE 2: GEMINI COLOR DETECTION (primary, never skipped) ===
+console.time(`analyze-${reqId}`);
+let analysis;
+for (let attempt = 0; attempt < 5; attempt++) {
+  try {
+    analysis = await analyzeImage(analysisB64, "image/png");
+    if (analysis && analysis.colors && analysis.colors.length >= 3) break;
+    console.log(`Attempt ${attempt+1}: only ${analysis?.colors?.length || 0} colors, retrying...`);
+    await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+  } catch (e) {
+    console.log(`Attempt ${attempt+1} failed: ${e.message}`);
+    if (attempt < 4) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+  }
+}
+
+// Gemini is the source of truth for colors
+if (!analysis || !analysis.colors || analysis.colors.length < 3) {
+  console.log("Gemini failed after 5 attempts — falling back to posterize");
+  analysis = {
+    background: "#FFFFFF",
+    colors: posterized.colors,
+    is_text: true,
+    is_logo: true,
+    source: "posterize"
+  };
+} else {
+  console.log(`Gemini detected: ${analysis.colors.join(", ")}`);
+  analysis.source = "gemini";
+}
+console.timeEnd(`analyze-${reqId}`);
     
     const result = generateStitches(shapes);
     const id = Date.now().toString(36)+Math.random().toString(36).slice(2,6);
