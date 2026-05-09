@@ -1410,7 +1410,7 @@ console.timeEnd(`gemini-analyze-${reqId}`);
     } catch (e) { console.log(`VTracer failed: ${e.message}`); }
 
     // Try 2: Gemini shape extraction
-    if (shapes.length < 3 && !analysis.is_text) {
+    if (shapes.length < 3) {
       try {
         console.time(`gemini-shapes-${reqId}`);
         shapes = await extractGeminiShapes(cleanB64, cleanMime, analysis.colors, analysis.is_text, analysis.is_logo);
