@@ -192,7 +192,7 @@ async function extractPixelShapes(buffer, colors, isText) {
     for (let x = 0; x < pw; x++) {
       const i = (y*pw + x) << 2;
       const pixLab = rgbToLab({ r: data[i], g: data[i+1], b: data[i+2] });
-      let bestIdx = -1, bestDist = 30;
+      let bestIdx = -1, bestDist = 45;
       for (let c = 0; c < labColors.length; c++) {
         const d = colorDistanceLab(pixLab, labColors[c]);
         if (d < bestDist) { bestDist = d; bestIdx = c; }
@@ -248,8 +248,8 @@ async function extractPixelShapes(buffer, colors, isText) {
             }
           }
 
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -2; dy <= 2; dy++) {
+            for (let dx = -2; dx <= 2; dx++) {
               if (dy === 0 && dx === 0) continue;
               const nx = cx + dx, ny = cy + dy;
               if (nx >= 0 && nx < pw && ny >= 0 && ny < ph) {
