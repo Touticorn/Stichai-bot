@@ -39,7 +39,7 @@ const jobs = new Map();
 const previewCache = new Map();
 
 /* ============================================================
-   GEMINI ANALYSIS — finds 5-8 colors + always black for text
+   GEMINI ANALYSIS
    ============================================================ */
 async function analyzeImage(b64, mime) {
   const prompt = `You are a professional embroidery digitizer. Analyze this image carefully.
@@ -74,7 +74,6 @@ Return ONLY JSON:
   
   let colors = deduplicateColors(parsed.colors || ["#FF0000", "#000000", "#FFFFFF", "#FFD700"]);
   
-  // Force black if text detected and no dark color found
   if (parsed.is_text) {
     const hasDark = colors.some(c => {
       const rgb = hexToRgb(c);
@@ -176,7 +175,7 @@ async function preprocessImage(buffer) {
 }
 
 /* ============================================================
-   PIXEL TRACING — the working original, with noise filter added
+   PIXEL TRACING
    ============================================================ */
 function ramerDouglasPeucker(points, epsilon) {
   if (points.length <= 3) return points;
@@ -239,7 +238,6 @@ async function extractPixelShapes(buffer, colors, isText = false) {
     }
   }
 
-  // Boundary healing
   for (let y=1; y<ph-1; y++) {
     const row = y*pw;
     for (let x=1; x<pw-1; x++) {
@@ -354,12 +352,11 @@ async function extractPixelShapes(buffer, colors, isText = false) {
 
   shapes.sort((a,b) => b.pixelCount - a.pixelCount);
 
-  // Quality filter — remove noise
   const filtered = [];
   for (const s of shapes) {
     const b = polygonBounds(s.points);
-    if (b.width < 3 || b.height < 3) continue;
-    if (s.pixelCount < 30) continue;
+    if (b.width < 2 || b.height < 2) continue;
+    if (s.pixelCount < 20) continue;
     if (s.points.length < 4) continue;
     
     let contained = false;
@@ -376,7 +373,6 @@ async function extractPixelShapes(buffer, colors, isText = false) {
     if (!contained) filtered.push(s);
   }
 
-  // Text: largest same-color shape = fill background, rest = satin text
   if (isText && filtered.length > 3) {
     const byColor = {};
     for (const s of filtered) {
@@ -387,7 +383,7 @@ async function extractPixelShapes(buffer, colors, isText = false) {
       const list = byColor[color];
       list.sort((a,b) => b.pixelCount - a.pixelCount);
       for (let i=0; i<list.length; i++) {
-        list[i].type = (i===0 && list[i].pixelCount > 500) ? "fill" : "satin";
+        list[i].type = (list[i].pixelCount > 100) ? "fill" : "satin";
       }
     }
   }
@@ -397,7 +393,7 @@ async function extractPixelShapes(buffer, colors, isText = false) {
 }
 
 /* ============================================================
-   STITCH GENERATION — original working version
+   STITCH GENERATION
    ============================================================ */
 function polygonBounds(points) {
   let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
@@ -844,11 +840,9 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     const cleanBuffer = await preprocessImage(req.file.buffer);
     console.timeEnd(`pre-${reqId}`);
     
-    // Smaller image for Gemini analysis (faster, no timeouts)
     const analysisBuffer = await sharp(cleanBuffer).resize(800, 800, { fit: "inside" }).png().toBuffer();
     const analysisB64 = analysisBuffer.toString("base64");
     
-    // Analyze with fallback
     console.time(`analyze-${reqId}`);
     let analysis;
     try {
@@ -860,19 +854,16 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     console.timeEnd(`analyze-${reqId}`);
     console.log(`Colors: ${analysis.colors.join(", ")}, Text: ${analysis.is_text}`);
     
-    // Shape extraction — use pixel tracer (reliable, detailed)
     console.time(`shapes-${reqId}`);
     const shapes = await extractPixelShapes(cleanBuffer, analysis.colors, analysis.is_text);
     console.timeEnd(`shapes-${reqId}`);
     
     if (!shapes.length) return res.status(500).json({ error: "No shapes extracted" });
     
-    // Stitch generation
     const result = generateStitches(shapes);
     const id = Date.now().toString(36)+Math.random().toString(36).slice(2,6);
     jobs.set(id, result);
     
-    // Quality audit
     const validation = validateQuality(result.stitches);
     console.log(`AUDIT: ${result.stitches.length} stitches, ${shapes.length} shapes`);
     for (const w of validation.warnings) console.log(`  ⚠ ${w}`);
@@ -905,7 +896,6 @@ app.get("/preview-image/:id", async (req, res) => {
   const data = jobs.get(req.params.id);
   if (!data) return res.status(404).json({ error: "Not found" });
   
-  // Check cache
   const cached = previewCache.get(req.params.id);
   if (cached && Date.now()-cached.ts < 60000) {
     res.setHeader("Content-Type", "image/png");
@@ -938,10 +928,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "17.0-stable" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "17.1" }));
 
 const PORT = process.env.PORT||3000;
-const server = app.listen(PORT, () => console.log(`Stichai v17.0 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v17.1 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
