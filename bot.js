@@ -28,115 +28,87 @@ const jobs = new Map();
 const previewCache = new Map();
 
 /* ============================================================
-   STAGE 1: POSTERIZATION (Professional "Prepare Artwork")
+   GEMINI COLOR DETECTION — primary, sees original image
    ============================================================ */
-async function posterizeImage(buffer, colorCount = 10) {
-  // Step 1: Strong noise removal + contrast boost
-  const denoised = await sharp(buffer)
-    .median(3)
-    .sharpen({ sigma: 2.5, m1: 2, m2: 5 })
-    .toBuffer();
-
-  // Step 2: Posterize with more colors to capture details
-  const posterized = await sharp(denoised)
-    .png({ colours: colorCount, dither: 0 })
-    .toBuffer();
-
-  // Step 3: Extract all colors with their pixel counts
-  const { data, info } = await sharp(posterized)
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const colorMap = new Map();
-  for (let i = 0; i < data.length; i += info.channels) {
-    const r = data[i], g = data[i+1], b = data[i+2];
-    const hex = '#' + [r,g,b].map(c => c.toString(16).padStart(2,'0')).join('').toUpperCase();
-    colorMap.set(hex, (colorMap.get(hex) || 0) + 1);
-  }
-
-  // Step 4: Sort by frequency
-  const sorted = [...colorMap.entries()]
-    .sort((a, b) => b[1] - a[1]);
-
-  // Step 5: The most frequent color is the background — remove it
-  const backgroundColor = sorted[0][0];
-  
-  // Step 6: Take the next 6 most frequent colors as design colors
-  const designColors = sorted
-    .slice(1)  // Skip background
-    .filter(([hex, count]) => {
-      // Remove colors very similar to background (anti-aliasing artifacts)
-      const bgRgb = hexToRgb(backgroundColor);
-      const colorRgb = hexToRgb(hex);
-      const dist = Math.sqrt(
-        (bgRgb.r - colorRgb.r) ** 2 +
-        (bgRgb.g - colorRgb.g) ** 2 +
-        (bgRgb.b - colorRgb.b) ** 2
-      );
-      return dist > 80; // Must be visually distinct from background
-    })
-    .slice(0, 6)
-    .map(([hex]) => hex);
-
-  // Step 7: Ensure black is included for any dark design elements
-  const hasDark = designColors.some(hex => {
-    const rgb = hexToRgb(hex);
-    return (rgb.r + rgb.g + rgb.b) < 180;
-  });
-
-  return {
-    buffer: posterized,
-    colors: designColors.length >= 2 ? designColors : sorted.slice(1, 5).map(([h]) => h),
-    backgroundColor,
-    hasDark,
-    posterized: true
-  };
-}
-
-/* ============================================================
-   GEMINI COLOR DETECTION (best effort, never blocks)
-   ============================================================ */
-async function analyzeColors(b64, mime) {
+async function detectColors(b64, mime) {
   const prompt = `You are selecting thread colors for machine embroidery.
 
-Look at this image carefully. List EVERY distinct thread color you see.
+List EVERY distinct thread color visible in this design:
+- Include WHITE if it appears as a design element (not just background)
+- Include GOLD or YELLOW for metallic elements, crowns, emblems
+- Include BLACK or very dark colors for any dark text or elements
+- Include RED, BLUE, GREEN, or any other vibrant design colors
+- Return exactly 3-6 colors
 
-IMPORTANT:
-- If you see WHITE as part of the design (not background), include it
-- If you see GOLD or YELLOW (metallic elements, crowns, emblems), include it  
-- If you see BLACK or very dark text/elements, include it
-- If you see RED, include it
-- Include 3-6 colors total
-
-Return ONLY a JSON object with no markdown:
-{"colors":["#hex","#hex",...],"is_text":true,"is_logo":true}
-
-Example for a red/white/gold/black logo:
+Return ONLY JSON, no markdown, no explanation:
 {"colors":["#CC0000","#FFFFFF","#FFD700","#000000"],"is_text":true,"is_logo":true}`;
 
-  const body = {
-    contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
-    generationConfig: { temperature: 0.02, maxOutputTokens: 1024 }
-  };
-
   try {
+    const body = {
+      contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
+      generationConfig: { temperature: 0.02, maxOutputTokens: 256 }
+    };
     const res = await geminiPost(body, 15000, FLASH_MODEL);
     const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
     let jsonStr = text.replace(/```json|```/g, "").trim();
     const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
     if (fb !== -1 && lb > fb) jsonStr = jsonStr.slice(fb, lb + 1);
-    return JSON.parse(jsonStr);
+    const parsed = JSON.parse(jsonStr);
+    return {
+      colors: parsed.colors || [],
+      is_text: parsed.is_text !== false,
+      is_logo: parsed.is_logo !== false
+    };
   } catch (e) {
     return null;
   }
 }
+
+/* ============================================================
+   POSTERIZATION — for clean pixel tracing
+   ============================================================ */
+async function posterizeImage(buffer) {
+  const cleaned = await sharp(buffer)
+    .median(3)
+    .sharpen({ sigma: 2.5, m1: 2, m2: 5 })
+    .png({ colours: 10, dither: 0 })
+    .toBuffer();
+
+  const { data, info } = await sharp(cleaned).raw().toBuffer({ resolveWithObject: true });
+
+  const colorMap = new Map();
+  for (let i = 0; i < data.length; i += info.channels) {
+    const hex = '#' + [data[i], data[i+1], data[i+2]]
+      .map(c => c.toString(16).padStart(2, '0')).join('').toUpperCase();
+    colorMap.set(hex, (colorMap.get(hex) || 0) + 1);
+  }
+
+  const sorted = [...colorMap.entries()].sort((a, b) => b[1] - a[1]);
+  const bgColor = sorted[0][0];
+  const bgRgb = hexToRgb(bgColor);
+
+  const fallbackColors = sorted.slice(1, 5)
+    .filter(([hex]) => {
+      const c = hexToRgb(hex);
+      const d = Math.sqrt((bgRgb.r-c.r)**2 + (bgRgb.g-c.g)**2 + (bgRgb.b-c.b)**2);
+      return d > 60;
+    })
+    .map(([hex]) => hex);
+
+  return { buffer: cleaned, fallbackColors };
+}
+
 /* ============================================================
    COLOR UTILITIES
    ============================================================ */
 function hexToRgb(hex) {
   const m = hex.match(/^#([0-9a-fA-F]{6})$/);
   if (!m) return { r: 0, g: 0, b: 0 };
-  return { r: parseInt(m[1].slice(0, 2), 16), g: parseInt(m[1].slice(2, 4), 16), b: parseInt(m[1].slice(4, 6), 16) };
+  return {
+    r: parseInt(m[1].slice(0, 2), 16),
+    g: parseInt(m[1].slice(2, 4), 16),
+    b: parseInt(m[1].slice(4, 6), 16)
+  };
 }
 
 function rgbToLab({ r, g, b }) {
@@ -190,19 +162,16 @@ function ramerDouglasPeucker(points, epsilon) {
     if (end <= start+1) continue;
     const [sx, sy] = points[start], [ex, ey] = points[end];
     let maxDist = 0, maxIdx = -1;
-    for (let i=start+1; i<end; i++) {
+    for (let i = start+1; i < end; i++) {
       const d = lineDist(points[i][0], points[i][1], sx, sy, ex, ey);
       if (d > maxDist) { maxDist = d; maxIdx = i; }
     }
-    if (maxDist > epsilon) {
-      keep.add(maxIdx);
-      stack.push([start, maxIdx], [maxIdx, end]);
-    }
+    if (maxDist > epsilon) { keep.add(maxIdx); stack.push([start, maxIdx], [maxIdx, end]); }
   }
   return Array.from(keep).sort((a,b) => a-b).map(i => points[i]);
 }
 
-async function extractPixelShapes(buffer, colors, isText = false) {
+async function extractPixelShapes(buffer, colors, isText) {
   const Jimp = require("jimp");
   const image = await Jimp.read(buffer);
   const origW = image.bitmap.width, origH = image.bitmap.height;
@@ -217,40 +186,32 @@ async function extractPixelShapes(buffer, colors, isText = false) {
   pixelColors.fill(-1);
 
   const tid = Math.random().toString(36).slice(2,5);
-  console.time(`pixel-${tid}`);
   const data = image.bitmap.data;
-  
-  // Strict color matching — only pixels very close to thread colors
-  for (let y=0; y<ph; y++) {
-    const rowOff = y*pw*4;
-    const outOff = y*pw;
-    for (let x=0; x<pw; x++) {
-      const i = rowOff + (x<<2);
+
+  for (let y = 0; y < ph; y++) {
+    for (let x = 0; x < pw; x++) {
+      const i = (y*pw + x) << 2;
       const pixLab = rgbToLab({ r: data[i], g: data[i+1], b: data[i+2] });
-      let bestIdx = -1, bestDist = 30; // Tight threshold
-      for (let c=0; c<labColors.length; c++) {
+      let bestIdx = -1, bestDist = 30;
+      for (let c = 0; c < labColors.length; c++) {
         const d = colorDistanceLab(pixLab, labColors[c]);
         if (d < bestDist) { bestDist = d; bestIdx = c; }
       }
-      if (bestIdx >= 0) pixelColors[outOff+x] = bestIdx;
+      if (bestIdx >= 0) pixelColors[y*pw + x] = bestIdx;
     }
   }
 
-  // Boundary healing (minimal)
-  for (let y=1; y<ph-1; y++) {
-    const row = y*pw;
-    for (let x=1; x<pw-1; x++) {
-      const idx = row+x;
+  for (let y = 1; y < ph-1; y++) {
+    for (let x = 1; x < pw-1; x++) {
+      const idx = y*pw + x;
       if (pixelColors[idx] !== -1) continue;
       const n4 = [pixelColors[idx-1], pixelColors[idx+1], pixelColors[idx-pw], pixelColors[idx+pw]];
       const valid = n4.filter(n => n !== -1);
       if (valid.length >= 3) {
         const freq = {};
-        for (const n of valid) freq[n] = (freq[n]||0)+1;
+        for (const n of valid) freq[n] = (freq[n]||0) + 1;
         let best = -1, bestCnt = 0;
-        for (const [k,v] of Object.entries(freq)) {
-          if (v > bestCnt) { bestCnt = v; best = parseInt(k); }
-        }
+        for (const [k,v] of Object.entries(freq)) { if (v > bestCnt) { bestCnt = v; best = parseInt(k); } }
         if (bestCnt >= 3) pixelColors[idx] = best;
       }
     }
@@ -260,13 +221,13 @@ async function extractPixelShapes(buffer, colors, isText = false) {
   const minComponentSize = 10;
   let currentMaskId = 1;
 
-  for (let ci=0; ci<labColors.length; ci++) {
+  for (let ci = 0; ci < labColors.length; ci++) {
     const visited = new Uint8Array(pw*ph);
     const maskIds = new Uint32Array(pw*ph);
 
-    for (let y=0; y<ph; y++) {
-      for (let x=0; x<pw; x++) {
-        const idx = y*pw+x;
+    for (let y = 0; y < ph; y++) {
+      for (let x = 0; x < pw; x++) {
+        const idx = y*pw + x;
         if (pixelColors[idx] !== ci || visited[idx]) continue;
 
         const q = [idx];
@@ -278,7 +239,7 @@ async function extractPixelShapes(buffer, colors, isText = false) {
         while (qPtr < q.length) {
           const ci2 = q[qPtr++];
           pixelCount++;
-          const cx = ci2%pw, cy = (ci2/pw)|0;
+          const cx = ci2 % pw, cy = (ci2 / pw) | 0;
 
           if (startX === -1) {
             if (cx === 0 || pixelColors[ci2-1] !== ci || cx === pw-1 || pixelColors[ci2+1] !== ci ||
@@ -287,13 +248,12 @@ async function extractPixelShapes(buffer, colors, isText = false) {
             }
           }
 
-          // 1px tolerance only — no bleeding outside shape
-          for (let dy=-1; dy<=1; dy++) {
-            for (let dx=-1; dx<=1; dx++) {
-              if (dy===0 && dx===0) continue;
-              const nx = cx+dx, ny = cy+dy;
-              if (nx>=0 && nx<pw && ny>=0 && ny<ph) {
-                const ni = ny*pw+nx;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dy === 0 && dx === 0) continue;
+              const nx = cx + dx, ny = cy + dy;
+              if (nx >= 0 && nx < pw && ny >= 0 && ny < ph) {
+                const ni = ny*pw + nx;
                 if (!visited[ni] && pixelColors[ni] === ci) {
                   visited[ni] = 1;
                   maskIds[ni] = currentMaskId;
@@ -314,9 +274,9 @@ async function extractPixelShapes(buffer, colors, isText = false) {
         do {
           contour.push([cx, cy]);
           let found = false;
-          for (let i=1; i<=8; i++) {
-            const d = (dir+i)&7;
-            const nx = cx+n8[d][0], ny = cy+n8[d][1];
+          for (let i = 1; i <= 8; i++) {
+            const d = (dir + i) & 7;
+            const nx = cx + n8[d][0], ny = cy + n8[d][1];
             if (inMask(nx, ny)) { cx = nx; cy = ny; dir = (d+5)&7; found = true; break; }
           }
           if (!found) break;
@@ -327,7 +287,7 @@ async function extractPixelShapes(buffer, colors, isText = false) {
         if (contour.length < 4) continue;
 
         const simplified = ramerDouglasPeucker(contour, 0.25);
-        const stitchScale = 300/Math.max(pw, ph);
+        const stitchScale = 300 / Math.max(pw, ph);
         const points = simplified.map(([px, py]) => [Math.round(px*stitchScale), Math.round(py*stitchScale)]);
 
         if (points.length >= 3) {
@@ -340,51 +300,42 @@ async function extractPixelShapes(buffer, colors, isText = false) {
           minX = Math.min(minX, px); maxX = Math.max(maxX, px);
           minY = Math.min(minY, py); maxY = Math.max(maxY, py);
         }
-        const bw = maxX-minX, bh = maxY-minY;
-        const isNarrow = (bw<12 || bh<12) && (bw*bh)<13500;
+        const bw = maxX - minX, bh = maxY - minY;
+        const isNarrow = (bw < 12 || bh < 12) && (bw*bh) < 13500;
 
         shapes.push({ type: isNarrow ? "satin" : "fill", color: colors[ci], points, pixelCount });
       }
     }
   }
-  console.timeEnd(`pixel-${tid}`);
 
-  shapes.sort((a,b) => b.pixelCount - a.pixelCount);
+  shapes.sort((a, b) => b.pixelCount - a.pixelCount);
 
-  // Quality filter
   const filtered = [];
   for (const s of shapes) {
     const b = polygonBounds(s.points);
     if (b.width < 2 || b.height < 2) continue;
     if (s.pixelCount < 15) continue;
     if (s.points.length < 4) continue;
-    
     let contained = false;
     for (const other of shapes) {
       if (other === s || other.color !== s.color) continue;
       const ob = polygonBounds(other.points);
       if (ob.area <= b.area) continue;
-      let allInside = true;
+      let allIn = true;
       for (const [px, py] of s.points) {
-        if (px < ob.minX || px > ob.maxX || py < ob.minY || py > ob.maxY) { allInside = false; break; }
+        if (px < ob.minX || px > ob.maxX || py < ob.minY || py > ob.maxY) { allIn = false; break; }
       }
-      if (allInside) { contained = true; break; }
+      if (allIn) { contained = true; break; }
     }
     if (!contained) filtered.push(s);
   }
 
-  // Text: large shapes = fill, small = satin
   if (isText && filtered.length > 3) {
     for (const s of filtered) {
-      if (s.pixelCount > 200) {
-        s.type = "fill";
-      } else {
-        s.type = "satin";
-      }
+      s.type = s.pixelCount > 200 ? "fill" : "satin";
     }
   }
 
-  console.log(`Pixel: ${filtered.filter(s=>s.type==='satin').length} satin, ${filtered.filter(s=>s.type==='fill').length} fill, ${filtered.length} total`);
   return filtered;
 }
 
@@ -392,62 +343,61 @@ async function extractPixelShapes(buffer, colors, isText = false) {
    STITCH GENERATION
    ============================================================ */
 function polygonBounds(points) {
-  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
-  for (const [x,y] of points) {
-    minX=Math.min(minX,x); maxX=Math.max(maxX,x);
-    minY=Math.min(minY,y); maxY=Math.max(maxY,y);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of points) {
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
   }
   return { minX, minY, maxX, maxY, width: maxX-minX, height: maxY-minY, area: (maxX-minX)*(maxY-minY) };
 }
 
 function polygonCentroid(points) {
-  let cx=0, cy=0, a=0;
-  for (let i=0, j=points.length-1; i<points.length; j=i++) {
-    const [x1,y1]=points[i], [x2,y2]=points[j];
+  let cx = 0, cy = 0, a = 0;
+  for (let i = 0, j = points.length-1; i < points.length; j = i++) {
+    const [x1, y1] = points[i], [x2, y2] = points[j];
     const cross = x1*y2 - x2*y1;
     cx += (x1+x2)*cross; cy += (y1+y2)*cross; a += cross;
   }
   a *= 0.5;
   if (Math.abs(a) < 0.001) {
-    let sx=0, sy=0;
-    for (const [x,y] of points) { sx+=x; sy+=y; }
+    let sx = 0, sy = 0;
+    for (const [x, y] of points) { sx += x; sy += y; }
     return [sx/points.length, sy/points.length];
   }
   return [cx/(6*a), cy/(6*a)];
 }
 
 function computeFillAngle(points) {
-  let cx=0, cy=0;
-  for (const [x,y] of points) { cx+=x; cy+=y; }
-  cx/=points.length; cy/=points.length;
-  let mxx=0, myy=0, mxy=0;
-  for (const [x,y] of points) {
-    const dx=x-cx, dy=y-cy;
-    mxx+=dx*dx; myy+=dy*dy; mxy+=dx*dy;
+  let cx = 0, cy = 0;
+  for (const [x, y] of points) { cx += x; cy += y; }
+  cx /= points.length; cy /= points.length;
+  let mxx = 0, myy = 0, mxy = 0;
+  for (const [x, y] of points) {
+    const dx = x-cx, dy = y-cy;
+    mxx += dx*dx; myy += dy*dy; mxy += dx*dy;
   }
-  return Math.abs(mxy)<0.001 ? 0 : Math.atan2(2*mxy, mxx-myy)/2;
+  return Math.abs(mxy) < 0.001 ? 0 : Math.atan2(2*mxy, mxx-myy)/2;
 }
 
 function underlayFillPolygon(points, color) {
   const stitches = [];
   const inner = [];
-  for (let i=0; i<points.length; i++) {
-    const [x1,y1]=points[i], [x2,y2]=points[(i+1)%points.length];
-    const dx=x2-x1, dy=y2-y1;
-    const len = Math.hypot(dx,dy)||1;
-    inner.push([x1-dy/len*1.5, y1+dx/len*1.5]);
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i], [x2, y2] = points[(i+1)%points.length];
+    const dx = x2-x1, dy = y2-y1;
+    const len = Math.hypot(dx, dy) || 1;
+    inner.push([x1 - dy/len*1.5, y1 + dx/len*1.5]);
   }
-  const steps = Math.max(inner.length, Math.floor(
-    inner.reduce((s,p,i)=>s+Math.hypot(inner[(i+1)%inner.length][0]-p[0],inner[(i+1)%inner.length][1]-p[1]),0)/6
-  ));
-  for (let i=0; i<=steps; i++) {
+  const totalLen = inner.reduce((s, p, i) => s + Math.hypot(inner[(i+1)%inner.length][0]-p[0], inner[(i+1)%inner.length][1]-p[1]), 0);
+  const steps = Math.max(inner.length, Math.floor(totalLen/6));
+  for (let i = 0; i <= steps; i++) {
     const t = (i/steps)*inner.length;
     const idx = Math.floor(t)%inner.length;
-    const frac = t-Math.floor(t);
+    const frac = t - Math.floor(t);
     const next = (idx+1)%inner.length;
     stitches.push({
-      x: Math.round(inner[idx][0]+(inner[next][0]-inner[idx][0])*frac),
-      y: Math.round(inner[idx][1]+(inner[next][1]-inner[idx][1])*frac),
+      x: Math.round(inner[idx][0] + (inner[next][0]-inner[idx][0])*frac),
+      y: Math.round(inner[idx][1] + (inner[next][1]-inner[idx][1])*frac),
       color, type: "underlay"
     });
   }
@@ -457,35 +407,35 @@ function underlayFillPolygon(points, color) {
 function contourFillPolygon(points, color) {
   const stitches = [];
   const angle = computeFillAngle(points);
-  const cosA=Math.cos(angle), sinA=Math.sin(angle);
-  const rowSpacing=3.5, stitchSpacing=3.0;
-  
-  function toLocal(x,y){ return [x*cosA+y*sinA, -x*sinA+y*cosA]; }
-  function toGlobal(lx,ly){ return [lx*cosA-ly*sinA, lx*sinA+ly*cosA]; }
-  
-  const localPts = points.map(([x,y])=>toLocal(x,y));
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+  const rowSpacing = 3.5, stitchSpacing = 3.0;
+
+  function toLocal(x, y) { return [x*cosA + y*sinA, -x*sinA + y*cosA]; }
+  function toGlobal(lx, ly) { return [lx*cosA - ly*sinA, lx*sinA + ly*cosA]; }
+
+  const localPts = points.map(([x, y]) => toLocal(x, y));
   const lBounds = polygonBounds(localPts);
 
-  let rowIdx=0;
-  for (let ly=lBounds.minY; ly<=lBounds.maxY; ly+=rowSpacing) {
+  let rowIdx = 0;
+  for (let ly = lBounds.minY; ly <= lBounds.maxY; ly += rowSpacing) {
     const ints = [];
-    for (let i=0, j=localPts.length-1; i<localPts.length; j=i++) {
-      const [x1,y1]=localPts[i], [x2,y2]=localPts[j];
-      if ((y1<=ly && y2>ly) || (y2<=ly && y1>ly)) {
+    for (let i = 0, j = localPts.length-1; i < localPts.length; j = i++) {
+      const [x1, y1] = localPts[i], [x2, y2] = localPts[j];
+      if ((y1 <= ly && y2 > ly) || (y2 <= ly && y1 > ly)) {
         ints.push(x1 + (ly-y1)/(y2-y1)*(x2-x1));
       }
     }
-    if (ints.length<2) continue;
-    ints.sort((a,b)=>a-b);
+    if (ints.length < 2) continue;
+    ints.sort((a, b) => a-b);
 
-    for (let k=0; k+1<ints.length; k+=2) {
-      let segStart=ints[k]+0.5, segEnd=ints[k+1]-0.5; // Inset from edges
-      if (segEnd<=segStart) continue;
-      if (rowIdx%2===1) [segStart, segEnd] = [segEnd, segStart];
-      
+    for (let k = 0; k+1 < ints.length; k += 2) {
+      let segStart = ints[k] + 0.5, segEnd = ints[k+1] - 0.5;
+      if (segEnd <= segStart) continue;
+      if (rowIdx%2 === 1) [segStart, segEnd] = [segEnd, segStart];
+
       const steps = Math.max(1, Math.round((segEnd-segStart)/stitchSpacing));
-      for (let s=0; s<=steps; s++) {
-        const [gx,gy] = toGlobal(segStart+(segEnd-segStart)*(s/steps), ly);
+      for (let s = 0; s <= steps; s++) {
+        const [gx, gy] = toGlobal(segStart + (segEnd-segStart)*(s/steps), ly);
         stitches.push({ x: Math.round(gx), y: Math.round(gy), color, type: "fill" });
       }
     }
@@ -497,24 +447,23 @@ function contourFillPolygon(points, color) {
 function satinColumnPolygon(points, color) {
   const stitches = [];
   const inner = [];
-  for (let i=0; i<points.length; i++) {
-    const [x1,y1]=points[i], [x2,y2]=points[(i+1)%points.length];
-    const dx=x2-x1, dy=y2-y1;
-    const len = Math.hypot(dx,dy)||1;
-    inner.push([x1-dy/len*1.25, y1+dx/len*1.25]);
+  for (let i = 0; i < points.length; i++) {
+    const [x1, y1] = points[i], [x2, y2] = points[(i+1)%points.length];
+    const dx = x2-x1, dy = y2-y1;
+    const len = Math.hypot(dx, dy) || 1;
+    inner.push([x1 - dy/len*1.25, y1 + dx/len*1.25]);
   }
-  const steps = Math.max(points.length*2, Math.floor(
-    points.reduce((s,p,i)=>s+Math.hypot(points[(i+1)%points.length][0]-p[0],points[(i+1)%points.length][1]-p[1]),0)/2.5
-  ));
-  for (let i=0; i<=steps; i++) {
+  const totalLen = points.reduce((s, p, i) => s + Math.hypot(points[(i+1)%points.length][0]-p[0], points[(i+1)%points.length][1]-p[1]), 0);
+  const steps = Math.max(points.length*2, Math.floor(totalLen/2.5));
+  for (let i = 0; i <= steps; i++) {
     const t = (i/steps)*points.length;
     const idx = Math.floor(t)%points.length;
-    const frac = t-Math.floor(t);
+    const frac = t - Math.floor(t);
     const next = (idx+1)%points.length;
-    if (i%2===0) {
-      stitches.push({ x: Math.round(points[idx][0]+(points[next][0]-points[idx][0])*frac), y: Math.round(points[idx][1]+(points[next][1]-points[idx][1])*frac), color, type: "satin" });
+    if (i%2 === 0) {
+      stitches.push({ x: Math.round(points[idx][0] + (points[next][0]-points[idx][0])*frac), y: Math.round(points[idx][1] + (points[next][1]-points[idx][1])*frac), color, type: "satin" });
     } else {
-      stitches.push({ x: Math.round(inner[idx][0]+(inner[next][0]-inner[idx][0])*frac), y: Math.round(inner[idx][1]+(inner[next][1]-inner[idx][1])*frac), color, type: "satin" });
+      stitches.push({ x: Math.round(inner[idx][0] + (inner[next][0]-inner[idx][0])*frac), y: Math.round(inner[idx][1] + (inner[next][1]-inner[idx][1])*frac), color, type: "satin" });
     }
   }
   return stitches;
@@ -522,53 +471,53 @@ function satinColumnPolygon(points, color) {
 
 function runningPolygon(points, color) {
   const stitches = [];
-  let cumLen=0;
-  const segs = points.map((p,i) => {
+  let cumLen = 0;
+  const segs = points.map((p, i) => {
     const len = Math.hypot(points[(i+1)%points.length][0]-p[0], points[(i+1)%points.length][1]-p[1]);
     const s = { start: cumLen, len, idx: i };
     cumLen += len;
     return s;
   });
-  if (cumLen<1) return stitches;
+  if (cumLen < 1) return stitches;
   const steps = Math.max(1, Math.floor(cumLen/3));
-  for (let s=0; s<=steps; s++) {
+  for (let s = 0; s <= steps; s++) {
     const target = (s/steps)*cumLen;
-    const seg = segs.find(sg => target>=sg.start && target<sg.start+sg.len) || segs[segs.length-1];
-    const frac = seg.len>0 ? (target-seg.start)/seg.len : 0;
-    const [x1,y1]=points[seg.idx], [x2,y2]=points[(seg.idx+1)%points.length];
-    stitches.push({ x:Math.round(x1+(x2-x1)*frac), y:Math.round(y1+(y2-y1)*frac), color, type:"running" });
+    const seg = segs.find(sg => target >= sg.start && target < sg.start+sg.len) || segs[segs.length-1];
+    const frac = seg.len > 0 ? (target-seg.start)/seg.len : 0;
+    const [x1, y1] = points[seg.idx], [x2, y2] = points[(seg.idx+1)%points.length];
+    stitches.push({ x: Math.round(x1+(x2-x1)*frac), y: Math.round(y1+(y2-y1)*frac), color, type: "running" });
   }
   return stitches;
 }
 
 function generateStitches(shapes) {
-  const all = [], designW=300, designH=300;
+  const all = [], designW = 300, designH = 300;
   for (const s of shapes) s.centroid = polygonCentroid(s.points);
 
   const groups = {};
   for (const s of shapes) {
     const c = toThreadColor(s.color);
     if (!groups[c]) groups[c] = [];
-    groups[c].push({...s, color: c});
+    groups[c].push({ ...s, color: c });
   }
 
-  let lastX=0, lastY=0;
+  let lastX = 0, lastY = 0;
   for (const color of Object.keys(groups)) {
     for (const s of groups[color]) {
       const pts = s.points;
-      const [sx,sy] = pts[0];
+      const [sx, sy] = pts[0];
       const jump = Math.hypot(sx-lastX, sy-lastY);
-      if (jump>20 && all.length) {
-        all.push({ x:Math.round(lastX), y:Math.round(lastY), color, type:"trim" });
-        all.push({ x:Math.round(sx), y:Math.round(sy), color, type:"trim" });
+      if (jump > 20 && all.length) {
+        all.push({ x: Math.round(lastX), y: Math.round(lastY), color, type: "trim" });
+        all.push({ x: Math.round(sx), y: Math.round(sy), color, type: "trim" });
       }
-      if (s.type==="fill") {
+      if (s.type === "fill") {
         all.push(...underlayFillPolygon(pts, color));
         all.push(...contourFillPolygon(pts, color));
       } else {
         all.push(...satinColumnPolygon(pts, color));
       }
-      if (all.length) { const l=all[all.length-1]; lastX=l.x; lastY=l.y; }
+      if (all.length) { const l = all[all.length-1]; lastX = l.x; lastY = l.y; }
     }
   }
   all.push(...runningPolygon([[-2,-2],[designW+2,-2],[designW+2,designH+2],[-2,designH+2]], "#333333"));
@@ -579,190 +528,201 @@ function generateStitches(shapes) {
    QUALITY VALIDATION
    ============================================================ */
 function validateQuality(stitches) {
-  const w=[];
-  let len=0, cnt=0, mx=0, lj=0, prev=null;
+  const warnings = [];
+  let totalLen = 0, stitchCount = 0, maxJump = 0, longJumps = 0, prev = null;
   for (const s of stitches) {
     if (prev) {
-      const d=Math.hypot(s.x-prev.x, s.y-prev.y);
-      if (d>mx) mx=d;
-      if (d>10) lj++;
-      if (s.type!=="trim"&&prev.type!=="trim"){len+=d;cnt++;}
+      const d = Math.hypot(s.x-prev.x, s.y-prev.y);
+      if (d > maxJump) maxJump = d;
+      if (d > 10) longJumps++;
+      if (s.type !== "trim" && prev.type !== "trim") { totalLen += d; stitchCount++; }
     }
-    prev=s;
+    prev = s;
   }
-  const avg=cnt>0?len/cnt:0;
-  if (avg>4) w.push(`Long stitches (${avg.toFixed(1)}mm)`);
-  if (avg<1.5) w.push(`Dense stitches (${avg.toFixed(1)}mm)`);
-  if (mx>30) w.push(`Long jump (${mx.toFixed(1)}mm)`);
-  if (lj>30) w.push(`${lj} long jumps`);
-  if (cnt>50000) w.push(`High count (${cnt})`);
-  return { avgStitchLength:avg.toFixed(1), maxJump:mx.toFixed(1), longJumpCount:lj, stitchCount:cnt, warnings:w, passed:!w.length };
+  const avgLen = stitchCount > 0 ? totalLen/stitchCount : 0;
+  if (avgLen > 4) warnings.push(`Long stitches (${avgLen.toFixed(1)}mm)`);
+  if (avgLen < 1.5) warnings.push(`Dense stitches (${avgLen.toFixed(1)}mm)`);
+  if (maxJump > 30) warnings.push(`Long jump (${maxJump.toFixed(1)}mm)`);
+  if (longJumps > 30) warnings.push(`${longJumps} long jumps`);
+  if (stitchCount > 50000) warnings.push(`High count (${stitchCount})`);
+  return { avgStitchLength: avgLen.toFixed(1), maxJump: maxJump.toFixed(1), longJumpCount: longJumps, stitchCount, warnings, passed: !warnings.length };
 }
 
 /* ============================================================
    DST ENCODER
    ============================================================ */
 function encodeDST(data) {
-  const h=Buffer.alloc(512,0x20); h.write("Stichai",0,"ascii");
-  const r=[]; let lc=null, px=0, py=0, sc=0, cc=0, mnX=0, mxX=0, mnY=0, mxY=0, aX=0, aY=0;
+  const h = Buffer.alloc(512, 0x20);
+  h.write("Stichai", 0, "ascii");
+  const records = [];
+  let lastColor = null, px = 0, py = 0, stitchCount = 0, colorCount = 0;
+  let minX = 0, maxX = 0, minY = 0, maxY = 0, absX = 0, absY = 0;
+
   for (const s of data.stitches) {
-    aX+=s.x-px; aY+=s.y-py;
-    if (aX<mnX) mnX=aX; if (aX>mxX) mxX=aX;
-    if (aY<mnY) mnY=aY; if (aY>mxY) mxY=aY;
-    if (s.color!==lc&&lc!==null){r.push(Buffer.from([0,0,0xC3]));cc++;}
-    lc=s.color;
-    if (s.type==="trim"){
-      r.push(Buffer.from([0,0,0xC3]),Buffer.from([0,0,0xC3]),Buffer.from([0,0,0xC3]));
-      const dx=s.x-px, dy=s.y-py; px=s.x; py=s.y;
-      for(let i=1;i<=Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))/121);i++){
-        const f=i/Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))/121);
-        const cdx=Math.max(-121,Math.min(121,Math.round(dx*f)));
-        const cdy=Math.max(-121,Math.min(121,Math.round(dy*f)));
-        r.push(Buffer.from([cdy>=0?cdy:0x100+cdy,cdx>=0?cdx:0x100+cdx,3]));
+    absX += s.x-px; absY += s.y-py;
+    if (absX < minX) minX = absX; if (absX > maxX) maxX = absX;
+    if (absY < minY) minY = absY; if (absY > maxY) maxY = absY;
+
+    if (s.color !== lastColor && lastColor !== null) { records.push(Buffer.from([0,0,0xC3])); colorCount++; }
+    lastColor = s.color;
+
+    if (s.type === "trim") {
+      records.push(Buffer.from([0,0,0xC3]), Buffer.from([0,0,0xC3]), Buffer.from([0,0,0xC3]));
+      const dx = s.x-px, dy = s.y-py;
+      px = s.x; py = s.y;
+      const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))/121));
+      for (let i = 1; i <= steps; i++) {
+        const f = i/steps;
+        const cdx = Math.max(-121, Math.min(121, Math.round(dx*f)));
+        const cdy = Math.max(-121, Math.min(121, Math.round(dy*f)));
+        records.push(Buffer.from([cdy>=0?cdy:0x100+cdy, cdx>=0?cdx:0x100+cdx, 3]));
       }
       continue;
     }
-    const dx=Math.round(s.x-px), dy=Math.round(s.y-py); px=s.x; py=s.y;
-    const cdx=Math.max(-121,Math.min(121,dx)), cdy=Math.max(-121,Math.min(121,dy));
-    r.push(Buffer.from([cdy>=0?cdy:0x100+cdy,cdx>=0?cdx:0x100+cdx,3])); sc++;
+    const dx = Math.round(s.x-px), dy = Math.round(s.y-py);
+    px = s.x; py = s.y;
+    const cdx = Math.max(-121, Math.min(121, dx));
+    const cdy = Math.max(-121, Math.min(121, dy));
+    records.push(Buffer.from([cdy>=0?cdy:0x100+cdy, cdx>=0?cdx:0x100+cdx, 3]));
+    stitchCount++;
   }
-  r.push(Buffer.from([0,0,0xF3])); sc++;
-  h.writeInt32LE(sc,20); h.writeInt32LE(cc,24);
-  h.writeInt16LE(Math.round((mxX-mnX)*10),28); h.writeInt16LE(Math.round((mxY-mnY)*10),32);
-  h.writeInt16LE(Math.round(mnX*10),36); h.writeInt16LE(Math.round(mxX*10),40);
-  h.writeInt16LE(Math.round(mnY*10),44); h.writeInt16LE(Math.round(mxY*10),48);
-  h.write("(c)Stichai",56,"ascii"); h.writeInt16LE(cc+1,88);
-  return Buffer.concat([h,...r]);
+  records.push(Buffer.from([0,0,0xF3]));
+  stitchCount++;
+
+  h.writeInt32LE(stitchCount, 20);
+  h.writeInt32LE(colorCount, 24);
+  h.writeInt16LE(Math.round((maxX-minX)*10), 28);
+  h.writeInt16LE(Math.round((maxY-minY)*10), 32);
+  h.writeInt16LE(Math.round(minX*10), 36);
+  h.writeInt16LE(Math.round(maxX*10), 40);
+  h.writeInt16LE(Math.round(minY*10), 44);
+  h.writeInt16LE(Math.round(maxY*10), 48);
+  h.write("(c)Stichai", 56, "ascii");
+  h.writeInt16LE(colorCount+1, 88);
+
+  return Buffer.concat([h, ...records]);
 }
 
-function encodeFile(fmt, data) {
-  const d=encodeDST(data);
-  switch((fmt||"dst").toLowerCase()){
-    case "dst": return {buf:d,ext:"dst"};
-    case "pes": {const h=Buffer.alloc(8);h.write("#PES0001",0,"ascii");return{buf:Buffer.concat([h,d]),ext:"pes"};}
-    case "jef": {const h=Buffer.alloc(8);h.write("JEF0001\0",0,"ascii");return{buf:Buffer.concat([h,d]),ext:"jef"};}
-    case "exp": {const h=Buffer.alloc(8);h.write("EXP0001\0",0,"ascii");return{buf:Buffer.concat([h,d]),ext:"exp"};}
-    case "vp3": {const h=Buffer.alloc(8);h.write("VP30001\0",0,"ascii");return{buf:Buffer.concat([h,d]),ext:"vp3"};}
-    default: return {buf:d,ext:"dst"};
+function encodeFile(format, data) {
+  const d = encodeDST(data);
+  switch ((format||"dst").toLowerCase()) {
+    case "dst": return { buf: d, ext: "dst" };
+    case "pes": { const h = Buffer.alloc(8); h.write("#PES0001", 0, "ascii"); return { buf: Buffer.concat([h,d]), ext: "pes" }; }
+    case "jef": { const h = Buffer.alloc(8); h.write("JEF0001\x00", 0, "ascii"); return { buf: Buffer.concat([h,d]), ext: "jef" }; }
+    case "exp": { const h = Buffer.alloc(8); h.write("EXP0001\x00", 0, "ascii"); return { buf: Buffer.concat([h,d]), ext: "exp" }; }
+    case "vp3": { const h = Buffer.alloc(8); h.write("VP30001\x00", 0, "ascii"); return { buf: Buffer.concat([h,d]), ext: "vp3" }; }
+    default: return { buf: d, ext: "dst" };
   }
 }
 
 /* ============================================================
-   PREVIEW
+   PREVIEW RENDERER
    ============================================================ */
 async function renderStitchesToPng(stitches, dw, dh) {
-  const s=2, w=Math.round(dw*s), h=Math.round(dh*s);
-  const buf=Buffer.alloc(w*h*4);
-  for(let i=0;i<w*h*4;i+=4){buf[i]=245;buf[i+1]=242;buf[i+2]=235;buf[i+3]=255;}
-  const sp=(x,y,r,g,b)=>{
-    const px=Math.round(x),py=Math.round(y);
-    if(px<0||px>=w||py<0||py>=h)return;
-    const i=(py*w+px)*4;buf[i]=r;buf[i+1]=g;buf[i+2]=b;buf[i+3]=255;
+  const s = 2, w = Math.round(dw*s), h = Math.round(dh*s);
+  const buf = Buffer.alloc(w*h*4);
+  for (let i = 0; i < w*h*4; i += 4) { buf[i] = 245; buf[i+1] = 242; buf[i+2] = 235; buf[i+3] = 255; }
+
+  const sp = (x, y, r, g, b) => {
+    const px = Math.round(x), py = Math.round(y);
+    if (px<0||px>=w||py<0||py>=h) return;
+    const i = (py*w+px)*4; buf[i]=r; buf[i+1]=g; buf[i+2]=b; buf[i+3]=255;
   };
-  let prev=null;
-  for(const st of stitches){
-    if(st.type==="trim"){prev=null;continue;}
-    if(prev&&prev.color===st.color&&prev.type!=="trim"){
-      const d=Math.hypot(st.x-prev.x,st.y-prev.y);
-      if(d<15&&st.color!=="#333333"){
-        const m=st.color.match(/^#([0-9a-fA-F]{6})$/);
-        const [cr,cg,cb]=m?[parseInt(m[1].slice(0,2),16),parseInt(m[1].slice(2,4),16),parseInt(m[1].slice(4,6),16)]:[0,0,0];
-        const sw=st.type==="satin"?2:1;
-        const dx=Math.abs(st.x-prev.x)*s,dy=Math.abs(st.y-prev.y)*s;
-        const sx=prev.x<st.x?1:-1,sy=prev.y<st.y?1:-1;
-        let err=dx-dy,x=prev.x*s,y=prev.y*s;
-        const half=Math.ceil(sw/2);
-        while(true){
-          for(let ox=-half;ox<=half;ox++)for(let oy=-half;oy<=half;oy++)sp(x+ox,y+oy,cr,cg,cb);
-          if(Math.abs(x-st.x*s)<.5&&Math.abs(y-st.y*s)<.5)break;
-          const e2=2*err;
-          if(e2>-dy){err-=dy;x+=sx;}
-          if(e2<dx){err+=dx;y+=sy;}
+
+  let prev = null;
+  for (const st of stitches) {
+    if (st.type === "trim") { prev = null; continue; }
+    if (prev && prev.color === st.color && prev.type !== "trim") {
+      const dist = Math.hypot(st.x-prev.x, st.y-prev.y);
+      if (dist < 15 && st.color !== "#333333") {
+        const m = st.color.match(/^#([0-9a-fA-F]{6})$/);
+        const [cr, cg, cb] = m ? [parseInt(m[1].slice(0,2),16), parseInt(m[1].slice(2,4),16), parseInt(m[1].slice(4,6),16)] : [0,0,0];
+        const sw = st.type === "satin" ? 2 : 1;
+        const dx = Math.abs(st.x-prev.x)*s, dy = Math.abs(st.y-prev.y)*s;
+        const sx = prev.x < st.x ? 1 : -1, sy = prev.y < st.y ? 1 : -1;
+        let err = dx-dy, x = prev.x*s, y = prev.y*s;
+        const half = Math.ceil(sw/2);
+        while (true) {
+          for (let ox = -half; ox <= half; ox++) for (let oy = -half; oy <= half; oy++) sp(x+ox, y+oy, cr, cg, cb);
+          if (Math.abs(x-st.x*s) < .5 && Math.abs(y-st.y*s) < .5) break;
+          const e2 = 2*err;
+          if (e2 > -dy) { err -= dy; x += sx; }
+          if (e2 < dx) { err += dx; y += sy; }
         }
       }
     }
-    prev=st;
+    prev = st;
   }
-  return await sharp(buf,{raw:{width:w,height:h,channels:4}}).png().toBuffer();
+  return await sharp(buf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
 }
 
 /* ============================================================
    ROUTES
    ============================================================ */
-app.use(express.static(path.join(__dirname,"public")));
-app.get("/",(_req,res)=>res.sendFile(path.join(__dirname,"index.html")));
+app.use(express.static(path.join(__dirname, "public")));
+app.get("/", (_req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
 app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
   res.setTimeout(0);
-  const id = Math.random().toString(36).slice(2,6);
+  const reqId = Math.random().toString(36).slice(2,6);
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
-    
-    // Stage 1: Posterize
-    console.time(`posterize-${id}`);
-    const posterized = await posterizeImage(req.file.buffer, 8);
-    console.timeEnd(`posterize-${id}`);
-    
-    // Stage 2: Colors (Gemini if possible, smart fallback if not)
-    // Stage 2: Colors — posterize already found them, just verify
-// Stage 2: Gemini is the brain — it understands design intent
-const b64 = posterized.buffer.toString("base64");
-let colors, isText = true, isLogo = true;
 
-try {
-  const gem = await analyzeColors(b64, "image/png");
-  if (gem && gem.colors && gem.colors.length >= 3) {
-    colors = deduplicateColors(gem.colors);
-    isText = gem.is_text !== false;
-    isLogo = gem.is_logo !== false;
-    console.log(`Gemini colors: ${colors.join(", ")}`);
-  }
-} catch (e) { console.log(`Gemini unavailable`); }
+    // Stage 1: Posterize for clean tracing
+    console.time(`posterize-${reqId}`);
+    const posterized = await posterizeImage(req.file.buffer);
+    console.timeEnd(`posterize-${reqId}`);
 
-// Fallback only if Gemini returned nothing
-if (!colors || colors.length < 2) {
-  colors = posterized.colors.filter(c => {
-    const rgb = hexToRgb(c);
-    return (rgb.r + rgb.g + rgb.b) < 650;
-  });
-  console.log(`Posterize fallback: ${colors.join(", ")}`);
-}
+    // Stage 2: Gemini detects colors from ORIGINAL image
+    const originalB64 = req.file.buffer.toString("base64");
+    let colors, isText = true, isLogo = true;
 
-// Always add black for text
-if (!colors.some(c => { const rgb=hexToRgb(c); return (rgb.r+rgb.g+rgb.b)<120; })) {
-  colors.push("#000000");
-}
+    const gem = await detectColors(originalB64, req.file.mimetype || "image/png");
+    if (gem && gem.colors.length >= 3) {
+      colors = deduplicateColors(gem.colors);
+      isText = gem.is_text;
+      isLogo = gem.is_logo;
+      console.log(`Gemini: ${colors.join(", ")}`);
+    } else {
+      colors = posterized.fallbackColors;
+      console.log(`Posterize: ${colors.join(", ")}`);
+    }
 
-console.log(`Final: ${colors.join(", ")}`);
-    // Stage 3: Pixel trace
-    console.time(`shapes-${id}`);
+    if (!colors.some(c => { const rgb = hexToRgb(c); return (rgb.r+rgb.g+rgb.b) < 120; })) {
+      colors.push("#000000");
+    }
+    console.log(`Final (${colors.length}): ${colors.join(", ")}`);
+
+    // Stage 3: Pixel trace on posterized image with Gemini colors
+    console.time(`shapes-${reqId}`);
     const shapes = await extractPixelShapes(posterized.buffer, colors, isText);
-    console.timeEnd(`shapes-${id}`);
-    
-    if (!shapes.length) return res.status(500).json({ error: "No shapes" });
-    
-    // Stage 4: Stitch
+    console.timeEnd(`shapes-${reqId}`);
+
+    if (!shapes.length) return res.status(500).json({ error: "No shapes extracted" });
+
+    // Stage 4: Generate stitches
     const result = generateStitches(shapes);
-    const jid = Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-    jobs.set(jid, result);
-    
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+    jobs.set(id, result);
+
     const v = validateQuality(result.stitches);
-    console.log(`${result.stitches.length} stitches, ${shapes.length} shapes`);
+    console.log(`${result.stitches.length} stitches, ${shapes.length} shapes, ${shapes.filter(s=>s.type==="fill").length} fill, ${shapes.filter(s=>s.type==="satin").length} satin`);
     for (const w of v.warnings) console.log(`  ⚠ ${w}`);
-    
+
     return res.json({
-      success: true, id: jid,
-      previewUrl: `/preview/${jid}`,
-      previewImageUrl: `/preview-image/${jid}`,
-      downloadUrl: `/download/${jid}/dst`,
+      success: true, id,
+      previewUrl: `/preview/${id}`,
+      previewImageUrl: `/preview-image/${id}`,
+      downloadUrl: `/download/${id}/dst`,
       stitchCount: result.stitches.length,
       designSize: { w: result.designW, h: result.designH },
-      colors, extraction: { method: "pixel" },
+      colors,
+      extraction: { method: "pixel" },
       audit: v,
       shapes: result.shapes.map(s => ({ type: s.type, color: s.color, pointCount: s.points.length }))
     });
   } catch (e) {
-    console.error(`Error [${id}]:`, e.message);
+    console.error(`Error [${reqId}]:`, e.message);
     return res.status(500).json({ error: e.message });
   }
 });
@@ -778,17 +738,17 @@ app.get("/preview-image/:id", async (req, res) => {
   if (!d) return res.status(404).json({ error: "Not found" });
   const c = previewCache.get(req.params.id);
   if (c && Date.now()-c.ts < 60000) {
-    res.setHeader("Content-Type","image/png");
+    res.setHeader("Content-Type", "image/png");
     return res.send(c.buf);
   }
   try {
     const png = await Promise.race([
       renderStitchesToPng(d.stitches, d.designW, d.designH),
-      new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),8000))
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
     ]);
     previewCache.set(req.params.id, { buf: png, ts: Date.now() });
-    res.setHeader("Content-Type","image/png");
-    res.setHeader("Cache-Control","public, max-age=300");
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=300");
     return res.send(png);
   } catch (e) {
     return res.status(500).json({ error: e.message });
@@ -799,13 +759,13 @@ app.get("/download/:id/:format", (req, res) => {
   const d = jobs.get(req.params.id);
   if (!d) return res.status(404).json({ error: "Not found" });
   const { buf, ext } = encodeFile(req.params.format||"dst", d);
-  res.setHeader("Content-Type","application/octet-stream");
-  res.setHeader("Content-Disposition",`attachment; filename="design.${ext}"`);
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="design.${ext}"`);
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "20.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "21.0" }));
 
-const PORT = process.env.PORT||3000;
-const server = app.listen(PORT, () => console.log(`Stichai v20 running on port ${PORT}`));
+const PORT = process.env.PORT || 3000;
+const server = app.listen(PORT, () => console.log(`Stichai v21 running on port ${PORT}`));
 server.timeout = 120000;
