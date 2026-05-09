@@ -455,7 +455,7 @@ function satinColumnPolygon(points, color) {
     inner.push([x1 - dy/len*1.25, y1 + dx/len*1.25]);
   }
   const totalLen = points.reduce((s, p, i) => s + Math.hypot(points[(i+1)%points.length][0]-p[0], points[(i+1)%points.length][1]-p[1]), 0);
-  const steps = Math.max(points.length*2, Math.floor(totalLen/2.5));
+  const steps = Math.max(points.length*2, Math.floor(totalLen/3.5));
   for (let i = 0; i <= steps; i++) {
     const t = (i/steps)*points.length;
     const idx = Math.floor(t)%points.length;
@@ -502,9 +502,26 @@ function generateStitches(shapes) {
     groups[c].push({ ...s, color: c });
   }
 
-  let lastX = 0, lastY = 0;
-for (const color of Object.keys(groups)) {
-  // Nearest-neighbor order within each color group
+  // Order color groups by proximity
+const colorList = Object.keys(groups);
+const orderedColors = [];
+let entryX = 0, entryY = 0;
+while (colorList.length) {
+  let bestIdx = 0, bestDist = Infinity;
+  for (let i = 0; i < colorList.length; i++) {
+    const s = groups[colorList[i]][0];
+    const d = Math.hypot(s.centroid[0] - entryX, s.centroid[1] - entryY);
+    if (d < bestDist) { bestDist = d; bestIdx = i; }
+  }
+  const col = colorList.splice(bestIdx, 1)[0];
+  orderedColors.push(col);
+  const last = groups[col][groups[col].length - 1];
+  entryX = last.centroid[0];
+  entryY = last.centroid[1];
+}
+
+let lastX = 0, lastY = 0;
+for (const color of orderedColors) {
   const ordered = [groups[color][0]];
   const remaining = groups[color].slice(1);
   while (remaining.length) {
@@ -717,7 +734,9 @@ console.log(`Final (${colors.length}): ${colors.join(", ")}`);
 console.time(`shapes-${reqId}`);
 const shapes = await extractPixelShapes(cleanBuffer, colors, isText);
 console.timeEnd(`shapes-${reqId}`);
-
+// Remove colors with zero shapes
+const usedColors = [...new Set(shapes.map(s => toThreadColor(s.color)))];
+colors = colors.filter(c => usedColors.includes(toThreadColor(c)));
     // Stage 4: Generate stitches
     const result = generateStitches(shapes);
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2,6);
