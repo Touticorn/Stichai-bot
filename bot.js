@@ -1365,13 +1365,24 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
 
     const cleanB64 = cleanBuffer.toString("base64");
     const cleanMime = "image/png";
-
-    // Step 1: Analyze image
-    console.time(`gemini-analyze-${reqId}`);
-    const analysis = await analyzeImage(cleanB64, cleanMime);
-    console.timeEnd(`gemini-analyze-${reqId}`);
-    console.log(`Bg: ${analysis.background}, Colors: ${analysis.colors.length} (${analysis.colors.join(", ")}), Text: ${analysis.is_text}, Logo: ${analysis.is_logo}`);
-    
+     
+// Step 1: Analyze image with retry
+console.time(`gemini-analyze-${reqId}`);
+let analysis;
+for (let attempt = 0; attempt < 3; attempt++) {
+  try {
+    analysis = await analyzeImage(cleanB64, cleanMime);
+    break;
+  } catch (e) {
+    console.log(`Analysis attempt ${attempt+1} failed: ${e.message}`);
+    if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+  }
+}
+if (!analysis) {
+  console.log("Using default colors");
+  analysis = { background: "#FFFFFF", colors: ["#FF0000", "#000000", "#FFFFFF", "#FFD700"], threadMap: {}, is_text: true, is_logo: true };
+}
+console.timeEnd(`gemini-analyze-${reqId}`);
     // ✨ Log thread matches
     if (analysis.threadMap) {
       for (const [hex, thread] of Object.entries(analysis.threadMap)) {
@@ -1398,7 +1409,7 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     } catch (e) { console.log(`VTracer failed: ${e.message}`); }
 
     // Try 2: Gemini shape extraction
-    if (shapes.length < 3) {
+    if (shapes.length < 3 && !analysis.is_text) {
       try {
         console.time(`gemini-shapes-${reqId}`);
         shapes = await extractGeminiShapes(cleanB64, cleanMime, analysis.colors, analysis.is_text, analysis.is_logo);
