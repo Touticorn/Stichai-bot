@@ -46,7 +46,7 @@ Return ONLY JSON, no markdown, no explanation:
   try {
     const body = {
       contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
-      generationConfig: { temperature: 0.02, maxOutputTokens: 256 }
+      generationConfig: { temperature: 0.02, maxOutputTokens: 1024 }
     };
     const res = await geminiPost(body, 15000, FLASH_MODEL);
     const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
