@@ -273,7 +273,7 @@ async function extractPixelShapes(buffer, colors, isText = false) {
         if (d < bestDist) { bestDist = d; bestIdx = c; }
       }
       // Tighter threshold on posterized image (cleaner colors)
-      if (bestDist < 35) pixelColors[outOff+x] = bestIdx;
+      if (bestDist < 45) pixelColors[outOff+x] = bestIdx;
     }
   }
 
@@ -412,29 +412,23 @@ async function extractPixelShapes(buffer, colors, isText = false) {
 
   // Text reclassification using Wilcom-style rules
   if (isText && filtered.length > 3) {
-    const byColor = {};
-    for (const s of filtered) {
-      if (!byColor[s.color]) byColor[s.color] = [];
-      byColor[s.color].push(s);
-    }
-    for (const color of Object.keys(byColor)) {
-      const list = byColor[color];
-      list.sort((a,b) => b.pixelCount - a.pixelCount);
-      for (let i=0; i<list.length; i++) {
-        const b = polygonBounds(list[i].points);
-        const minDim = Math.min(b.width, b.height);
-        const maxDim = Math.max(b.width, b.height);
-        // Wilcom-style: large shapes = fill, thin shapes = satin [citation:1]
-        if (list[i].pixelCount > 500 && minDim > 20) {
-          list[i].type = "fill";
-        } else if (minDim < 15 || (maxDim/minDim > 4)) {
-          list[i].type = "satin";
-        } else {
-          list[i].type = "fill";
-        }
+  const byColor = {};
+  for (const s of filtered) {
+    if (!byColor[s.color]) byColor[s.color] = [];
+    byColor[s.color].push(s);
+  }
+  for (const color of Object.keys(byColor)) {
+    const list = byColor[color];
+    list.sort((a,b) => b.pixelCount - a.pixelCount);
+    for (let i=0; i<list.length; i++) {
+      if (list[i].pixelCount > 100) {
+        list[i].type = "fill";
+      } else {
+        list[i].type = "satin";
       }
     }
   }
+}
 
   console.log(`Pixel: ${filtered.filter(s=>s.type==='satin').length} satin, ${filtered.filter(s=>s.type==='fill').length} fill, ${filtered.length} total`);
   return filtered;
