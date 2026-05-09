@@ -97,23 +97,29 @@ async function posterizeImage(buffer, colorCount = 10) {
    GEMINI COLOR DETECTION (best effort, never blocks)
    ============================================================ */
 async function analyzeColors(b64, mime) {
-  const prompt = `Identify thread colors in this embroidery design.
+  const prompt = `You are selecting thread colors for machine embroidery.
 
-Return ONLY JSON, no markdown:
-{"colors":["#RRGGBB","#RRGGBB",...],"is_text":true|false,"is_logo":true|false}
+Look at this image carefully. List EVERY distinct thread color you see.
 
-Rules:
-- Find 4-6 distinct thread colors
-- Include BLACK if any dark text exists
-- Include GOLD/YELLOW for metallic elements
-- is_text: true if readable letters exist
-- is_logo: true if emblem/crown/shield exists`;
+IMPORTANT:
+- If you see WHITE as part of the design (not background), include it
+- If you see GOLD or YELLOW (metallic elements, crowns, emblems), include it  
+- If you see BLACK or very dark text/elements, include it
+- If you see RED, include it
+- Include 3-6 colors total
+
+Return ONLY a JSON object with no markdown:
+{"colors":["#hex","#hex",...],"is_text":true,"is_logo":true}
+
+Example for a red/white/gold/black logo:
+{"colors":["#CC0000","#FFFFFF","#FFD700","#000000"],"is_text":true,"is_logo":true}`;
+
+  const body = {
+    contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
+    generationConfig: { temperature: 0.02, maxOutputTokens: 1024 }
+  };
 
   try {
-    const body = {
-      contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
-      generationConfig: { temperature: 0.02, maxOutputTokens: 1024 }
-    };
     const res = await geminiPost(body, 15000, FLASH_MODEL);
     const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
     let jsonStr = text.replace(/```json|```/g, "").trim();
@@ -124,7 +130,6 @@ Rules:
     return null;
   }
 }
-
 /* ============================================================
    COLOR UTILITIES
    ============================================================ */
