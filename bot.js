@@ -91,7 +91,7 @@ async function posterizeImage(buffer) {
     .filter(([hex]) => {
       const c = hexToRgb(hex);
       const d = Math.sqrt((bgRgb.r-c.r)**2 + (bgRgb.g-c.g)**2 + (bgRgb.b-c.b)**2);
-      return d > 60;
+      return d > 40;
     })
     .map(([hex]) => hex);
 
@@ -672,27 +672,30 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     console.time(`posterize-${reqId}`);
     const posterized = await posterizeImage(req.file.buffer);
     console.timeEnd(`posterize-${reqId}`);
+// Stage 2: Gemini detects what's in the image (text/logo), but pixel tracer uses posterize colors
+const originalB64 = req.file.buffer.toString("base64");
+let colors = posterized.fallbackColors;
+let isText = true, isLogo = true;
 
-    // Stage 2: Gemini detects colors from ORIGINAL image
-    const originalB64 = req.file.buffer.toString("base64");
-    let colors, isText = true, isLogo = true;
+// Gemini for text/logo detection only
+try {
+  const gem = await detectColors(originalB64, req.file.mimetype || "image/png");
+  if (gem) {
+    isText = gem.is_text !== false;
+    isLogo = gem.is_logo !== false;
+    console.log(`Gemini: text=${isText}, logo=${isLogo}`);
+  }
+} catch (e) { /* use defaults */ }
 
-    const gem = await detectColors(originalB64, req.file.mimetype || "image/png");
-    if (gem && gem.colors.length >= 3) {
-      colors = deduplicateColors(gem.colors);
-      isText = gem.is_text;
-      isLogo = gem.is_logo;
-      console.log(`Gemini: ${colors.join(", ")}`);
-    } else {
-      colors = posterized.fallbackColors;
-      console.log(`Posterize: ${colors.join(", ")}`);
-    }
+// Ensure black for text
+if (isText && !colors.some(c => {
+  const rgb = hexToRgb(c);
+  return (rgb.r + rgb.g + rgb.b) < 120;
+})) {
+  colors.push("#000000");
+}
 
-    if (!colors.some(c => { const rgb = hexToRgb(c); return (rgb.r+rgb.g+rgb.b) < 120; })) {
-      colors.push("#000000");
-    }
-    console.log(`Final (${colors.length}): ${colors.join(", ")}`);
-
+console.log(`Colors (${colors.length}): ${colors.join(", ")}`);
     // Stage 3: Pixel trace on posterized image with Gemini colors
     console.time(`shapes-${reqId}`);
     const shapes = await extractPixelShapes(posterized.buffer, colors, isText);
