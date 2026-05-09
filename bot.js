@@ -28,15 +28,17 @@ const jobs = new Map();
 const previewCache = new Map();
 
 /* ============================================================
-   GEMINI COLOR DETECTION — primary, sees original image
+   GEMINI COLOR DETECTION – primary, sees original image,
+   now actively rejects gray / muted / beige colors
    ============================================================ */
 async function detectColors(b64, mime) {
   const prompt = `You are selecting thread colors for machine embroidery.
 
-List EVERY distinct thread color visible in this design:
+List only **vibrant, saturated** colors that can actually be stitched.
+- DO NOT choose gray, beige, pale, or pastel shades – those are usually part of the background.
 - Include WHITE if it appears as a design element (not just background)
 - Include GOLD or YELLOW for metallic elements, crowns, emblems
-- Include BLACK or very dark colors ONLY if actual dark text or elements exist
+- Include BLACK or very dark colors for any dark text or elements
 - Include RED, BLUE, GREEN, or any other vibrant design colors
 - Return exactly 3-6 colors
 
@@ -65,7 +67,7 @@ Return ONLY JSON, no markdown, no explanation:
 }
 
 /* ============================================================
-   POSTERIZATION — reliable extraction of actual image colors
+   POSTERIZATION – clean image for pixel tracing
    ============================================================ */
 async function posterizeImage(buffer) {
   const cleaned = await sharp(buffer)
@@ -146,7 +148,8 @@ function toThreadColor(hex) {
 }
 
 /* ============================================================
-   PIXEL TRACING — balanced thresholds, proper fill/satin split
+   PIXEL TRACING – balanced thresholds, catches thin details,
+   proper fill/satin split
    ============================================================ */
 function ramerDouglasPeucker(points, epsilon) {
   if (points.length <= 3) return points;
@@ -202,7 +205,7 @@ async function extractPixelShapes(buffer, colors, isText) {
     }
   }
 
-  // Boundary healing — 4-neighbor only
+  // Boundary healing – 4-neighbor only
   for (let y = 1; y < ph-1; y++) {
     for (let x = 1; x < pw-1; x++) {
       const idx = y*pw + x;
@@ -220,7 +223,7 @@ async function extractPixelShapes(buffer, colors, isText) {
   }
 
   const shapes = [];
-  const minComponentSize = 12; // balanced — no noise, keeps text
+  const minComponentSize = 10; // balanced – no noise, keeps text
   let currentMaskId = 1;
 
   for (let ci = 0; ci < labColors.length; ci++) {
@@ -317,7 +320,7 @@ async function extractPixelShapes(buffer, colors, isText) {
   for (const s of shapes) {
     const b = polygonBounds(s.points);
     if (b.width < 2 || b.height < 2) continue;
-    if (s.pixelCount < 20) continue;
+    if (s.pixelCount < 15) continue;
     if (s.points.length < 4) continue;
     let contained = false;
     for (const other of shapes) {
@@ -333,26 +336,15 @@ async function extractPixelShapes(buffer, colors, isText) {
     if (!contained) filtered.push(s);
   }
 
-  // Proper text classification: thin → satin, wide → fill
+  // Text classification: narrow → satin, wide → fill
   if (isText && filtered.length > 3) {
-    const byColor = {};
     for (const s of filtered) {
-      if (!byColor[s.color]) byColor[s.color] = [];
-      byColor[s.color].push(s);
-    }
-    for (const color of Object.keys(byColor)) {
-      const list = byColor[color];
-      list.sort((a, b) => b.pixelCount - a.pixelCount);
-      for (let i = 0; i < list.length; i++) {
-        const b = polygonBounds(list[i].points);
-        const minDim = Math.min(b.width, b.height);
-        // Large shapes (>25 units in both dimensions) → fill
-        // Everything else → satin
-        if (minDim > 25 && list[i].pixelCount > 300) {
-          list[i].type = "fill";
-        } else {
-          list[i].type = "satin";
-        }
+      const b = polygonBounds(s.points);
+      const narrow = Math.min(b.width, b.height) < 18;
+      if (!narrow && s.pixelCount > 200) {
+        s.type = "fill";
+      } else {
+        s.type = "satin";
       }
     }
   }
@@ -362,7 +354,8 @@ async function extractPixelShapes(buffer, colors, isText) {
 }
 
 /* ============================================================
-   STITCH GENERATION — ordered, professional density
+   STITCH GENERATION – ordered, professional density,
+   reduced inset for thin areas
    ============================================================ */
 function polygonBounds(points) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -450,8 +443,9 @@ function contourFillPolygon(points, color) {
     if (ints.length < 2) continue;
     ints.sort((a, b) => a-b);
 
+    // Reduced inset to fill narrow areas (e.g., Adidas stripes)
     for (let k = 0; k+1 < ints.length; k += 2) {
-      let segStart = ints[k] + 0.5, segEnd = ints[k+1] - 0.5;
+      let segStart = ints[k] + 0.2, segEnd = ints[k+1] - 0.2;
       if (segEnd <= segStart) continue;
       if (rowIdx%2 === 1) [segStart, segEnd] = [segEnd, segStart];
 
@@ -476,7 +470,7 @@ function satinColumnPolygon(points, color) {
     inner.push([x1 - dy/len*1.25, y1 + dx/len*1.25]);
   }
   const totalLen = points.reduce((s, p, i) => s + Math.hypot(points[(i+1)%points.length][0]-p[0], points[(i+1)%points.length][1]-p[1]), 0);
-  const steps = Math.max(points.length*2, Math.floor(totalLen/3.5));
+  const steps = Math.max(points.length*2, Math.floor(totalLen/4.0));
   for (let i = 0; i <= steps; i++) {
     const t = (i/steps)*points.length;
     const idx = Math.floor(t)%points.length;
@@ -526,7 +520,6 @@ function generateStitches(shapes) {
 
   let lastX = 0, lastY = 0;
   for (const color of Object.keys(groups)) {
-    // NN order within group by proximity to last stitch
     const ordered = [groups[color][0]];
     const remaining = groups[color].slice(1);
     while (remaining.length) {
@@ -727,17 +720,10 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
       console.log(`Posterize: ${colors.join(", ")}`);
     }
 
-    // Only add black if Gemini explicitly returned it
-    if (gem && gem.colors && !colors.some(c => c === "#000000" || colorDistanceLab(rgbToLab(hexToRgb(c)), rgbToLab(hexToRgb("#000000"))) < 10)) {
-      // Gemini didn't include black — check if we really need it
-      const hasVeryDark = colors.some(c => {
-        const rgb = hexToRgb(c);
-        return (rgb.r + rgb.g + rgb.b) < 100;
-      });
-      if (isText && !hasVeryDark) {
-        colors.push("#000000");
-        console.log("Added black for text");
-      }
+    // Only add black if actually needed (no dark color found and text exists)
+    if (isText && !colors.some(c => { const rgb = hexToRgb(c); return (rgb.r + rgb.g + rgb.b) < 120; })) {
+      colors.push("#000000");
+      console.log("Added black for text");
     }
 
     console.log(`Final colors (${colors.length}): ${colors.join(", ")}`);
@@ -812,8 +798,8 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "26.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "27.0" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v26 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v27 running on port ${PORT}`));
 server.timeout = 180000;
