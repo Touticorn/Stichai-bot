@@ -38,28 +38,21 @@ const previewCache = new Map();
 
 /* ============================================================
    STAGE 1: PROFESSIONAL POSTERIZATION PIPELINE
-   Inspired by: Wilcom "Prepare Bitmap Colors", Hatch "Prepare Artwork",
-   Embird Posterization, and Suture's preprocessing stack
    ============================================================ */
-
 async function posterizeImage(buffer, colorCount = 8) {
-  // Step 1: Strong noise removal
   const denoised = await sharp(buffer)
-    .median(3)           // Remove dithering/anti-aliasing noise [citation:4]
+    .median(3)
     .sharpen({ sigma: 2.5, m1: 2, m2: 5 })
     .toBuffer();
 
-  // Step 2: Posterize — force to exactly N colors (professional "Prepare Artwork") [citation:2][citation:7]
   const posterized = await sharp(denoised)
-    .png({ colours: colorCount, dither: 0 })  // No dithering = clean color blocks
+    .png({ colours: colorCount, dither: 0 })
     .toBuffer();
 
-  // Step 3: Quantize palette to extract exact thread colors
   const { data, info } = await sharp(posterized)
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  // Step 4: Extract dominant colors from posterized image
   const colorMap = new Map();
   for (let i = 0; i < data.length; i += info.channels) {
     const r = data[i], g = data[i+1], b = data[i+2];
@@ -67,21 +60,18 @@ async function posterizeImage(buffer, colorCount = 8) {
     colorMap.set(hex, (colorMap.get(hex) || 0) + 1);
   }
 
-  // Sort by frequency, remove background-dominant color (usually white/light)
   const sorted = [...colorMap.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([hex]) => hex);
 
-  // Remove white/very-light colors (likely background)
   const designColors = sorted.filter(hex => {
     const r = parseInt(hex.slice(1,3), 16);
     const g = parseInt(hex.slice(3,5), 16);
     const b = parseInt(hex.slice(5,7), 16);
-    return (r + g + b) < 700; // Not pure white/near-white
-  }).slice(0, 6); // Max 6 design colors
+    return (r + g + b) < 700;
+  }).slice(0, 6);
 
   if (designColors.length < 2) {
-    // Fallback: use all colors except the most common (likely background)
     designColors.push(...sorted.slice(1, 5));
   }
 
@@ -93,59 +83,127 @@ async function posterizeImage(buffer, colorCount = 8) {
 }
 
 /* ============================================================
-   STAGE 2: GEMINI COLOR ANALYSIS (falls back to posterize colors)
+   STAGE 2: TWO‑PROMPT GEMINI PIPELINE
+   Prompt 1: Color Analysis (Flash, fast)
+   Prompt 2: Shape Extraction (Pro, accurate)
    ============================================================ */
 
-async function analyzeImage(b64, mime) {
-  const prompt = `You are an embroidery digitizer. Identify thread colors in this image.
+async function analyzeImagePro(b64, mime) {
+  const prompt = `Analyze this image for embroidery digitizing.
 
-Return ONLY JSON:
-{"background":"#RRGGBB","colors":["#RRGGBB",...],"is_text":true|false,"is_logo":true|false}
+Return ONLY a JSON object:
+{
+  "background": "#RRGGBB",
+  "colors": ["#RRGGBB", "#RRGGBB", ...],
+  "elements": ["red bold text KING", "gold crown emblem above text", "black text SIZE", "black script text Winstor"],
+  "is_text": true,
+  "is_logo": true
+}
 
-Rules:
-- Find exactly 4-6 thread colors for the DESIGN (not background)
-- Include BLACK if any dark text exists
-- Include GOLD/YELLOW separately for metallic elements
-- is_text: true if image has readable text/letters
-- is_logo: true if image has emblems, crowns, shields, brand marks`;
+RULES:
+- Find exactly 4-8 thread colors (include black for dark text, gold for metallic elements)
+- "elements": list every distinct design element you see (crown, each word, borders, shields)
+- "is_text": true if ANY readable letters/words exist
+- "is_logo": true if emblem/crown/shield/brand mark exists
+- Be specific in "elements" — "gold crown with red interior" not just "emblem"`;
 
   const body = {
     contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
-    generationConfig: { temperature: 0.02, maxOutputTokens: 1024 }
+    generationConfig: { temperature: 0.02, maxOutputTokens: 512 }
   };
 
-  try {
-    const res = await geminiPost(body, 30000, FLASH_MODEL);
-    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    let jsonStr = text.replace(/```json|```/g, "").trim();
-    const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
-    if (fb !== -1 && lb > fb) jsonStr = jsonStr.slice(fb, lb + 1);
-    
-    let parsed;
-    try { parsed = JSON.parse(jsonStr); }
-    catch (e) { parsed = JSON.parse(repairJSON(jsonStr)); }
-    
-    let colors = deduplicateColors(parsed.colors || []);
-    
-    if (parsed.is_text) {
-      const hasDark = colors.some(c => {
-        const rgb = hexToRgb(c);
-        return (rgb.r + rgb.g + rgb.b) < 150;
-      });
-      if (!hasDark) colors.push("#000000");
-    }
-    
-    return {
-      background: parsed.background || "#FFFFFF",
-      colors: colors.length >= 3 ? colors : null,
-      is_text: !!parsed.is_text,
-      is_logo: !!parsed.is_logo,
-      source: "gemini"
-    };
-  } catch (e) {
-    console.log(`Gemini analysis failed: ${e.message}`);
-    return { colors: null, is_text: true, is_logo: true, source: "fallback" };
+  const res = await geminiPost(body, 25000, FLASH_MODEL);
+  const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  
+  let jsonStr = text.replace(/```json|```/g, "").trim();
+  const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
+  if (fb !== -1 && lb > fb) jsonStr = jsonStr.slice(fb, lb + 1);
+  
+  let parsed;
+  try { parsed = JSON.parse(jsonStr); }
+  catch (e) { parsed = JSON.parse(repairJSON(jsonStr)); }
+  
+  let colors = deduplicateColors(parsed.colors || []);
+  
+  if (parsed.is_text && !colors.some(c => {
+    const rgb = hexToRgb(c);
+    return (rgb.r + rgb.g + rgb.b) < 120;
+  })) {
+    colors.push("#000000");
   }
+  
+  return {
+    background: parsed.background || "#FFFFFF",
+    colors,
+    elements: parsed.elements || [],
+    is_text: !!parsed.is_text,
+    is_logo: !!parsed.is_logo,
+  };
+}
+
+async function extractShapesFromAnalysis(b64, mime, analysis) {
+  const elementsList = analysis.elements.length > 0 
+    ? `Design elements I can see: ${analysis.elements.join(", ")}`
+    : '';
+  
+  const prompt = `You are a professional embroidery digitizer.
+
+${elementsList}
+
+Thread colors available: ${analysis.colors.join(", ")}
+
+Extract ALL shapes from this image. For each shape provide:
+- "type": "satin" for thin strokes/letters (< 8mm wide), "fill" for wide solid areas
+- "color": exact hex from the list above
+- "points": polygon boundary as [[x,y],[x,y],...] in 0-300 coordinate space
+
+CRITICAL:
+- Each letter in a word = SEPARATE shape (e.g., "K", "I", "N", "G" = 4 shapes)
+- Crown/emblem = MULTIPLE shapes (one per color region)
+- Thin text strokes = satin, thick block letters = fill
+- Every element from the list above MUST appear in the output
+- Points must be DETAILED (20-60 points per shape, not 5)
+- Close every polygon (last point = first point)
+
+Return ONLY:
+{"shapes":[{"type":"fill|satin","color":"#hex","points":[[x,y],...]},...]}`;
+
+  const body = {
+    contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
+    generationConfig: { temperature: 0.03, maxOutputTokens: 8192 }
+  };
+
+  const res = await geminiPost(body, 90000, PRO_MODEL);
+  const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  
+  let jsonStr = text.replace(/```json|```/g, "").trim();
+  const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
+  if (fb !== -1 && lb > fb) jsonStr = jsonStr.slice(fb, lb + 1);
+
+  let parsed;
+  try { parsed = JSON.parse(jsonStr); }
+  catch (e) { parsed = JSON.parse(repairJSON(jsonStr)); }
+
+  const shapes = [];
+  for (const s of parsed.shapes || []) {
+    if (!s.points || !Array.isArray(s.points) || s.points.length < 3) continue;
+    const points = s.points.map(p => Array.isArray(p) ? [Math.round(p[0]), Math.round(p[1])] : [Math.round(p.x || 0), Math.round(p.y || 0)]);
+    const first = points[0], last = points[points.length - 1];
+    if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
+    
+    const b = polygonBounds(points);
+    if (b.width < 2 || b.height < 2) continue;
+    if (points.length < 4) continue;
+    
+    shapes.push({
+      type: s.type === "satin" ? "satin" : "fill",
+      color: s.color || analysis.colors[0],
+      points,
+      pixelCount: Math.round(b.width * b.height)
+    });
+  }
+  
+  return shapes;
 }
 
 /* ============================================================
@@ -272,12 +330,10 @@ async function extractPixelShapes(buffer, colors, isText = false) {
         const d = colorDistanceLab(pixLab, labColors[c]);
         if (d < bestDist) { bestDist = d; bestIdx = c; }
       }
-      // Tighter threshold on posterized image (cleaner colors)
       if (bestDist < 45) pixelColors[outOff+x] = bestIdx;
     }
   }
 
-  // Boundary healing
   for (let y=1; y<ph-1; y++) {
     const row = y*pw;
     for (let x=1; x<pw-1; x++) {
@@ -388,7 +444,6 @@ async function extractPixelShapes(buffer, colors, isText = false) {
 
   shapes.sort((a,b) => b.pixelCount - a.pixelCount);
 
-  // Quality filter
   const filtered = [];
   for (const s of shapes) {
     const b = polygonBounds(s.points);
@@ -410,120 +465,31 @@ async function extractPixelShapes(buffer, colors, isText = false) {
     if (!contained) filtered.push(s);
   }
 
-  // Text reclassification using Wilcom-style rules
   if (isText && filtered.length > 3) {
-  const byColor = {};
-  for (const s of filtered) {
-    if (!byColor[s.color]) byColor[s.color] = [];
-    byColor[s.color].push(s);
-  }
-  for (const color of Object.keys(byColor)) {
-    const list = byColor[color];
-    list.sort((a,b) => b.pixelCount - a.pixelCount);
-    for (let i=0; i<list.length; i++) {
-      if (list[i].pixelCount > 200) {
-        list[i].type = "fill";
-      } else {
-        list[i].type = "satin";
+    const byColor = {};
+    for (const s of filtered) {
+      if (!byColor[s.color]) byColor[s.color] = [];
+      byColor[s.color].push(s);
+    }
+    for (const color of Object.keys(byColor)) {
+      const list = byColor[color];
+      list.sort((a,b) => b.pixelCount - a.pixelCount);
+      for (let i=0; i<list.length; i++) {
+        if (list[i].pixelCount > 200) {
+          list[i].type = "fill";
+        } else {
+          list[i].type = "satin";
+        }
       }
     }
   }
-}
 
   console.log(`Pixel: ${filtered.filter(s=>s.type==='satin').length} satin, ${filtered.filter(s=>s.type==='fill').length} fill, ${filtered.length} total`);
   return filtered;
 }
 
 /* ============================================================
-   STAGE 3: AGENTIC SVG REVIEW (Gemini checks shapes before stitch)
-   Inspired by: Suture's OpenCLAW review loop [citation:3]
-   ============================================================ */
-
-async function agenticReview(shapes, analysis) {
-  if (shapes.length === 0) return shapes;
-  
-  const shapeSummary = shapes.slice(0, 30).map((s, i) => ({
-    id: i,
-    type: s.type,
-    color: s.color,
-    points: s.points.length,
-    bounds: polygonBounds(s.points)
-  }));
-
-  const prompt = `You are an embroidery quality auditor. Review these ${shapes.length} shapes for issues.
-
-Design info: ${analysis.is_text ? 'Contains text' : ''} ${analysis.is_logo ? 'Contains logo/emblem' : ''}
-Colors: ${analysis.colors ? analysis.colors.join(', ') : 'unknown'}
-
-Shape summary: ${JSON.stringify(shapeSummary.slice(0, 20))}
-
-Identify these problems:
-1. Shapes too small to stitch (width or height < 3 units) — flag for removal
-2. Text shapes misclassified (text should be "satin", backgrounds "fill")
-3. Overlapping same-color shapes that should be merged
-4. Shapes with fewer than 6 points (too coarse for embroidery)
-5. Crown/emblem details that need smaller stitch width
-
-Return ONLY JSON:
-{"remove":[0,3,7],"retype":{"2":"satin","5":"fill"},"merge":[[1,4]],"ok":true}`;
-
-  try {
-    const body = {
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.02, maxOutputTokens: 2048 }
-    };
-    
-    const res = await geminiPost(body, 25000, FLASH_MODEL);
-    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    let jsonStr = text.replace(/```json|```/g, "").trim();
-    const fb = jsonStr.indexOf("{"), lb = jsonStr.lastIndexOf("}");
-    if (fb !== -1 && lb > fb) jsonStr = jsonStr.slice(fb, lb + 1);
-    
-    const review = JSON.parse(jsonStr);
-    console.log(`Agent review: ${review.remove?.length || 0} to remove, ${review.ok ? 'approved' : 'issues found'}`);
-    return review;
-  } catch (e) {
-    console.log(`Agent review skipped: ${e.message}`);
-    return { ok: true, remove: [], retype: {}, merge: [] };
-  }
-}
-
-function applyAgentReview(shapes, review) {
-  if (review.ok && !review.remove?.length && !Object.keys(review.retype||{}).length) {
-    return shapes;
-  }
-  
-  // Remove flagged shapes
-  if (review.remove?.length) {
-    const removeSet = new Set(review.remove);
-    shapes = shapes.filter((_, i) => !removeSet.has(i));
-  }
-  
-  // Retype shapes
-  if (review.retype) {
-    for (const [id, newType] of Object.entries(review.retype)) {
-      if (shapes[parseInt(id)]) {
-        shapes[parseInt(id)].type = newType;
-      }
-    }
-  }
-  
-  // Merge shapes
-  if (review.merge) {
-    for (const [id1, id2] of review.merge) {
-      if (shapes[id1] && shapes[id2] && shapes[id1].color === shapes[id2].color) {
-        shapes[id1].points = [...shapes[id1].points, ...shapes[id2].points];
-        shapes[id1].pixelCount += shapes[id2].pixelCount;
-        shapes.splice(id2, 1);
-      }
-    }
-  }
-  
-  return shapes;
-}
-
-/* ============================================================
-   STITCH GENERATION — professional density 0.4mm [citation:1]
+   STITCH GENERATION — professional density 0.4mm
    ============================================================ */
 function polygonBounds(points) {
   let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
@@ -596,7 +562,6 @@ function contourFillPolygon(points, color) {
   const stitches = [];
   const fillAngle = computeFillAngle(points);
   const cosA=Math.cos(fillAngle), sinA=Math.sin(fillAngle);
-  // Professional satin density: 0.4mm row spacing [citation:1]
   const rowSpacing = 3.2;
   const stitchSpacing = 3.0;
   function toLocal(x,y){ return [x*cosA+y*sinA, -x*sinA+y*cosA]; }
@@ -943,52 +908,73 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
     
-    // === STAGE 1: POSTERIZATION (Professional "Prepare Artwork") ===
+    // === STAGE 1: POSTERIZATION ===
     console.time(`posterize-${reqId}`);
     const posterized = await posterizeImage(req.file.buffer, 8);
     console.timeEnd(`posterize-${reqId}`);
-    console.log(`Posterized: ${posterized.colors.length} colors detected`);
+    console.log(`Posterized: ${posterized.colors.join(", ")}`);
     
-    // Gemini analysis on posterized image
     const analysisB64 = posterized.buffer.toString("base64");
     
-    // === STAGE 2: GEMINI COLOR DETECTION (primary, never skipped) ===
-console.time(`analyze-${reqId}`);
-let analysis;
-for (let attempt = 0; attempt < 5; attempt++) {
-  try {
-    analysis = await analyzeImage(analysisB64, "image/png");
-    if (analysis && analysis.colors && analysis.colors.length >= 3) break;
-    console.log(`Attempt ${attempt+1}: only ${analysis?.colors?.length || 0} colors, retrying...`);
-    await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
-  } catch (e) {
-    console.log(`Attempt ${attempt+1} failed: ${e.message}`);
-    if (attempt < 4) await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
-  }
-}
-
-// Gemini is the source of truth for colors
-if (!analysis || !analysis.colors || analysis.colors.length < 3) {
-  console.log("Gemini failed after 5 attempts — falling back to posterize");
-  analysis = {
-    background: "#FFFFFF",
-    colors: posterized.colors,
-    is_text: true,
-    is_logo: true,
-    source: "posterize"
-  };
-} else {
-  console.log(`Gemini detected: ${analysis.colors.join(", ")}`);
-  analysis.source = "gemini";
-}
-console.timeEnd(`analyze-${reqId}`);
+    // === STAGE 2: TWO-PROMPT GEMINI PIPELINE ===
+    
+    // Prompt 1: Color Analysis
+    console.time(`analyze-${reqId}`);
+    let analysis;
+    try {
+      analysis = await analyzeImagePro(analysisB64, "image/png");
+      console.log(`Gemini: ${analysis.colors.length} colors, ${analysis.elements.length} elements`);
+      console.log(`  Colors: ${analysis.colors.join(", ")}`);
+      console.log(`  Elements: ${analysis.elements.join(", ")}`);
+    } catch (e) {
+      console.log(`Analysis failed: ${e.message}, using posterize`);
+      analysis = {
+        background: "#FFFFFF",
+        colors: posterized.colors,
+        elements: [],
+        is_text: true,
+        is_logo: true,
+      };
+    }
+    console.timeEnd(`analyze-${reqId}`);
+    
+    // Force black for text
+    if (analysis.is_text && !analysis.colors.some(c => {
+      const rgb = hexToRgb(c);
+      return (rgb.r + rgb.g + rgb.b) < 120;
+    })) {
+      analysis.colors.push("#000000");
+    }
+    
+    // Prompt 2: Shape Extraction — try Gemini first, fallback to pixel
+    console.time(`extract-${reqId}`);
+    let shapes = [];
+    let method = "pixel";
+    
+    try {
+      shapes = await extractShapesFromAnalysis(analysisB64, "image/png", analysis);
+      if (shapes.length >= 3) {
+        method = "gemini";
+        console.log(`Gemini extracted: ${shapes.length} shapes`);
+      }
+    } catch (e) {
+      console.log(`Gemini extraction failed: ${e.message}`);
+    }
+    
+    if (shapes.length < 3) {
+      shapes = await extractPixelShapes(posterized.buffer, analysis.colors, analysis.is_text);
+      console.log(`Pixel extracted: ${shapes.length} shapes`);
+    }
+    console.timeEnd(`extract-${reqId}`);
+    
+    if (!shapes.length) return res.status(500).json({ error: "No shapes extracted" });
     
     const result = generateStitches(shapes);
     const id = Date.now().toString(36)+Math.random().toString(36).slice(2,6);
     jobs.set(id, result);
     
     const validation = validateQuality(result.stitches);
-    console.log(`AUDIT: ${result.stitches.length} stitches, ${shapes.length} shapes, density ${validation.avgStitchLength}mm`);
+    console.log(`AUDIT: ${result.stitches.length} stitches, ${shapes.length} shapes, method: ${method}`);
     for (const w of validation.warnings) console.log(`  ⚠ ${w}`);
     
     return res.json({
@@ -999,7 +985,7 @@ console.timeEnd(`analyze-${reqId}`);
       stitchCount: result.stitches.length,
       designSize: { w: result.designW, h: result.designH },
       colors: analysis.colors,
-      extraction: { method: "posterize+pixel", source: analysis.source },
+      extraction: { method },
       audit: validation,
       shapes: result.shapes.map(s => ({ type: s.type, color: s.color, pointCount: s.points.length }))
     });
@@ -1049,10 +1035,10 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "18.0-pro" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "19.0" }));
 
 const PORT = process.env.PORT||3000;
-const server = app.listen(PORT, () => console.log(`Stichai Pro v18.0 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai Pro v19.0 running on port ${PORT}`));
 server.timeout = 120000;
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
