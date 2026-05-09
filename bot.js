@@ -28,7 +28,7 @@ const jobs = new Map();
 const previewCache = new Map();
 
 /* ============================================================
-   GEMINI COLOR DETECTION — sees original image
+   GEMINI COLOR DETECTION — primary, sees original image
    ============================================================ */
 async function detectColors(b64, mime) {
   const prompt = `You are selecting thread colors for machine embroidery.
@@ -65,37 +65,19 @@ Return ONLY JSON, no markdown, no explanation:
 }
 
 /* ============================================================
-   POSTERIZATION — for clean pixel tracing, preserves small details
+   ENHANCED PREPROCESSING — v17 pipeline for vibrant colors
    ============================================================ */
-async function posterizeImage(buffer) {
-  const cleaned = await sharp(buffer)
-    .median(3)
-    .sharpen({ sigma: 2.5, m1: 2, m2: 5 })
-    .png({ colours: 14, dither: 0 })
+async function enhanceImage(buffer) {
+  return sharp(buffer)
+    .rotate()
+    .resize(2000, 2000, { fit: "inside", withoutEnlargement: false })
+    .linear(1.15, -10)
+    .normalize()
+    .modulate({ saturation: 1.7 })
+    .median(1)
+    .sharpen({ sigma: 1.2, m1: 1.5, m2: 2.5 })
+    .toFormat("png")
     .toBuffer();
-
-  const { data, info } = await sharp(cleaned).raw().toBuffer({ resolveWithObject: true });
-
-  const colorMap = new Map();
-  for (let i = 0; i < data.length; i += info.channels) {
-    const hex = '#' + [data[i], data[i+1], data[i+2]]
-      .map(c => c.toString(16).padStart(2, '0')).join('').toUpperCase();
-    colorMap.set(hex, (colorMap.get(hex) || 0) + 1);
-  }
-
-  const sorted = [...colorMap.entries()].sort((a, b) => b[1] - a[1]);
-  const bgColor = sorted[0][0];
-  const bgRgb = hexToRgb(bgColor);
-
-  const fallbackColors = sorted.slice(1, 5)
-    .filter(([hex]) => {
-      const c = hexToRgb(hex);
-      const d = Math.sqrt((bgRgb.r-c.r)**2 + (bgRgb.g-c.g)**2 + (bgRgb.b-c.b)**2);
-      return d > 40;
-    })
-    .map(([hex]) => hex);
-
-  return { buffer: cleaned, fallbackColors };
 }
 
 /* ============================================================
@@ -146,7 +128,7 @@ function toThreadColor(hex) {
 }
 
 /* ============================================================
-   PIXEL TRACING — tight contours, no bleeding, catches small shapes
+   PIXEL TRACING — catches tiny details, no bleeding
    ============================================================ */
 function ramerDouglasPeucker(points, epsilon) {
   if (points.length <= 3) return points;
@@ -188,6 +170,7 @@ async function extractPixelShapes(buffer, colors, isText) {
   const tid = Math.random().toString(36).slice(2,5);
   const data = image.bitmap.data;
 
+  // Classify pixels with moderate threshold to catch vibrant colors
   for (let y = 0; y < ph; y++) {
     for (let x = 0; x < pw; x++) {
       const i = (y*pw + x) << 2;
@@ -201,6 +184,7 @@ async function extractPixelShapes(buffer, colors, isText) {
     }
   }
 
+  // Boundary healing (4‑neighbor)
   for (let y = 1; y < ph-1; y++) {
     for (let x = 1; x < pw-1; x++) {
       const idx = y*pw + x;
@@ -218,7 +202,7 @@ async function extractPixelShapes(buffer, colors, isText) {
   }
 
   const shapes = [];
-  const minComponentSize = 5;
+  const minComponentSize = 5;       // catch tiny crown details
   let currentMaskId = 1;
 
   for (let ci = 0; ci < labColors.length; ci++) {
@@ -248,6 +232,7 @@ async function extractPixelShapes(buffer, colors, isText) {
             }
           }
 
+          // 2px gap tolerance for thin strokes
           for (let dy = -2; dy <= 2; dy++) {
             for (let dx = -2; dx <= 2; dx++) {
               if (dy === 0 && dx === 0) continue;
@@ -295,6 +280,7 @@ async function extractPixelShapes(buffer, colors, isText) {
           if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
         }
 
+        // Determine if narrow
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const [px, py] of points) {
           minX = Math.min(minX, px); maxX = Math.max(maxX, px);
@@ -310,11 +296,12 @@ async function extractPixelShapes(buffer, colors, isText) {
 
   shapes.sort((a, b) => b.pixelCount - a.pixelCount);
 
+  // Quality filter – keep even very small shapes
   const filtered = [];
   for (const s of shapes) {
     const b = polygonBounds(s.points);
-    if (b.width < 2 || b.height < 2) continue;
-    if (s.pixelCount < 15) continue;
+    if (b.width < 1 || b.height < 1) continue;
+    if (s.pixelCount < 8) continue;
     if (s.points.length < 4) continue;
     let contained = false;
     for (const other of shapes) {
@@ -330,6 +317,7 @@ async function extractPixelShapes(buffer, colors, isText) {
     if (!contained) filtered.push(s);
   }
 
+  // Re‑classify: narrow → satin, wide → fill
   if (isText && filtered.length > 3) {
     for (const s of filtered) {
       const b = polygonBounds(s.points);
@@ -342,7 +330,7 @@ async function extractPixelShapes(buffer, colors, isText) {
 }
 
 /* ============================================================
-   STITCH GENERATION — ordered by proximity, professional density
+   STITCH GENERATION — proximity‑ordered, professional density
    ============================================================ */
 function polygonBounds(points) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -494,8 +482,10 @@ function runningPolygon(points, color) {
 
 function generateStitches(shapes) {
   const all = [], designW = 300, designH = 300;
+  // Precompute centroids
   for (const s of shapes) s.centroid = polygonCentroid(s.points);
 
+  // Group by thread color
   const groups = {};
   for (const s of shapes) {
     const c = toThreadColor(s.color);
@@ -503,7 +493,7 @@ function generateStitches(shapes) {
     groups[c].push({ ...s, color: c });
   }
 
-  // Order color groups by proximity
+  // 1) Order color groups by proximity of first shape to current stitch position
   const colorList = Object.keys(groups);
   const orderedColors = [];
   let entryX = 0, entryY = 0;
@@ -511,33 +501,43 @@ function generateStitches(shapes) {
     let bestIdx = 0, bestDist = Infinity;
     for (let i = 0; i < colorList.length; i++) {
       const s = groups[colorList[i]][0];
-      const d = Math.hypot(s.centroid[0] - entryX, s.centroid[1] - entryY);
+      const d = Math.hypot(s.points[0][0] - entryX, s.points[0][1] - entryY);
       if (d < bestDist) { bestDist = d; bestIdx = i; }
     }
     const col = colorList.splice(bestIdx, 1)[0];
     orderedColors.push(col);
     const last = groups[col][groups[col].length - 1];
-    entryX = last.centroid[0];
-    entryY = last.centroid[1];
+    const lastPt = last.points[last.points.length - 1];
+    entryX = lastPt[0]; entryY = lastPt[1];
   }
 
   let lastX = 0, lastY = 0;
+  // 2) Within each color group, order shapes by nearest start point to previous shape's end point
   for (const color of orderedColors) {
-    // NN order within each color group
-    const ordered = [groups[color][0]];
-    const remaining = groups[color].slice(1);
-    while (remaining.length) {
-      let bestIdx = 0, bestDist = Infinity;
-      const [lx, ly] = ordered[ordered.length - 1].centroid;
-      for (let i = 0; i < remaining.length; i++) {
-        const [cx, cy] = remaining[i].centroid;
-        const d = Math.hypot(cx - lx, cy - ly);
-        if (d < bestDist) { bestDist = d; bestIdx = i; }
+    let group = groups[color];
+    for (let i = 0; i < group.length; i++) {
+      if (i === 0) {
+        // Start with shape whose first point is closest to current position
+        let bestIdx = 0, bestDist = Infinity;
+        for (let j = 0; j < group.length; j++) {
+          const [sx, sy] = group[j].points[0];
+          const d = Math.hypot(sx - lastX, sy - lastY);
+          if (d < bestDist) { bestDist = d; bestIdx = j; }
+        }
+        [group[0], group[bestIdx]] = [group[bestIdx], group[0]];
+      } else {
+        // Among remaining shapes, pick the one with starting point nearest to previous shape's last point
+        const prevLast = group[i-1].points[group[i-1].points.length - 1];
+        let bestIdx = i, bestDist = Infinity;
+        for (let j = i; j < group.length; j++) {
+          const [sx, sy] = group[j].points[0];
+          const d = Math.hypot(sx - prevLast[0], sy - prevLast[1]);
+          if (d < bestDist) { bestDist = d; bestIdx = j; }
+        }
+        [group[i], group[bestIdx]] = [group[bestIdx], group[i]];
       }
-      ordered.push(remaining.splice(bestIdx, 1)[0]);
-    }
 
-    for (const s of ordered) {
+      const s = group[i];
       const pts = s.points;
       const [sx, sy] = pts[0];
       const jump = Math.hypot(sx - lastX, sy - lastY);
@@ -554,6 +554,7 @@ function generateStitches(shapes) {
       if (all.length) { const l = all[all.length - 1]; lastX = l.x; lastY = l.y; }
     }
   }
+
   all.push(...runningPolygon([[-2,-2],[designW+2,-2],[designW+2,designH+2],[-2,designH+2]], "#333333"));
   return { stitches: all, designW, designH, shapes };
 }
@@ -702,69 +703,66 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
 
-    // Stage 1: Enhanced preprocessing (v17 pipeline) to make colors pop
+    // Stage 1: Enhance original image (v17 pipeline)
     console.time(`preprocess-${reqId}`);
-    const cleanBuffer = await sharp(req.file.buffer)
-      .rotate()
-      .resize(2000, 2000, { fit: "inside", withoutEnlargement: false })
-      .linear(1.15, -10)
-      .normalize()
-      .modulate({ saturation: 1.7 })
-      .median(1)
-      .sharpen({ sigma: 1.2, m1: 1.5, m2: 2.5 })
-      .toFormat("png")
-      .toBuffer();
+    const enhanced = await enhanceImage(req.file.buffer);
     console.timeEnd(`preprocess-${reqId}`);
 
-    // Stage 2: Gemini detects colors from original image (for text/logo flags and color hints)
+    // Stage 2: Gemini detects colors (primary, no posterize interference)
     const originalB64 = req.file.buffer.toString("base64");
     let colors = [], isText = true, isLogo = true;
 
-    // Get posterized fallback colors (these are guaranteed to exist in the image)
-    const posterized = await posterizeImage(cleanBuffer);
-    colors = posterized.fallbackColors;
-
     const gem = await detectColors(originalB64, req.file.mimetype || "image/png");
-    if (gem) {
+    if (gem && gem.colors && gem.colors.length >= 3) {
+      colors = deduplicateColors(gem.colors);
       isText = gem.is_text !== false;
       isLogo = gem.is_logo !== false;
-      console.log(`Gemini: text=${isText}, logo=${isLogo} ${gem.colors ? 'colors='+gem.colors.join(',') : ''}`);
-      // Merge Gemini colors that are missing from posterize (e.g., gold)
-      if (gem.colors) {
-        for (const gc of gem.colors) {
-          const exists = colors.some(c => colorDistanceLab(rgbToLab(hexToRgb(c)), rgbToLab(hexToRgb(gc))) < 15);
-          if (!exists) {
-            colors.push(gc);
-            console.log(`Added Gemini color not in posterize: ${gc}`);
-          }
+      console.log(`Gemini: ${colors.join(", ")}`);
+    } else {
+      // True fallback – posterize the enhanced image just for colors
+      const { fallbackColors } = await (async (buf) => {
+        const cleaned = await sharp(buf).median(3).sharpen({ sigma: 2.5, m1: 2, m2: 5 }).png({ colours: 14, dither: 0 }).toBuffer();
+        const { data, info } = await sharp(cleaned).raw().toBuffer({ resolveWithObject: true });
+        const colorMap = new Map();
+        for (let i = 0; i < data.length; i += info.channels) {
+          const hex = '#' + [data[i], data[i+1], data[i+2]].map(c => c.toString(16).padStart(2,'0')).join('').toUpperCase();
+          colorMap.set(hex, (colorMap.get(hex) || 0) + 1);
         }
-      }
+        const sorted = [...colorMap.entries()].sort((a, b) => b[1] - a[1]);
+        const bg = sorted[0][0];
+        const bgRgb = hexToRgb(bg);
+        const design = sorted.slice(1, 5).filter(([h]) => {
+          const c = hexToRgb(h);
+          return Math.sqrt((bgRgb.r-c.r)**2 + (bgRgb.g-c.g)**2 + (bgRgb.b-c.b)**2) > 40;
+        }).map(([h]) => h);
+        return { fallbackColors: design };
+      })(enhanced);
+      colors = fallbackColors;
+      console.log(`Posterize fallback: ${colors.join(", ")}`);
     }
 
-    // Deduplicate and ensure black for text
-    colors = deduplicateColors(colors);
+    // Always add black for text if missing
     if (isText && !colors.some(c => {
       const rgb = hexToRgb(c);
       return (rgb.r + rgb.g + rgb.b) < 120;
     })) {
       colors.push("#000000");
     }
-
     console.log(`Final colors (${colors.length}): ${colors.join(", ")}`);
 
-    // Stage 3: Pixel trace on enhanced original image
+    // Stage 3: Pixel trace on enhanced image with Gemini colors
     console.time(`shapes-${reqId}`);
-    const shapes = await extractPixelShapes(cleanBuffer, colors, isText);
+    const shapes = await extractPixelShapes(enhanced, colors, isText);
     console.timeEnd(`shapes-${reqId}`);
 
-    // Log any colors that didn't produce shapes (helps diagnose missing elements)
+    // Log missing colors for debugging
     const usedColors = [...new Set(shapes.map(s => toThreadColor(s.color)))];
     const missing = colors.filter(c => !usedColors.includes(toThreadColor(c)));
     if (missing.length) console.log(`No shapes found for: ${missing.join(", ")}`);
 
     if (!shapes.length) return res.status(500).json({ error: "No shapes extracted" });
 
-    // Stage 4: Generate stitches
+    // Stage 4: Generate stitches with improved ordering
     const result = generateStitches(shapes);
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2,6);
     jobs.set(id, result);
@@ -828,8 +826,8 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "22.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "23.0" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v22 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v23 running on port ${PORT}`));
 server.timeout = 120000;
