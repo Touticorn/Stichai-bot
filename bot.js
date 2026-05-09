@@ -112,7 +112,7 @@ Rules:
   try {
     const body = {
       contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
-      generationConfig: { temperature: 0.02, maxOutputTokens: 256 }
+      generationConfig: { temperature: 0.02, maxOutputTokens: 1024 }
     };
     const res = await geminiPost(body, 15000, FLASH_MODEL);
     const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
@@ -700,36 +700,35 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     
     // Stage 2: Colors (Gemini if possible, smart fallback if not)
     // Stage 2: Colors — posterize already found them, just verify
+// Stage 2: Gemini is the brain — it understands design intent
 const b64 = posterized.buffer.toString("base64");
-let colors = posterized.colors;
-let isText = true, isLogo = true;
+let colors, isText = true, isLogo = true;
 
-// Try Gemini for additional context (element names, text/logo detection)
 try {
   const gem = await analyzeColors(b64, "image/png");
-  if (gem) {
+  if (gem && gem.colors && gem.colors.length >= 3) {
+    colors = deduplicateColors(gem.colors);
     isText = gem.is_text !== false;
     isLogo = gem.is_logo !== false;
-    // If Gemini found additional colors posterize missed, add them
-    if (gem.colors) {
-      for (const gc of gem.colors) {
-        if (!colors.some(c => colorDistanceLab(rgbToLab(hexToRgb(c)), rgbToLab(hexToRgb(gc))) < 15)) {
-          colors.push(gc);
-        }
-      }
-    }
+    console.log(`Gemini colors: ${colors.join(", ")}`);
   }
-} catch (e) { /* posterize colors are fine */ }
+} catch (e) { console.log(`Gemini unavailable`); }
 
-// Always ensure black for text-heavy images
-if (!colors.some(c => {
-  const rgb = hexToRgb(c);
-  return (rgb.r + rgb.g + rgb.b) < 120;
-})) {
+// Fallback only if Gemini returned nothing
+if (!colors || colors.length < 2) {
+  colors = posterized.colors.filter(c => {
+    const rgb = hexToRgb(c);
+    return (rgb.r + rgb.g + rgb.b) < 650;
+  });
+  console.log(`Posterize fallback: ${colors.join(", ")}`);
+}
+
+// Always add black for text
+if (!colors.some(c => { const rgb=hexToRgb(c); return (rgb.r+rgb.g+rgb.b)<120; })) {
   colors.push("#000000");
 }
 
-console.log(`Colors (${colors.length}): ${colors.join(", ")}`);
+console.log(`Final: ${colors.join(", ")}`);
     // Stage 3: Pixel trace
     console.time(`shapes-${id}`);
     const shapes = await extractPixelShapes(posterized.buffer, colors, isText);
