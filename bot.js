@@ -31,23 +31,35 @@ const previewCache = new Map();
    GEMINI COLOR DETECTION – no grey, vibrant only
    ============================================================ */
 async function detectColors(b64, mime) {
-  const prompt = `You are selecting thread colors for machine embroidery.
+  const prompt = `Examine this image carefully. Your task is to identify ONLY the thread colors that are ACTUALLY VISIBLE in the design.
 
-List only **vibrant, saturated** colors that can actually be stitched.
-- DO NOT choose grey, beige, pale, or pastel shades – those are usually background.
-- Include WHITE if it appears as a design element (not just background)
-- Include GOLD or YELLOW for metallic elements, crowns, emblems
-- Include BLACK or very dark colors for any dark text or elements
-- Include RED, BLUE, GREEN, or any other vibrant design colors
-- Return exactly 3-6 colors
+## Step 1: Describe what you see
+- What is the background color?
+- What design elements are present? (text, logos, emblems, shapes)
+- What colors do those design elements use?
+
+## Step 2: Count the distinct thread colors
+A "thread color" is a solid, stitchable color that appears in the design itself (NOT the background). Count how many distinct thread colors are actually visible.
+
+## Step 3: List ONLY those colors
+- DO NOT add colors you cannot see
+- DO NOT guess or suggest colors that "might look good"
+- If the design is black and white, your answer is black and white — nothing else
+- White counts as a thread color ONLY if it appears as a design element (not background)
+- Gold/yellow counts if metallic elements are visible
+- If only 2 colors are present, return 2 colors. Do not inflate to 3.
+
+## Examples:
+An Adidas logo on a white background: {"colors":["#000000","#FFFFFF"],"is_text":true,"is_logo":true}
+A red and gold emblem: {"colors":["#CC0000","#FFD700"],"is_text":false,"is_logo":true}
 
 Return ONLY JSON, no markdown, no explanation:
-{"colors":["#CC0000","#FFFFFF","#FFD700","#000000"],"is_text":true,"is_logo":true}`;
+{"colors":["#hex","#hex",...],"is_text":true|false,"is_logo":true|false}`;
 
   try {
     const body = {
       contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: b64 } }] }],
-      generationConfig: { temperature: 0.02, maxOutputTokens: 1024 }
+      generationConfig: { temperature: 0.0, maxOutputTokens: 1024 }
     };
     const res = await geminiPost(body, 15000, FLASH_MODEL);
     const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
