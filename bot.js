@@ -667,41 +667,41 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
   const reqId = Math.random().toString(36).slice(2,6);
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
+// Stage 1: Preprocess original image (clean noise, keep colors vibrant)
+console.time(`preprocess-${reqId}`);
+const cleanBuffer = await sharp(req.file.buffer)
+  .median(3)
+  .sharpen({ sigma: 2.5, m1: 2, m2: 5 })
+  .png()
+  .toBuffer();
+console.timeEnd(`preprocess-${reqId}`);
 
-    // Stage 1: Posterize for clean tracing
-    console.time(`posterize-${reqId}`);
-    const posterized = await posterizeImage(req.file.buffer);
-    console.timeEnd(`posterize-${reqId}`);
-// Stage 2: Gemini detects what's in the image (text/logo), but pixel tracer uses posterize colors
+// Stage 2: Gemini detects colors from original image
 const originalB64 = req.file.buffer.toString("base64");
-let colors = posterized.fallbackColors;
-let isText = true, isLogo = true;
+let colors, isText = true, isLogo = true;
 
-// Gemini for text/logo detection only
-try {
-  const gem = await detectColors(originalB64, req.file.mimetype || "image/png");
-  if (gem) {
-    isText = gem.is_text !== false;
-    isLogo = gem.is_logo !== false;
-    console.log(`Gemini: text=${isText}, logo=${isLogo}`);
-  }
-} catch (e) { /* use defaults */ }
-
-// Ensure black for text
-if (isText && !colors.some(c => {
-  const rgb = hexToRgb(c);
-  return (rgb.r + rgb.g + rgb.b) < 120;
-})) {
-  colors.push("#000000");
+const gem = await detectColors(originalB64, req.file.mimetype || "image/png");
+if (gem && gem.colors && gem.colors.length >= 3) {
+  colors = deduplicateColors(gem.colors);
+  isText = gem.is_text !== false;
+  isLogo = gem.is_logo !== false;
+  console.log(`Gemini: ${colors.join(", ")}`);
+} else {
+  // Fallback: extract colors from cleaned image
+  const posterized = await posterizeImage(req.file.buffer);
+  colors = posterized.fallbackColors;
+  console.log(`Posterize fallback: ${colors.join(", ")}`);
 }
 
-console.log(`Colors (${colors.length}): ${colors.join(", ")}`);
-    // Stage 3: Pixel trace on posterized image with Gemini colors
-    console.time(`shapes-${reqId}`);
-    const shapes = await extractPixelShapes(posterized.buffer, colors, isText);
-    console.timeEnd(`shapes-${reqId}`);
+if (!colors.some(c => { const rgb = hexToRgb(c); return (rgb.r+rgb.g+rgb.b) < 120; })) {
+  colors.push("#000000");
+}
+console.log(`Final (${colors.length}): ${colors.join(", ")}`);
 
-    if (!shapes.length) return res.status(500).json({ error: "No shapes extracted" });
+// Stage 3: Pixel trace on CLEANED ORIGINAL image (not posterized)
+console.time(`shapes-${reqId}`);
+const shapes = await extractPixelShapes(cleanBuffer, colors, isText);
+console.timeEnd(`shapes-${reqId}`);
 
     // Stage 4: Generate stitches
     const result = generateStitches(shapes);
