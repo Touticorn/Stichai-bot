@@ -421,7 +421,7 @@ async function extractPixelShapes(buffer, colors, isText = false) {
     const list = byColor[color];
     list.sort((a,b) => b.pixelCount - a.pixelCount);
     for (let i=0; i<list.length; i++) {
-      if (list[i].pixelCount > 100) {
+      if (list[i].pixelCount > 200) {
         list[i].type = "fill";
       } else {
         list[i].type = "satin";
