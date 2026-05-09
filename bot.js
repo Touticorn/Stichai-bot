@@ -690,15 +690,25 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     } catch (e) { /* use posterize */ }
     
     // Muted color detection
-    const isMuted = colors.every(c => {
-      const rgb = hexToRgb(c);
-      return (rgb.r + rgb.g + rgb.b) > 500 || 
-             (Math.abs(rgb.r-rgb.g)<25 && Math.abs(rgb.g-rgb.b)<25);
-    });
-    if (isMuted) {
-      console.log("Muted colors detected — using embroidery defaults");
-      colors = ["#CC0000", "#000000", "#FFFFFF", "#FFD700"];
-    }
+    // Check if colors look like real embroidery threads (vibrant, distinct)
+const hasVibrantRed = colors.some(c => {
+  const rgb = hexToRgb(c);
+  return rgb.r > 150 && rgb.g < 80 && rgb.b < 80;
+});
+const hasVibrantGold = colors.some(c => {
+  const rgb = hexToRgb(c);
+  return rgb.r > 180 && rgb.g > 140 && rgb.b < 60;
+});
+const hasGray = colors.some(c => {
+  const rgb = hexToRgb(c);
+  return Math.abs(rgb.r-rgb.g)<20 && Math.abs(rgb.g-rgb.b)<20 && rgb.r > 100 && rgb.r < 200;
+});
+
+// If we have gray "colors" or no vibrant red/gold, use embroidery defaults
+if (hasGray || (!hasVibrantRed && !hasVibrantGold)) {
+  console.log("Posterize colors are not vibrant embroidery colors — using defaults");
+  colors = ["#CC0000", "#000000", "#FFFFFF", "#FFD700"];
+}
     
     // Force black for text
     if (!colors.some(c => { const rgb=hexToRgb(c); return (rgb.r+rgb.g+rgb.b)<120; })) {
