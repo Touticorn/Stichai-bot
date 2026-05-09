@@ -71,7 +71,7 @@ async function posterizeImage(buffer) {
   const cleaned = await sharp(buffer)
     .median(3)
     .sharpen({ sigma: 2.5, m1: 2, m2: 5 })
-    .png({ colours: 10, dither: 0 })
+    .png({ colours: 14, dither: 0 })
     .toBuffer();
 
   const { data, info } = await sharp(cleaned).raw().toBuffer({ resolveWithObject: true });
@@ -192,7 +192,7 @@ async function extractPixelShapes(buffer, colors, isText) {
     for (let x = 0; x < pw; x++) {
       const i = (y*pw + x) << 2;
       const pixLab = rgbToLab({ r: data[i], g: data[i+1], b: data[i+2] });
-      let bestIdx = -1, bestDist = 45;
+      let bestIdx = -1, bestDist = 55;
       for (let c = 0; c < labColors.length; c++) {
         const d = colorDistanceLab(pixLab, labColors[c]);
         if (d < bestDist) { bestDist = d; bestIdx = c; }
@@ -218,7 +218,7 @@ async function extractPixelShapes(buffer, colors, isText) {
   }
 
   const shapes = [];
-  const minComponentSize = 10;
+  const minComponentSize = 5;
   let currentMaskId = 1;
 
   for (let ci = 0; ci < labColors.length; ci++) {
