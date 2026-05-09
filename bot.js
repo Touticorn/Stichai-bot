@@ -30,16 +30,19 @@ const previewCache = new Map();
 /* ============================================================
    STAGE 1: POSTERIZATION (Professional "Prepare Artwork")
    ============================================================ */
-async function posterizeImage(buffer, colorCount = 8) {
+async function posterizeImage(buffer, colorCount = 10) {
+  // Step 1: Strong noise removal + contrast boost
   const denoised = await sharp(buffer)
     .median(3)
     .sharpen({ sigma: 2.5, m1: 2, m2: 5 })
     .toBuffer();
 
+  // Step 2: Posterize with more colors to capture details
   const posterized = await sharp(denoised)
     .png({ colours: colorCount, dither: 0 })
     .toBuffer();
 
+  // Step 3: Extract all colors with their pixel counts
   const { data, info } = await sharp(posterized)
     .raw()
     .toBuffer({ resolveWithObject: true });
@@ -51,20 +54,41 @@ async function posterizeImage(buffer, colorCount = 8) {
     colorMap.set(hex, (colorMap.get(hex) || 0) + 1);
   }
 
+  // Step 4: Sort by frequency
   const sorted = [...colorMap.entries()]
-    .sort((a, b) => b[1] - a[1])
+    .sort((a, b) => b[1] - a[1]);
+
+  // Step 5: The most frequent color is the background — remove it
+  const backgroundColor = sorted[0][0];
+  
+  // Step 6: Take the next 6 most frequent colors as design colors
+  const designColors = sorted
+    .slice(1)  // Skip background
+    .filter(([hex, count]) => {
+      // Remove colors very similar to background (anti-aliasing artifacts)
+      const bgRgb = hexToRgb(backgroundColor);
+      const colorRgb = hexToRgb(hex);
+      const dist = Math.sqrt(
+        (bgRgb.r - colorRgb.r) ** 2 +
+        (bgRgb.g - colorRgb.g) ** 2 +
+        (bgRgb.b - colorRgb.b) ** 2
+      );
+      return dist > 80; // Must be visually distinct from background
+    })
+    .slice(0, 6)
     .map(([hex]) => hex);
 
-  const designColors = sorted.filter(hex => {
-    const r = parseInt(hex.slice(1,3), 16);
-    const g = parseInt(hex.slice(3,5), 16);
-    const b = parseInt(hex.slice(5,7), 16);
-    return (r + g + b) < 700;
-  }).slice(0, 6);
+  // Step 7: Ensure black is included for any dark design elements
+  const hasDark = designColors.some(hex => {
+    const rgb = hexToRgb(hex);
+    return (rgb.r + rgb.g + rgb.b) < 180;
+  });
 
   return {
     buffer: posterized,
-    colors: designColors.length >= 2 ? designColors : sorted.slice(0, 6),
+    colors: designColors.length >= 2 ? designColors : sorted.slice(1, 5).map(([h]) => h),
+    backgroundColor,
+    hasDark,
     posterized: true
   };
 }
@@ -675,48 +699,37 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
     console.timeEnd(`posterize-${id}`);
     
     // Stage 2: Colors (Gemini if possible, smart fallback if not)
-    const b64 = posterized.buffer.toString("base64");
-    let colors = posterized.colors;
-    let isText = true, isLogo = true;
-    
-    try {
-      const gem = await analyzeColors(b64, "image/png");
-      if (gem && gem.colors && gem.colors.length >= 3) {
-        colors = deduplicateColors(gem.colors);
-        isText = gem.is_text !== false;
-        isLogo = gem.is_logo !== false;
-        console.log(`Gemini: ${colors.join(", ")}`);
-      }
-    } catch (e) { /* use posterize */ }
-    
-    // Muted color detection
-    // Check if colors look like real embroidery threads (vibrant, distinct)
-const hasVibrantRed = colors.some(c => {
-  const rgb = hexToRgb(c);
-  return rgb.r > 150 && rgb.g < 80 && rgb.b < 80;
-});
-const hasVibrantGold = colors.some(c => {
-  const rgb = hexToRgb(c);
-  return rgb.r > 180 && rgb.g > 140 && rgb.b < 60;
-});
-const hasGray = colors.some(c => {
-  const rgb = hexToRgb(c);
-  return Math.abs(rgb.r-rgb.g)<20 && Math.abs(rgb.g-rgb.b)<20 && rgb.r > 100 && rgb.r < 200;
-});
+    // Stage 2: Colors — posterize already found them, just verify
+const b64 = posterized.buffer.toString("base64");
+let colors = posterized.colors;
+let isText = true, isLogo = true;
 
-// If we have gray "colors" or no vibrant red/gold, use embroidery defaults
-if (hasGray || (!hasVibrantRed && !hasVibrantGold)) {
-  console.log("Posterize colors are not vibrant embroidery colors — using defaults");
-  colors = ["#CC0000", "#000000", "#FFFFFF", "#FFD700"];
-}
-    
-    // Force black for text
-    if (!colors.some(c => { const rgb=hexToRgb(c); return (rgb.r+rgb.g+rgb.b)<120; })) {
-      colors.push("#000000");
+// Try Gemini for additional context (element names, text/logo detection)
+try {
+  const gem = await analyzeColors(b64, "image/png");
+  if (gem) {
+    isText = gem.is_text !== false;
+    isLogo = gem.is_logo !== false;
+    // If Gemini found additional colors posterize missed, add them
+    if (gem.colors) {
+      for (const gc of gem.colors) {
+        if (!colors.some(c => colorDistanceLab(rgbToLab(hexToRgb(c)), rgbToLab(hexToRgb(gc))) < 15)) {
+          colors.push(gc);
+        }
+      }
     }
-    
-    console.log(`Final colors: ${colors.join(", ")}`);
-    
+  }
+} catch (e) { /* posterize colors are fine */ }
+
+// Always ensure black for text-heavy images
+if (!colors.some(c => {
+  const rgb = hexToRgb(c);
+  return (rgb.r + rgb.g + rgb.b) < 120;
+})) {
+  colors.push("#000000");
+}
+
+console.log(`Colors (${colors.length}): ${colors.join(", ")}`);
     // Stage 3: Pixel trace
     console.time(`shapes-${id}`);
     const shapes = await extractPixelShapes(posterized.buffer, colors, isText);
