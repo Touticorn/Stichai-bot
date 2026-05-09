@@ -332,10 +332,11 @@ async function extractPixelShapes(buffer, colors, isText) {
 
   if (isText && filtered.length > 3) {
     for (const s of filtered) {
-      s.type = s.pixelCount > 200 ? "fill" : "satin";
-    }
+      const b = polygonBounds(s.points);
+const narrow = Math.min(b.width, b.height) < 20;
+s.type = (!narrow && s.pixelCount > 200) ? "fill" : "satin";
   }
-
+  }
   return filtered;
 }
 
