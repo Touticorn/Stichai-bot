@@ -344,6 +344,7 @@ CRITICAL RULES:
 4. Maximum 30 shapes
 5. Background already removed — only return design shapes
 6. Order: backgrounds first, then details on top
+7. If text appears in MULTIPLE colors (e.g., red AND black AND white), list EACH text color separately
 
 Return ONLY:
 {"shapes":[{"type":"fill|satin|satin_fill","color":"#hex","points":[[x,y],[x,y],...]},...]}`;
@@ -712,7 +713,7 @@ async function extractPixelShapes(buffer, colors, isText = false) {
       // Thin script letters (like "Winstor") → satin
       // Large backgrounds → fill
       
-      if (minDim > 25 && maxDim < 200 && aspectRatio < 4) {
+      if (minDim > 15 && maxDim < 220 && aspectRatio < 5) {
         // Wide, not-too-long shape = thick text → satin_fill
         s.type = "satin_fill";
       } else if ((minDim < 25 || aspectRatio > 4) && maxDim < 200) {
@@ -1429,12 +1430,19 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
         const maxDim = Math.max(b.width, b.height);
         const aspectRatio = maxDim / Math.max(minDim, 1);
         
-        if (minDim > 25 && maxDim < 200 && aspectRatio < 4) s.type = "satin_fill";
+        if (minDim > 15 && maxDim < 220 && aspectRatio < 5) s.type = "satin_fill";
         else if ((minDim < 25 || aspectRatio > 4) && maxDim < 200) s.type = "satin";
       }
     }
 
     // Step 3: Generate stitches
+
+    // Debug: log each shape's type and size
+    for (const s of shapes) {
+      const b = s.bounds || polygonBounds(s.points);
+      console.log(`  Shape: ${s.type} ${s.color} ${Math.round(b.width)}x${Math.round(b.height)}`);
+    }
+
     const result = generateStitches(shapes);
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     jobs.set(id, result);
