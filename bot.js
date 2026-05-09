@@ -28,7 +28,7 @@ const jobs = new Map();
 const previewCache = new Map();
 
 /* ============================================================
-   GEMINI COLOR DETECTION — primary, sees original image
+   GEMINI COLOR DETECTION — sees original image
    ============================================================ */
 async function detectColors(b64, mime) {
   const prompt = `You are selecting thread colors for machine embroidery.
@@ -65,7 +65,7 @@ Return ONLY JSON, no markdown, no explanation:
 }
 
 /* ============================================================
-   POSTERIZATION — for clean pixel tracing
+   POSTERIZATION — for clean pixel tracing, preserves small details
    ============================================================ */
 async function posterizeImage(buffer) {
   const cleaned = await sharp(buffer)
@@ -146,7 +146,7 @@ function toThreadColor(hex) {
 }
 
 /* ============================================================
-   PIXEL TRACING — tight contours, no bleeding
+   PIXEL TRACING — tight contours, no bleeding, catches small shapes
    ============================================================ */
 function ramerDouglasPeucker(points, epsilon) {
   if (points.length <= 3) return points;
@@ -192,7 +192,7 @@ async function extractPixelShapes(buffer, colors, isText) {
     for (let x = 0; x < pw; x++) {
       const i = (y*pw + x) << 2;
       const pixLab = rgbToLab({ r: data[i], g: data[i+1], b: data[i+2] });
-      let bestIdx = -1, bestDist = 55;
+      let bestIdx = -1, bestDist = 45;
       for (let c = 0; c < labColors.length; c++) {
         const d = colorDistanceLab(pixLab, labColors[c]);
         if (d < bestDist) { bestDist = d; bestIdx = c; }
@@ -333,15 +333,16 @@ async function extractPixelShapes(buffer, colors, isText) {
   if (isText && filtered.length > 3) {
     for (const s of filtered) {
       const b = polygonBounds(s.points);
-const narrow = Math.min(b.width, b.height) < 20;
-s.type = (!narrow && s.pixelCount > 200) ? "fill" : "satin";
+      const narrow = Math.min(b.width, b.height) < 20;
+      s.type = (!narrow && s.pixelCount > 200) ? "fill" : "satin";
+    }
   }
-  }
+
   return filtered;
 }
 
 /* ============================================================
-   STITCH GENERATION
+   STITCH GENERATION — ordered by proximity, professional density
    ============================================================ */
 function polygonBounds(points) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -409,7 +410,7 @@ function contourFillPolygon(points, color) {
   const stitches = [];
   const angle = computeFillAngle(points);
   const cosA = Math.cos(angle), sinA = Math.sin(angle);
-  const rowSpacing = 2.8, stitchSpacing = 2.5;
+  const rowSpacing = 3.5, stitchSpacing = 3.0;
 
   function toLocal(x, y) { return [x*cosA + y*sinA, -x*sinA + y*cosA]; }
   function toGlobal(lx, ly) { return [lx*cosA - ly*sinA, lx*sinA + ly*cosA]; }
@@ -503,55 +504,56 @@ function generateStitches(shapes) {
   }
 
   // Order color groups by proximity
-const colorList = Object.keys(groups);
-const orderedColors = [];
-let entryX = 0, entryY = 0;
-while (colorList.length) {
-  let bestIdx = 0, bestDist = Infinity;
-  for (let i = 0; i < colorList.length; i++) {
-    const s = groups[colorList[i]][0];
-    const d = Math.hypot(s.centroid[0] - entryX, s.centroid[1] - entryY);
-    if (d < bestDist) { bestDist = d; bestIdx = i; }
-  }
-  const col = colorList.splice(bestIdx, 1)[0];
-  orderedColors.push(col);
-  const last = groups[col][groups[col].length - 1];
-  entryX = last.centroid[0];
-  entryY = last.centroid[1];
-}
-
-let lastX = 0, lastY = 0;
-for (const color of orderedColors) {
-  const ordered = [groups[color][0]];
-  const remaining = groups[color].slice(1);
-  while (remaining.length) {
+  const colorList = Object.keys(groups);
+  const orderedColors = [];
+  let entryX = 0, entryY = 0;
+  while (colorList.length) {
     let bestIdx = 0, bestDist = Infinity;
-    const [lx, ly] = ordered[ordered.length - 1].centroid;
-    for (let i = 0; i < remaining.length; i++) {
-      const [cx, cy] = remaining[i].centroid;
-      const d = Math.hypot(cx - lx, cy - ly);
+    for (let i = 0; i < colorList.length; i++) {
+      const s = groups[colorList[i]][0];
+      const d = Math.hypot(s.centroid[0] - entryX, s.centroid[1] - entryY);
       if (d < bestDist) { bestDist = d; bestIdx = i; }
     }
-    ordered.push(remaining.splice(bestIdx, 1)[0]);
+    const col = colorList.splice(bestIdx, 1)[0];
+    orderedColors.push(col);
+    const last = groups[col][groups[col].length - 1];
+    entryX = last.centroid[0];
+    entryY = last.centroid[1];
   }
 
-  for (const s of ordered) {
-    const pts = s.points;
-    const [sx, sy] = pts[0];
-    const jump = Math.hypot(sx - lastX, sy - lastY);
-    if (jump > 20 && all.length) {
-      all.push({ x: Math.round(lastX), y: Math.round(lastY), color, type: "trim" });
-      all.push({ x: Math.round(sx), y: Math.round(sy), color, type: "trim" });
+  let lastX = 0, lastY = 0;
+  for (const color of orderedColors) {
+    // NN order within each color group
+    const ordered = [groups[color][0]];
+    const remaining = groups[color].slice(1);
+    while (remaining.length) {
+      let bestIdx = 0, bestDist = Infinity;
+      const [lx, ly] = ordered[ordered.length - 1].centroid;
+      for (let i = 0; i < remaining.length; i++) {
+        const [cx, cy] = remaining[i].centroid;
+        const d = Math.hypot(cx - lx, cy - ly);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      ordered.push(remaining.splice(bestIdx, 1)[0]);
     }
-    if (s.type === "fill") {
-      all.push(...underlayFillPolygon(pts, color));
-      all.push(...contourFillPolygon(pts, color));
-    } else {
-      all.push(...satinColumnPolygon(pts, color));
+
+    for (const s of ordered) {
+      const pts = s.points;
+      const [sx, sy] = pts[0];
+      const jump = Math.hypot(sx - lastX, sy - lastY);
+      if (jump > 20 && all.length) {
+        all.push({ x: Math.round(lastX), y: Math.round(lastY), color, type: "trim" });
+        all.push({ x: Math.round(sx), y: Math.round(sy), color, type: "trim" });
+      }
+      if (s.type === "fill") {
+        all.push(...underlayFillPolygon(pts, color));
+        all.push(...contourFillPolygon(pts, color));
+      } else {
+        all.push(...satinColumnPolygon(pts, color));
+      }
+      if (all.length) { const l = all[all.length - 1]; lastX = l.x; lastY = l.y; }
     }
-    if (all.length) { const l = all[all.length - 1]; lastX = l.x; lastY = l.y; }
   }
-}
   all.push(...runningPolygon([[-2,-2],[designW+2,-2],[designW+2,designH+2],[-2,designH+2]], "#333333"));
   return { stitches: all, designW, designH, shapes };
 }
@@ -699,44 +701,69 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
   const reqId = Math.random().toString(36).slice(2,6);
   try {
     if (!req.file) return res.status(400).json({ error: "No image" });
-// Stage 1: Preprocess original image (clean noise, keep colors vibrant)
-console.time(`preprocess-${reqId}`);
-const cleanBuffer = await sharp(req.file.buffer)
-  .median(3)
-  .sharpen({ sigma: 2.5, m1: 2, m2: 5 })
-  .png()
-  .toBuffer();
-console.timeEnd(`preprocess-${reqId}`);
 
-// Stage 2: Gemini detects colors from original image
-const originalB64 = req.file.buffer.toString("base64");
-let colors, isText = true, isLogo = true;
+    // Stage 1: Enhanced preprocessing (v17 pipeline) to make colors pop
+    console.time(`preprocess-${reqId}`);
+    const cleanBuffer = await sharp(req.file.buffer)
+      .rotate()
+      .resize(2000, 2000, { fit: "inside", withoutEnlargement: false })
+      .linear(1.15, -10)
+      .normalize()
+      .modulate({ saturation: 1.7 })
+      .median(1)
+      .sharpen({ sigma: 1.2, m1: 1.5, m2: 2.5 })
+      .toFormat("png")
+      .toBuffer();
+    console.timeEnd(`preprocess-${reqId}`);
 
-const gem = await detectColors(originalB64, req.file.mimetype || "image/png");
-if (gem && gem.colors && gem.colors.length >= 3) {
-  colors = deduplicateColors(gem.colors);
-  isText = gem.is_text !== false;
-  isLogo = gem.is_logo !== false;
-  console.log(`Gemini: ${colors.join(", ")}`);
-} else {
-  // Fallback: extract colors from cleaned image
-  const posterized = await posterizeImage(req.file.buffer);
-  colors = posterized.fallbackColors;
-  console.log(`Posterize fallback: ${colors.join(", ")}`);
-}
+    // Stage 2: Gemini detects colors from original image (for text/logo flags and color hints)
+    const originalB64 = req.file.buffer.toString("base64");
+    let colors = [], isText = true, isLogo = true;
 
-if (!colors.some(c => { const rgb = hexToRgb(c); return (rgb.r+rgb.g+rgb.b) < 120; })) {
-  colors.push("#000000");
-}
-console.log(`Final (${colors.length}): ${colors.join(", ")}`);
+    // Get posterized fallback colors (these are guaranteed to exist in the image)
+    const posterized = await posterizeImage(cleanBuffer);
+    colors = posterized.fallbackColors;
 
-// Stage 3: Pixel trace on CLEANED ORIGINAL image (not posterized)
-console.time(`shapes-${reqId}`);
-const shapes = await extractPixelShapes(cleanBuffer, colors, isText);
-console.timeEnd(`shapes-${reqId}`);
-// Remove colors with zero shapes
-const usedColors = [...new Set(shapes.map(s => toThreadColor(s.color)))];
-colors = colors.filter(c => usedColors.includes(toThreadColor(c)));
+    const gem = await detectColors(originalB64, req.file.mimetype || "image/png");
+    if (gem) {
+      isText = gem.is_text !== false;
+      isLogo = gem.is_logo !== false;
+      console.log(`Gemini: text=${isText}, logo=${isLogo} ${gem.colors ? 'colors='+gem.colors.join(',') : ''}`);
+      // Merge Gemini colors that are missing from posterize (e.g., gold)
+      if (gem.colors) {
+        for (const gc of gem.colors) {
+          const exists = colors.some(c => colorDistanceLab(rgbToLab(hexToRgb(c)), rgbToLab(hexToRgb(gc))) < 15);
+          if (!exists) {
+            colors.push(gc);
+            console.log(`Added Gemini color not in posterize: ${gc}`);
+          }
+        }
+      }
+    }
+
+    // Deduplicate and ensure black for text
+    colors = deduplicateColors(colors);
+    if (isText && !colors.some(c => {
+      const rgb = hexToRgb(c);
+      return (rgb.r + rgb.g + rgb.b) < 120;
+    })) {
+      colors.push("#000000");
+    }
+
+    console.log(`Final colors (${colors.length}): ${colors.join(", ")}`);
+
+    // Stage 3: Pixel trace on enhanced original image
+    console.time(`shapes-${reqId}`);
+    const shapes = await extractPixelShapes(cleanBuffer, colors, isText);
+    console.timeEnd(`shapes-${reqId}`);
+
+    // Log any colors that didn't produce shapes (helps diagnose missing elements)
+    const usedColors = [...new Set(shapes.map(s => toThreadColor(s.color)))];
+    const missing = colors.filter(c => !usedColors.includes(toThreadColor(c)));
+    if (missing.length) console.log(`No shapes found for: ${missing.join(", ")}`);
+
+    if (!shapes.length) return res.status(500).json({ error: "No shapes extracted" });
+
     // Stage 4: Generate stitches
     const result = generateStitches(shapes);
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2,6);
@@ -801,8 +828,8 @@ app.get("/download/:id/:format", (req, res) => {
   return res.send(buf);
 });
 
-app.get("/health", (_req, res) => res.json({ status: "ok", version: "21.0" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", version: "22.0" }));
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => console.log(`Stichai v21 running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Stichai v22 running on port ${PORT}`));
 server.timeout = 120000;
