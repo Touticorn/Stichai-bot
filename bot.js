@@ -267,6 +267,8 @@ CRITICAL COLOR RULES:
 - Include SMALL accent colors (tiny dots, thin lines, emblems, crown details)
 - Do NOT merge similar reds — list them separately if they look different
 - Do NOT merge dark colors with black — list black as #000000 if present
+- Pure black (#000000) and pure white (#FFFFFF) are VALID embroidery colors — include them if present
+- If you see text in MULTIPLE colors (e.g., red text, black text, white text), list EACH text color separately
 
 Return ONLY this exact JSON format:
 {"background":"#RRGGBB","colors":["#RRGGBB","#RRGGBB",...],"is_text":true|false,"is_logo":true|false}
@@ -289,20 +291,22 @@ is_logo = true if image has emblem, crown, shield, or brand mark`;
   try { parsed = JSON.parse(jsonStr); }
   catch (e) { parsed = JSON.parse(repairJSON(jsonStr)); }
   
-  // ✨ Force at least 5 colors, add black if text detected and no dark color found
+  // ✨ Deduplicate with generous threshold (allows near-black variants)
   let colors = deduplicateColors(parsed.colors || ["#FF0000", "#FFFFFF", "#0000FF"]);
   
-  if (parsed.is_text && colors.length < 4) {
+  // ✨ Detect if image likely has black text that was missed
+  if (parsed.is_text) {
     const hasDark = colors.some(c => {
       const rgb = hexToRgb(c);
-      return (rgb.r + rgb.g + rgb.b) < 200; // Dark color threshold
+      return (rgb.r + rgb.g + rgb.b) < 150; // Strict dark check
     });
     if (!hasDark) {
-      colors.push("#000000"); // Add black for text
+      colors.push("#000000"); // Force black for text
+      console.log("Added #000000 for text (no dark color found)");
     }
   }
   
-  // Ensure minimum 4 colors for complex designs
+  // ✨ Ensure minimum 4 colors for complex designs
   if (colors.length < 4) {
     console.log(`Only ${colors.length} colors detected, might miss details`);
   }
@@ -321,7 +325,6 @@ is_logo = true if image has emblem, crown, shield, or brand mark`;
     is_logo: !!parsed.is_logo,
   };
 }
-
 async function extractGeminiShapes(b64, mime, colors, isText, isLogo) {
   const colorList = colors.join(", ");
   const prompt = `You are a professional embroidery digitizer using Wilcom/Hatch standards.
@@ -344,7 +347,6 @@ CRITICAL RULES:
 4. Maximum 30 shapes
 5. Background already removed — only return design shapes
 6. Order: backgrounds first, then details on top
-7. If text appears in MULTIPLE colors (e.g., red AND black AND white), list EACH text color separately
 
 Return ONLY:
 {"shapes":[{"type":"fill|satin|satin_fill","color":"#hex","points":[[x,y],[x,y],...]},...]}`;
@@ -372,7 +374,7 @@ Return ONLY:
     if (first[0] !== last[0] || first[1] !== last[1]) points.push([...first]);
     
     const b = polygonBounds(points);
-    if (b.width < 2 || b.height < 2) continue;
+    if (b.width < 5 || b.height < 5) continue;
     if (points.length < 4) continue;
     
     // ✨ Handle "satin_fill" type from Gemini
@@ -422,7 +424,7 @@ function deduplicateColors(colors) {
     let dup = false;
     for (let j = 0; j < unique.length; j++) {
       // ✨ Stricter dedup threshold to keep similar colors separate
-      if (colorDistanceLab(labs[i], rgbToLab(hexToRgb(unique[j]))) < 12) { dup = true; break; }
+      if (colorDistanceLab(labs[i], rgbToLab(hexToRgb(unique[j]))) < 22) { dup = true; break; }
     }
     if (!dup) unique.push(colors[i]);
   }
@@ -683,9 +685,9 @@ async function extractPixelShapes(buffer, colors, isText = false) {
   const filtered = [];
   for (const s of shapes) {
     const b = polygonBounds(s.points);
-    if (b.width < 2 || b.height < 2) continue;
+    if (b.width < 5 || b.height < 5) continue;
     // ✨ Lower pixel count threshold for tiny emblem pieces
-    if (s.pixelCount < 10) continue;
+    if (s.pixelCount < 50) continue;
     if (s.points.length < 4) continue;
     let contained = false;
     for (const other of shapes) {
@@ -713,7 +715,7 @@ async function extractPixelShapes(buffer, colors, isText = false) {
       // Thin script letters (like "Winstor") → satin
       // Large backgrounds → fill
       
-      if (minDim > 15 && maxDim < 220 && aspectRatio < 5) {
+      if (minDim > 25 && maxDim < 200 && aspectRatio < 4) {
         // Wide, not-too-long shape = thick text → satin_fill
         s.type = "satin_fill";
       } else if ((minDim < 25 || aspectRatio > 4) && maxDim < 200) {
@@ -874,7 +876,7 @@ function contourFillPolygon(points, color) {
   const fillAngle = computeFillAngle(points);
   const cosA = Math.cos(fillAngle), sinA = Math.sin(fillAngle);
   
-  const rowSpacing = 2.8;
+  const rowSpacing = 4.0;
   const stitchSpacing = 2.5;
   
   function toLocal(x, y) { return [x * cosA + y * sinA, -x * sinA + y * cosA]; }
@@ -950,6 +952,53 @@ function contourFillPolygon(points, color) {
   }
   
   return stitches;
+}
+
+/* ✨ Satin fill: parallel columns perpendicular to stroke direction */
+function satinFillPolygon(points, color) {
+  const stitches = [];
+  const b = polygonBounds(points);
+  const isWide = b.width >= b.height;
+  const colSpacing = 2.5;
+
+  if (isWide) {
+    for (let lx = b.minX; lx <= b.maxX; lx += colSpacing) {
+      const ints = [];
+      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const [x1, y1] = points[i], [x2, y2] = points[j];
+        if ((x1 <= lx && x2 > lx) || (x2 <= lx && x1 > lx)) {
+          ints.push(y1 + (lx - x1) / (x2 - x1) * (y2 - y1));
+        }
+      }
+      if (ints.length < 2) continue;
+      ints.sort((a, b) => a - b);
+      stitches.push({ x: Math.round(lx), y: Math.round(ints[0]), color, type: "satin" });
+      stitches.push({ x: Math.round(lx), y: Math.round(ints[ints.length - 1]), color, type: "satin" });
+    }
+  } else {
+    for (let ly = b.minY; ly <= b.maxY; ly += colSpacing) {
+      const ints = [];
+      for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const [x1, y1] = points[i], [x2, y2] = points[j];
+        if ((y1 <= ly && y2 > ly) || (y2 <= ly && y1 > ly)) {
+          ints.push(x1 + (ly - y1) / (y2 - y1) * (x2 - x1));
+        }
+      }
+      if (ints.length < 2) continue;
+      ints.sort((a, b) => a - b);
+      stitches.push({ x: Math.round(ints[0]), y: Math.round(ly), color, type: "satin" });
+      stitches.push({ x: Math.round(ints[ints.length - 1]), y: Math.round(ly), color, type: "satin" });
+    }
+  }
+  return stitches;
+}
+
+/* ✨ Adaptive fill: satin for thick text, regular fill for backgrounds */
+function generateAdaptiveFill(points, color, type) {
+  if (type === "satin_fill") {
+    return satinFillPolygon(points, color);
+  }
+  return contourFillPolygon(points, color);
 }
 
 function satinColumnPolygon(points, color) {
@@ -1097,7 +1146,7 @@ function generateStitches(shapes) {
   }
 
   let lastX = 0, lastY = 0;
-  const maxJump = 25;
+  const maxJump = 15;
 
   for (const color of orderedColors) {
     for (const s of colorGroups[color]) {
@@ -1431,18 +1480,11 @@ app.post("/generate-embroidery", upload.single("image"), async (req, res) => {
         const aspectRatio = maxDim / Math.max(minDim, 1);
         
         if (minDim > 15 && maxDim < 220 && aspectRatio < 5) s.type = "satin_fill";
-        else if ((minDim < 25 || aspectRatio > 4) && maxDim < 200) s.type = "satin";
+        else if ((minDim < 15 || aspectRatio > 5) && maxDim < 220) s.type = "satin";
       }
     }
 
     // Step 3: Generate stitches
-
-    // Debug: log each shape's type and size
-    for (const s of shapes) {
-      const b = s.bounds || polygonBounds(s.points);
-      console.log(`  Shape: ${s.type} ${s.color} ${Math.round(b.width)}x${Math.round(b.height)}`);
-    }
-
     const result = generateStitches(shapes);
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     jobs.set(id, result);
