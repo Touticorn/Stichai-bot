@@ -19,15 +19,16 @@ header p{color:#888;margin-top:8px}
 .panel h2{font-size:1.1em;margin-bottom:15px;color:#f7c600;display:flex;align-items:center;gap:8px}
 
 /* Upload */
-.upload-zone{border:2px dashed #444;border-radius:10px;padding:40px;text-align:center;transition:all .2s;margin-bottom:15px;position:relative;overflow:hidden}
+.upload-zone{border:2px dashed #444;border-radius:10px;padding:40px;text-align:center;transition:all .2s;margin-bottom:15px;position:relative;overflow:hidden;cursor:pointer}
 .upload-zone:hover{border-color:#f7c600;background:#1f1f1a}
-.upload-zone.has-image{border-style:solid;border-color:#f7c600;background:#1f1f1a}
-/* File input covers entire zone but is invisible - this is the KEY fix for mobile */
-.upload-zone input[type=file]{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:10}
-.upload-zone .icon{font-size:3em;margin-bottom:10px;pointer-events:none}
-.upload-zone h3{font-size:1.1em;color:#ccc;pointer-events:none}
-.upload-zone p{color:#666;font-size:.85em;margin-top:5px;pointer-events:none}
-.upload-zone img{pointer-events:none}
+.upload-zone.has-image{border-style:solid;border-color:#f7c600;background:#1f1f1a;padding:20px}
+.upload-zone.has-image .upload-label{display:none}
+.upload-zone.has-image input{display:none}
+.upload-label{display:block;cursor:pointer;width:100%}
+.upload-zone input[type=file]{position:absolute;left:0;top:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:2;font-size:100px}
+.upload-zone .icon{font-size:3em;margin-bottom:10px}
+.upload-zone h3{font-size:1.1em;color:#ccc}
+.upload-zone p{color:#666;font-size:.85em;margin-top:5px}
 #preview-img{max-width:100%;max-height:400px;border-radius:8px;display:none;margin-top:10px}
 
 /* Canvas */
@@ -108,10 +109,12 @@ header p{color:#888;margin-top:8px}
       <div class="panel">
         <h2>1. Upload Your Design</h2>
         <div class="upload-zone" id="dropZone">
-          <input type="file" id="fileInput" accept="image/png,image/jpeg,image/jpg,image/webp" onchange="handleImage(event)">
-          <div class="icon" id="uploadIcon">📁</div>
-          <h3 id="uploadText">Tap to select photo</h3>
-          <p>PNG, JPG, WEBP — Max 10MB</p>
+          <label class="upload-label" for="fileInput">
+            <div class="icon" id="uploadIcon">&#128193;</div>
+            <h3 id="uploadText">Tap to select photo</h3>
+            <p>PNG, JPG, WEBP &mdash; Max 10MB</p>
+          </label>
+          <input type="file" id="fileInput" accept="image/*" capture="environment">
           <img id="preview-img" alt="Preview">
         </div>
 
@@ -122,13 +125,13 @@ header p{color:#888;margin-top:8px}
 
         <div id="maskTools" style="display:none;">
           <div class="mask-header">
-            <div class="mask-status" id="maskStatus">🔴 Remove Mode: Paint over areas to EXCLUDE from stitching</div>
+            <div class="mask-status" id="maskStatus">&#128308; Remove Mode: Paint over areas to EXCLUDE from stitching</div>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin:10px 0;">
             <div class="tools">
-              <button class="tool-btn active" id="brushBtn" onclick="setTool('brush')">🖌️ Remove Area</button>
-              <button class="tool-btn" id="eraserBtn" onclick="setTool('eraser')">❌ Undo Remove</button>
-              <button class="tool-btn" id="clearBtn" onclick="clearMask()">🗑️ Clear All</button>
+              <button class="tool-btn active" id="brushBtn" onclick="setTool('brush')">&#128396;&#65039; Remove Area</button>
+              <button class="tool-btn" id="eraserBtn" onclick="setTool('eraser')">&#10060; Undo Remove</button>
+              <button class="tool-btn" id="clearBtn" onclick="clearMask()">&#128465;&#65039; Clear All</button>
             </div>
             <div class="brush-sizes">
               <label>Brush:</label>
@@ -147,12 +150,12 @@ header p{color:#888;margin-top:8px}
 
       <!-- Results -->
       <div class="panel" id="resultPanel" style="display:none;margin-top:20px;">
-        <h2>4. Preview & Download</h2>
+        <h2>4. Preview &amp; Download</h2>
         <img id="resultImg" class="result-img" alt="Result">
         <div class="stats" id="stats"></div>
         <div class="shapes-list" id="shapesList"></div>
         <div style="display:flex;gap:8px;margin-top:15px;flex-wrap:wrap;">
-          <button class="btn btn-primary" id="downloadBtn" onclick="downloadFile('dst')">⬇ Download .DST</button>
+          <button class="btn btn-primary" id="downloadBtn" onclick="downloadFile('dst')">&#11015; Download .DST</button>
           <button class="btn btn-secondary" onclick="downloadFile('pes')">.PES</button>
           <button class="btn btn-secondary" onclick="downloadFile('jef')">.JEF</button>
           <button class="btn btn-secondary" onclick="downloadFile('exp')">.EXP</button>
@@ -203,9 +206,9 @@ header p{color:#888;margin-top:8px}
         <h2>3. Generate</h2>
         <div class="progress-bar" id="progressBar"><div class="progress-bar-fill" id="progressFill"></div></div>
         <div class="spinner" id="spinner"></div>
-        <button class="btn btn-primary" id="generateBtn" onclick="generate()" style="width:100%;padding:14px;font-size:1.1em;">⚡ Generate Embroidery</button>
+        <button class="btn btn-primary" id="generateBtn" onclick="generate()" style="width:100%;padding:14px;font-size:1.1em;">&#9889; Generate Embroidery</button>
         <p style="font-size:.8em;color:#666;margin-top:10px;text-align:center;">10-30 seconds depending on complexity</p>
-        <div class="msg info" id="statusMsg" style="display:block;margin-top:10px;">🔴 Upload an image first, then click Generate</div>
+        <div class="msg info" id="statusMsg" style="display:block;margin-top:10px;">&#128308; Upload an image first, then click Generate</div>
       </div>
     </div>
   </div>
@@ -245,12 +248,12 @@ function handleImage(e) {
   const isImage = /\.(png|jpe?g|webp|gif|bmp)$/i.test(name) || (f.type && f.type.startsWith('image/'));
   if (!isImage) {
     log('ERROR: File is not an image: ' + f.name + ' type=' + (f.type || 'unknown'));
-    updateStatus('❌ Please select an image file (PNG, JPG, WEBP)', 'error');
+    updateStatus('&#10060; Please select an image file (PNG, JPG, WEBP)', 'error');
     return;
   }
   if (f.size > 10 * 1024 * 1024) {
     log('ERROR: File too large: ' + (f.size / 1024 / 1024).toFixed(1) + 'MB');
-    updateStatus('❌ File too large. Max 10MB.', 'error');
+    updateStatus('&#10060; File too large. Max 10MB.', 'error');
     return;
   }
 
@@ -263,19 +266,25 @@ function handleImage(e) {
       document.getElementById('preview-img').src = ev.target.result;
       document.getElementById('preview-img').style.display = 'block';
       document.getElementById('dropZone').classList.add('has-image');
-      document.getElementById('uploadIcon').innerHTML = '📏';
+      document.getElementById('uploadIcon').innerHTML = '&#128207;';
       document.getElementById('uploadText').textContent = f.name;
       setupCanvas(img);
       document.getElementById('maskTools').style.display = 'block';
-      updateStatus('🟢 Image loaded. Paint areas to remove, then click Generate.');
+      updateStatus('&#128994; Image loaded. Paint areas to remove, then click Generate.');
       log('Image ready: ' + img.width + 'x' + img.height);
     };
-    img.onerror = () => { log('ERROR: Failed to decode image'); updateStatus('❌ Failed to load image', 'error'); };
+    img.onerror = () => { log('ERROR: Failed to decode image'); updateStatus('&#10060; Failed to load image', 'error'); };
     img.src = ev.target.result;
   };
-  reader.onerror = () => { log('ERROR: FileReader failed'); updateStatus('❌ Failed to read file', 'error'); };
+  reader.onerror = () => { log('ERROR: FileReader failed'); updateStatus('&#10060; Failed to read file', 'error'); };
   reader.readAsDataURL(f);
 }
+
+// File input listener (not inline, for maximum compatibility)
+document.getElementById('fileInput').addEventListener('change', function(e) {
+  log('File input change fired');
+  handleImage(e);
+});
 
 // Drag & drop
 document.getElementById('dropZone').addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); e.currentTarget.style.borderColor = '#f7c600'; });
@@ -341,4 +350,235 @@ function draw(e) {
   const p = getPos(e);
   maskCtx.lineCap = 'round';
   maskCtx.lineJoin = 'round';
-  maskCtx.lineWidth = b
+  maskCtx.lineWidth = brushSize;
+
+  if (currentTool === 'brush') {
+    // RED paint = areas to REMOVE (very visible)
+    maskCtx.strokeStyle = 'rgba(255, 60, 60, 0.9)';
+    maskCtx.globalCompositeOperation = 'source-over';
+    maskCtx.shadowColor = 'rgba(255,0,0,0.5)';
+    maskCtx.shadowBlur = 4;
+  } else {
+    // Eraser: make transparent again
+    maskCtx.globalCompositeOperation = 'destination-out';
+    maskCtx.shadowColor = 'transparent';
+    maskCtx.shadowBlur = 0;
+  }
+
+  maskCtx.beginPath();
+  maskCtx.moveTo(lastX, lastY);
+  maskCtx.lineTo(p.x, p.y);
+  maskCtx.stroke();
+
+  lastX = p.x; lastY = p.y;
+
+  if (currentTool === 'brush') {
+    hasMaskPainted = true;
+    updateMaskStatus();
+  }
+}
+
+function updateMaskStatus() {
+  const el = document.getElementById('maskStatus');
+  el.classList.add('has-mask');
+  el.innerHTML = '&#128994; Remove Mode: ' + (hasMaskPainted ? 'You have painted areas to remove' : 'Paint over areas to EXCLUDE from stitching');
+}
+
+function setTool(tool) {
+  currentTool = tool;
+  document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(tool + 'Btn').classList.add('active');
+  const el = document.getElementById('maskStatus');
+  if (tool === 'brush') {
+    el.innerHTML = '&#128308; Remove Mode: Painting RED = areas will NOT be stitched';
+    el.classList.remove('has-mask');
+  } else {
+    el.innerHTML = '&#128994; Undo Mode: Paint to erase red marks';
+    el.classList.add('has-mask');
+  }
+}
+
+function setBrushSize(size) {
+  brushSize = size;
+  document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector('.size-btn[data-size="' + size + '"]').classList.add('active');
+}
+
+function clearMask() {
+  if (!maskCtx) return;
+  maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  hasMaskPainted = false;
+  document.getElementById('maskStatus').innerHTML = '&#128308; Remove Mode: Paint over areas to EXCLUDE from stitching';
+  document.getElementById('maskStatus').classList.remove('has-mask');
+  log('Mask cleared');
+}
+
+function updateStatus(html, type) {
+  const el = document.getElementById('statusMsg');
+  el.innerHTML = html;
+  el.className = 'msg ' + (type || 'info');
+  el.style.display = 'block';
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorMsg');
+  el.textContent = msg;
+  el.style.display = 'block';
+  document.getElementById('successMsg').style.display = 'none';
+  updateStatus('&#10060; ' + msg, 'error');
+  log('ERROR: ' + msg);
+}
+
+function showSuccess(msg) {
+  const el = document.getElementById('successMsg');
+  el.textContent = msg;
+  el.style.display = 'block';
+  document.getElementById('errorMsg').style.display = 'none';
+}
+
+// Generate
+async function generate() {
+  if (!imageFile) {
+    showError('Please upload an image first!');
+    return;
+  }
+  if (!maskCtx) {
+    showError('Canvas not ready. Please re-upload the image.');
+    return;
+  }
+
+  const btn = document.getElementById('generateBtn');
+  const spinner = document.getElementById('spinner');
+  const bar = document.getElementById('progressBar');
+  const fill = document.getElementById('progressFill');
+  btn.disabled = true;
+  spinner.style.display = 'block';
+  bar.style.display = 'block';
+  document.getElementById('errorMsg').style.display = 'none';
+  updateStatus('&#128992; Preparing upload...', 'info');
+  log('Starting generation...');
+
+  try {
+    // Build FormData
+    const fd = new FormData();
+    fd.append('image', imageFile);
+
+    // Check if user painted anything on mask
+    let maskBlob = null;
+    if (hasMaskPainted) {
+      log('Has mask painted, capturing...');
+      maskBlob = await new Promise(resolve => maskCanvas.toBlob(resolve, 'image/png'));
+      if (maskBlob) {
+        fd.append('mask', maskBlob, 'mask.png');
+        log('Mask appended: ' + maskBlob.size + ' bytes');
+      }
+    } else {
+      log('No mask painted (full image will be stitched)');
+    }
+
+    // Specs
+    const fabric = document.getElementById('fabricType').value;
+    const machine = document.getElementById('machineBrand').value;
+    const hoop = document.getElementById('hoopSize').value;
+    const density = document.getElementById('stitchDensity').value;
+    const thread = document.getElementById('threadBrand').value;
+    const stabilizer = document.getElementById('stabilizer').value;
+    const instructions = document.getElementById('specialInstructions').value;
+
+    fd.append('fabric', fabric);
+    fd.append('machine', machine);
+    fd.append('hoop', hoop);
+    fd.append('density', density);
+    fd.append('thread', thread);
+    fd.append('stabilizer', stabilizer);
+    fd.append('instructions', instructions);
+
+    log('Specs: ' + JSON.stringify({ fabric, machine, hoop, density, thread, stabilizer }));
+    fill.style.width = '20%';
+    updateStatus('&#128992; Uploading image...', 'info');
+
+    const res = await fetch('/generate-embroidery', {
+      method: 'POST',
+      body: fd
+    });
+    fill.style.width = '60%';
+    log('Response status: ' + res.status);
+
+    if (!res.ok) {
+      let errText = 'Server error: HTTP ' + res.status;
+      try {
+        const errJson = await res.json();
+        if (errJson.error) errText = errJson.error;
+      } catch (e) { /* ignore */ }
+      throw new Error(errText);
+    }
+
+    const data = await res.json();
+    log('Response: success=' + data.success + ' id=' + data.id);
+    if (!data.success) throw new Error(data.error || 'Generation failed');
+
+    fill.style.width = '100%';
+    jobId = data.id;
+    resultData = data;
+
+    // Show results
+    document.getElementById('resultPanel').style.display = 'block';
+    if (data.previewImageUrl) {
+      document.getElementById('resultImg').src = data.previewImageUrl + '?t=' + Date.now();
+      document.getElementById('resultImg').style.display = 'block';
+    }
+
+    // Stats
+    const statsEl = document.getElementById('stats');
+    statsEl.innerHTML =
+      '<div class="stat"><div class="stat-value">' + (data.stitchCount || '?') + '</div><div class="stat-label">Stitches</div></div>' +
+      '<div class="stat"><div class="stat-value">' + (data.shapes?.length || '?') + '</div><div class="stat-label">Shapes</div></div>' +
+      '<div class="stat"><div class="stat-value">' + (data.colors?.length || '?') + '</div><div class="stat-label">Colors</div></div>' +
+      '<div class="stat"><div class="stat-value">' + (data.regions || '?') + '</div><div class="stat-label">Regions</div></div>';
+
+    // Shapes list
+    const listEl = document.getElementById('shapesList');
+    if (data.shapes && data.shapes.length) {
+      listEl.innerHTML = data.shapes.map(function(s) {
+        return '<div class="shape-row">' +
+          '<div class="shape-color" style="background:' + s.color + '"></div>' +
+          '<div class="shape-info">' + s.color + ' &mdash; ' + Math.round(s.bounds?.w || 0) + '&times;' + Math.round(s.bounds?.h || 0) + 'mm</div>' +
+          '<span class="shape-type ' + s.type + '">' + s.type + '</span>' +
+          '<span style="color:#888;font-size:.75em;">' + (s.stitchCount || '0') + ' st</span>' +
+        '</div>';
+      }).join('');
+    } else {
+      listEl.innerHTML = '<p style="color:#666;text-align:center;padding:20px;">No shape data</p>';
+    }
+
+    // Show tuned params info
+    if (data.tunedParams) {
+      const p = data.tunedParams;
+      showSuccess('Generated! Fabric: ' + data.specs?.fabric + ' | Density: ' + p.tatamiRow + 'row ' + p.pull + 'pull');
+    } else {
+      showSuccess('Embroidery generated successfully!');
+    }
+
+    document.getElementById('resultPanel').scrollIntoView({ behavior: 'smooth' });
+    log('Generation complete. Job ID: ' + jobId);
+
+  } catch (err) {
+    showError(err.message || 'Unknown error');
+    log('FATAL: ' + (err.stack || err.message));
+  } finally {
+    btn.disabled = false;
+    spinner.style.display = 'none';
+    setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 800);
+  }
+}
+
+function downloadFile(fmt) {
+  if (!jobId) { showError('No file to download. Generate first.'); return; }
+  log('Downloading: ' + fmt + ' for job ' + jobId);
+  window.open('/download/' + jobId + '/' + fmt, '_blank');
+}
+
+log('Page loaded. Waiting for image upload.');
+</script>
+</body>
+</html>
