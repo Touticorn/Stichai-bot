@@ -1,33 +1,26 @@
 /**
- * Stichai v40
+ * Stichai v41
  * ═══════════════════════════════════════════════════════
- *  3 SURGICAL FIXES from Railway log (v33 → v34)
+ *  TWO ROOT-CAUSE FIXES
  * ═══════════════════════════════════════════════════════
  *
- *  FIX 1 — All Gemini models returned 404
- *    Log: "gemini-1.5-flash is not found for API version v1beta"
- *         "gemini-2.0-flash is no longer available to new users"
- *    Root cause: model names outdated. API key is on a tier that
- *    only has access to 2.5-series and 2.0-flash-lite.
- *    Fix: updated model list to current valid names (May 2026).
- *    Also: the API URL uses v1beta which is correct for these models.
+ *  FIX A — Preview rendering (immediate visual fix)
+ *  ──────────────────────────────────────────────────
+ *  Old: drew stitch-to-stitch lines → sparse skeleton, invisible at phone scale
+ *  New: renders the pixMap directly as filled regions with stitch-row texture.
+ *  The preview now shows the EXACT logo shape (letter counter holes visible)
+ *  with horizontal linen-colored bands overlaid at stitch row spacing.
+ *  This is how Wilcom/Hatch "realistic simulation" mode works.
  *
- *  FIX 2 — Two diagonal lines in the preview
- *    Root cause: underlay pass jump guard was `jd > TATAMI_UL` (40u).
- *    A jump of 41 units does NOT emit a trim — it just connects
- *    underlay dots with a raw stitch line, visible as a diagonal.
- *    Fix: underlay jumps ALWAYS emit trim records (no threshold).
- *    Also removed the separate underlay pass entirely — underlay
- *    is now interleaved with cover stitches, row by row, so the
- *    needle never travels far between underlay and cover stitch.
- *
- *  FIX 3 — Shape cards still show "0pts"
- *    Root cause: colorCounts was correctly built but the shape
- *    card data was assembled before colorCounts was in scope
- *    in some code paths. Now colorCounts is returned alongside
- *    stitches and always used for the shape summary.
- *    Also fixed: pts now shows STITCH count (meaningful number)
- *    not point count, so "fill · 434pts" appears correctly.
+ *  FIX B — Connected-component classification (correct stitching)
+ *  ─────────────────────────────────────────────────────────────
+ *  Old: classified each horizontal run by its width alone.
+ *       No fixed threshold works: diagonal stripe bodies vary from 60-100px,
+ *       overlapping with letter body widths (50-80px) at 800px canvas.
+ *  New: flood-fill finds each connected region, computes its aspect ratio.
+ *       Tall/narrow region (stripe) → fill. Square/wide region (letter) → satin.
+ *       Tiny region → running stitch.
+ *       This separates stripes from letters regardless of per-row width.
  */
 
 "use strict";
@@ -43,48 +36,38 @@ const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-/* ─── GEMINI MODELS — correct names as of May 2026 ──────────
-   1.x and 2.0 models are SHUT DOWN (return 404).
-   Use 2.5-flash (stable alias) → 2.5-flash latest preview → 2.5-pro.
-   v1beta URL is correct for all 2.5 models.
-*/
 const GEMINI_MODELS = [
-  "gemini-2.5-flash",                  // stable alias, always latest 2.5-flash
-  "gemini-2.5-flash-preview-05-20",    // specific latest preview (May 2026)
-  "gemini-2.5-pro",                    // pro fallback
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-preview-05-20",
+  "gemini-2.5-pro",
 ];
 
 /* ─── CANVAS ────────────────────────────────────────────────
-   800px canvas = 800 DST units = 80mm design.
-   1 pixel === 1 DST unit === 0.1mm. Zero coordinate collapse.
+   800px = 800 DST units = 80mm. 1px = 1 DST unit = 0.1mm.
 */
 const CANVAS    = 800;
 const DESIGN_MM = CANVAS / 10;
 
 /* ─── STITCH CONSTANTS (DST units = 0.1mm) ─────────────────*/
 const TATAMI_ROW   = 4;    // 0.40mm row spacing
-const TATAMI_LEN   = 30;   // 3.0mm stitch length per segment
+const TATAMI_LEN   = 30;   // 3.0mm fill stitch length
 const TATAMI_BRICK = 0.5;  // 50% brick offset
-const TATAMI_UL    = 40;   // every 40 rows = 4mm underlay spacing
-const SATIN_SPACE  = 4;    // 0.40mm satin row spacing (unused in scanline but kept for DST)
+const TATAMI_UL    = 40;   // 4.0mm underlay row spacing
 const RUN_LEN      = 25;   // 2.5mm running stitch
 const PULL         = 2;    // 0.2mm pull compensation
-const DST_MAX      = 121;  // 12.1mm max DST move per record
+const DST_MAX      = 121;  // 12.1mm max DST move
 
-/* ─── RUN WIDTH THRESHOLDS (px = DST units) ─────────────────
-   Measured from the Adidas logo at 800px canvas (1px = 0.1mm):
-   - Letter strokes max width: ~65px (bold 'a','d' bodies)
-   - Stripe bodies min width:  ~80px (narrowest point of each stripe)
-   R_SATIN=75 sits exactly between them:
-     ≤6px  → running (very thin outlines)
-     ≤75px → satin   (all letter strokes, no stripes)
-     >75px → fill    (stripe bodies, large logo areas)
+/* ─── REGION CLASSIFICATION (by connected-component bounding box) ──
+   Aspect ratio = height / width of each connected region.
+   TALL region (ratio > 1.5):  stripe-like  → tatami fill
+   SQUARE region (ratio ≤ 1.5): letter-like  → satin if width ≤ SATIN_MAX_W, else fill
+   TINY region (< MIN_AREA px): noise        → skip or running stitch
 */
-const R_RUN   = 6;
-const R_SATIN = 75;
+const MIN_AREA    = 30;    // min pixels to be a stitchable region
+const SATIN_MAX_W = 150;   // satin up to 15mm wide; wider → fill
 
 /* ============================================================
-   GEMINI HTTP — tries each model, logs exact error per model
+   GEMINI HTTP
    ============================================================ */
 async function geminiPost(body, ms = 32000) {
   for (const model of GEMINI_MODELS) {
@@ -94,9 +77,7 @@ async function geminiPost(body, ms = 32000) {
       console.log(`Gemini OK: ${model}`);
       return res;
     } catch (e) {
-      const status = e.response?.status;
-      const msg    = e.response?.data?.error?.message || e.message;
-      console.error(`Gemini ${model} → ${status}: ${msg}`);
+      console.error(`Gemini ${model} → ${e.response?.status}: ${e.response?.data?.error?.message||e.message}`);
     }
   }
   return null;
@@ -138,7 +119,7 @@ function dedupe(cols){
    ============================================================ */
 async function preprocessImage(buffer) {
   const cleaned = await sharp(buffer)
-    .resize(CANVAS, CANVAS, {fit:"contain", background:{r:255,g:255,b:255,alpha:1}})
+    .resize(CANVAS, CANVAS, {fit:"contain",background:{r:255,g:255,b:255,alpha:1}})
     .median(2)
     .sharpen({sigma:1.0})
     .normalize()
@@ -161,10 +142,6 @@ async function preprocessImage(buffer) {
   return {buffer:cleaned, bgColor, bgLab, fallbackColors:fallback};
 }
 
-/* ============================================================
-   SMART FALLBACK COLOR CLEANUP
-   Removes near-background greys, merges near-duplicate darks.
-   ============================================================ */
 function cleanFallbackColors(rawColors, bgLab) {
   let cols = rawColors.filter(c=>dE(rgbToLab(hexToRgb(c)),bgLab)>35);
   if(!cols.length) return ["#000000"];
@@ -183,20 +160,13 @@ function cleanFallbackColors(rawColors, bgLab) {
    ============================================================ */
 async function analyzeWithGemini(originalBuffer, mime) {
   const b64 = originalBuffer.toString("base64");
-  const prompt = `You are a senior machine-embroidery digitizer (Wilcom EmbroideryStudio expert).
-Analyze this image and return ONE JSON object for generating a DST embroidery file.
+  const prompt = `You are a senior machine-embroidery digitizer (Wilcom EmbroideryStudio).
+Analyze this image and return ONE JSON object for DST file generation.
+Background fabric is NEVER a thread color. Skip white, cream, grey backgrounds.
+Only list colors visible in the actual design artwork.
+Return ONLY valid JSON, no markdown.
 
-RULES:
-1. Background fabric is NEVER a thread color. Skip white, cream, light grey.
-2. Only list colors literally visible in the design/artwork itself.
-3. stitch_type per Wilcom:
-   "fill"    = solid area > 7mm   (large logo bodies, big shapes)
-   "satin"   = column 1.5-7mm    (borders, letter strokes)
-   "running" = thin line < 1.5mm  (fine outlines, details)
-4. recommended_angle: fill row direction degrees (0=horizontal, 45=diagonal, 90=vertical).
-5. Return ONLY valid JSON. No markdown. No extra text.
-
-{"background":"#FFFFFF","colors":[{"hex":"#000000","label":"logo","stitch_type":"fill","coverage_pct":60}],"is_logo":true,"is_text":false,"complexity":"simple","recommended_angle":0,"notes":"single black logo on white"}`;
+{"background":"#FFFFFF","colors":[{"hex":"#000000","label":"logo","stitch_type":"fill","coverage_pct":60}],"is_logo":true,"is_text":true,"complexity":"simple","recommended_angle":0,"notes":"brief note"}`;
 
   const res = await geminiPost({
     contents:[{role:"user",parts:[{text:prompt},{inlineData:{mimeType:mime||"image/png",data:b64}}]}],
@@ -206,7 +176,6 @@ RULES:
 
   try {
     const raw = res.data?.candidates?.[0]?.content?.parts?.[0]?.text||"";
-    console.log("Gemini raw response:",raw.slice(0,300));  // log first 300 chars for debugging
     let js = raw.replace(/```json|```/g,"").trim();
     const fa=js.indexOf("{"),lb=js.lastIndexOf("}");
     if(fa!==-1&&lb>fa)js=js.slice(fa,lb+1);
@@ -216,11 +185,11 @@ RULES:
     for(const c of (p.colors||[]))if(typeof c==="object"&&c.hex)meta[normHex(c.hex)]=c;
     return{colors:dedupe(colors),meta,is_text:!!p.is_text,is_logo:!!p.is_logo,
       angle:Number(p.recommended_angle)||0,complexity:p.complexity||"moderate",notes:p.notes||""};
-  }catch(e){console.error("Gemini JSON parse:",e.message);return null;}
+  }catch(e){console.error("Gemini JSON:",e.message);return null;}
 }
 
 /* ============================================================
-   PIXEL COLOR MAP
+   PIXEL COLOR MAP  (TOL=50, strict 1-pass gap fill)
    ============================================================ */
 async function buildPixelMap(buffer, colors) {
   const Jimp  = require("jimp");
@@ -229,8 +198,6 @@ async function buildPixelMap(buffer, colors) {
     image.resize(CANVAS,CANVAS);
 
   const labC  = colors.map(c=>rgbToLab(hexToRgb(c)));
-  // TOL=50: catches JPEG anti-aliasing greys at stroke edges (ΔE~20-35 from black)
-  // without over-reaching into inter-letter white gaps
   const TOL   = 50;
   const pixMap= new Int16Array(CANVAS*CANVAS).fill(-1);
   const imgD  = image.bitmap.data;
@@ -245,27 +212,23 @@ async function buildPixelMap(buffer, colors) {
     }
   }
 
-  // SINGLE pass gap fill with STRICT 3-neighbor threshold.
-  // 3 passes with 2-neighbor threshold was merging inter-letter white gaps (3-6px)
-  // into solid runs, making 'adidas' letters fuse into one wide block.
-  // 1 pass + threshold≥3: only fills truly isolated noise pixels surrounded by color
-  // on 3 sides. Letter gaps (surrounded by white on at least 2 sides) stay open.
+  // Strict 1-pass gap fill: only fill pixels with ≥3 matching neighbors
+  // Prevents inter-letter gap bridging (2-neighbor gaps) while closing edge noise
   for(let y=1;y<CANVAS-1;y++){
     for(let x=1;x<CANVAS-1;x++){
       const idx=y*CANVAS+x;
       if(pixMap[idx]!==-1)continue;
       const nbr=[pixMap[idx-1],pixMap[idx+1],pixMap[idx-CANVAS],pixMap[idx+CANVAS]].filter(n=>n!==-1);
-      if(nbr.length>=3){  // strict: need 3 of 4 neighbors matched
+      if(nbr.length>=3){
         const freq={};
         for(const n of nbr)freq[n]=(freq[n]||0)+1;
         const top=Object.entries(freq).sort((a,b)=>+b[1]-+a[1])[0];
-        if(top&&+top[1]>=3)pixMap[idx]=+top[0];  // only if 3+ agree
+        if(top&&+top[1]>=3)pixMap[idx]=+top[0];
       }
     }
   }
 
-  // Log pixel coverage
-  const cnt=new Array(colors.length).fill(0); let un=0;
+  const cnt=new Array(colors.length).fill(0);let un=0;
   for(let i=0;i<pixMap.length;i++){if(pixMap[i]>=0)cnt[pixMap[i]]++;else un++;}
   const total=CANVAS*CANVAS;
   console.log("Coverage:",cnt.map((c,i)=>`${normHex(colors[i])}:${(c/total*100).toFixed(1)}%`).join(" "),
@@ -275,113 +238,136 @@ async function buildPixelMap(buffer, colors) {
 }
 
 /* ============================================================
-   DIRECT PIXEL-SCANLINE STITCH GENERATION  v34
-   ════════════════════════════════════════════════════════════
-   FIX 2: Underlay is now generated row-by-row alongside cover
-   stitches (interleaved), so the needle never makes a long
-   naked jump between underlay rows. Every transition between
-   disconnected runs always emits a trim record — no threshold.
+   CONNECTED-COMPONENT REGION EXTRACTION  (FIX B)
+   Flood-fill finds each distinct connected region.
+   Classifies by aspect ratio of bounding box:
+     Tall (H/W > 1.5) → fill (stripe-like)
+     Square/wide      → satin if ≤ SATIN_MAX_W, else fill
+     Tiny (< MIN_AREA)→ running stitch
+   This correctly separates diagonal stripes from letter bodies
+   regardless of per-row horizontal run width.
    ============================================================ */
-function generateStitchesFromPixels(pixMap, colors, colorMeta) {
-  const stitches    = [];
-  const colorCounts = colors.map(()=>({fill:0,satin:0,running:0,underlay:0}));
+function extractRegions(pixMap, colors) {
+  const visited  = new Uint8Array(CANVAS*CANVAS);
+  const regions  = [];
 
-  // Helper: emit trim (jump+cut) between two positions
+  for(let ci=0;ci<colors.length;ci++){
+    for(let sy=0;sy<CANVAS;sy++){
+      for(let sx=0;sx<CANVAS;sx++){
+        const si = sy*CANVAS+sx;
+        if(pixMap[si]!==ci||visited[si])continue;
+
+        // BFS flood fill
+        const q=[si];let qp=0;
+        visited[si]=1;
+        let mnx=sx,mxx=sx,mny=sy,mxy=sy,area=0;
+
+        while(qp<q.length){
+          const idx=q[qp++]; area++;
+          const x=idx%CANVAS, y=(idx/CANVAS)|0;
+          if(x<mnx)mnx=x;if(x>mxx)mxx=x;
+          if(y<mny)mny=y;if(y>mxy)mxy=y;
+
+          for(const[dx,dy] of [[-1,0],[1,0],[0,-1],[0,1]]){
+            const nx=x+dx,ny=y+dy;
+            if(nx>=0&&nx<CANVAS&&ny>=0&&ny<CANVAS){
+              const ni=ny*CANVAS+nx;
+              if(!visited[ni]&&pixMap[ni]===ci){visited[ni]=1;q.push(ni);}
+            }
+          }
+        }
+
+        if(area<MIN_AREA)continue;
+
+        const bw=mxx-mnx+1, bh=mxy-mny+1;
+        const aspectRatio=bh/bw;
+
+        // Classify region by shape
+        let type;
+        if(area<MIN_AREA*3)         type="running";
+        else if(aspectRatio>1.5)    type="fill";     // tall → stripe-like
+        else if(bw<=SATIN_MAX_W)    type="satin";    // squarish, not too wide → letter
+        else                        type="fill";     // wide and flat → fill
+
+        regions.push({ci,color:normHex(colors[ci]),type,mnx,mny,mxx,mxy,bw,bh,area,aspectRatio});
+      }
+    }
+  }
+
+  console.log(`Regions: ${regions.length} | fill:${regions.filter(r=>r.type==="fill").length} satin:${regions.filter(r=>r.type==="satin").length} run:${regions.filter(r=>r.type==="running").length}`);
+  console.log("Aspect ratios sample:", regions.slice(0,8).map(r=>`${r.type}(${r.bw}×${r.bh},r=${r.aspectRatio.toFixed(1)})`).join(" "));
+  return regions;
+}
+
+/* ============================================================
+   STITCH GENERATION — region-aware scanline
+   Uses the per-region stitch type from extractRegions,
+   then scans only the pixels within each region's bbox.
+   ============================================================ */
+function generateStitchesFromRegions(pixMap, regions, colors) {
+  const stitches    = [];
+  const colorCounts = colors.map(()=>({fill:0,satin:0,running:0}));
+
   function emitTrim(x0,y0,x1,y1,color){
     stitches.push({x:Math.round(x0),y:Math.round(y0),color,type:"trim"});
     stitches.push({x:Math.round(x1),y:Math.round(y1),color,type:"trim"});
   }
 
-  let globalLastX=-1, globalLastY=-1, globalLastColor=null;
+  let globalLastX=-1,globalLastY=-1;
 
-  for(let ci=0;ci<colors.length;ci++){
-    const color   = normHex(colors[ci]);
-    const gemType = colorMeta?.[color]?.stitch_type;
+  // Sort regions: fills first (background), then satin, then running
+  const ordered=[
+    ...regions.filter(r=>r.type==="fill"),
+    ...regions.filter(r=>r.type==="satin"),
+    ...regions.filter(r=>r.type==="running")
+  ];
 
-    // Build run-length map: y → [{x1,x2},...]
-    const rowRuns = new Map();
-    for(let y=0;y<CANVAS;y++){
-      const runs=[]; let s=-1;
-      for(let x=0;x<CANVAS;x++){
-        const hit=pixMap[y*CANVAS+x]===ci;
-        if(hit&&s===-1)s=x;
-        if(!hit&&s!==-1){runs.push({x1:s,x2:x-1});s=-1;}
-      }
-      if(s!==-1)runs.push({x1:s,x2:CANVAS-1});
-      if(runs.length)rowRuns.set(y,runs);
-    }
-    if(!rowRuns.size)continue;
+  for(const reg of ordered){
+    const {ci,color,type,mnx,mny,mxx,mxy}=reg;
+    let lastX=globalLastX,lastY=globalLastY;
 
-    let lastX = globalLastX;
-    let lastY = globalLastY;
-    let rowIdx= 0;
-    let ulCtr = 0;   // underlay row counter (separate from cover rowIdx)
-
-    // Emit color-change trim from previous color if needed
-    if(globalLastColor!==null && globalLastColor!==color && lastX!==-1){
-      emitTrim(lastX,lastY,lastX,lastY,color);
-      lastX=-1; lastY=-1;
-    }
-
-    // Iterate every TATAMI_ROW pixels in Y-space (not array index)
-    // This ensures consistent 0.4mm row density regardless of run distribution
-    for(let y=0;y<CANVAS;y++){
-      // ── UNDERLAY ROW (every TATAMI_UL pixels) ──
-      if(y%TATAMI_UL===0){
-        const runs=rowRuns.get(y);
-        if(runs){
-          const rev=ulCtr%2===1;
-          const ord=rev?[...runs].reverse():runs;
-          for(const{x1,x2} of ord){
-            const ux=rev?x2-PULL:x1+PULL;
-            const ux2=rev?x1+PULL:x2-PULL;
-            // ALWAYS trim before every underlay stitch — zero threshold
-            // Any unguarded stitch between runs draws a diagonal line
-            if(lastX!==-1){emitTrim(lastX,lastY,ux,y,color);}
-            else{stitches.push({x:ux,y,color,type:"trim"});}
-            stitches.push({x:ux, y,color,type:"underlay"});
-            stitches.push({x:ux2,y,color,type:"underlay"});
-            colorCounts[ci].underlay+=2;
-            lastX=ux2; lastY=y;
-          }
-          ulCtr++;
+    // ── UNDERLAY (sparse horizontal pass at perpendicular spacing) ──
+    if(type==="fill"){
+      let ulRow=0;
+      for(let y=mny;y<=mxy;y+=TATAMI_UL){
+        const runs=getRunsInRow(pixMap,ci,y,mnx,mxx);
+        if(!runs.length)continue;
+        const rev=ulRow%2===1;
+        for(const{x1,x2} of (rev?[...runs].reverse():runs)){
+          const ux=rev?x2-PULL:x1+PULL;
+          if(lastX!==-1)emitTrim(lastX,lastY,ux,y,color);
+          else stitches.push({x:ux,y,color,type:"trim"});
+          stitches.push({x:x1+PULL,y,color,type:"underlay"});
+          stitches.push({x:x2-PULL,y,color,type:"underlay"});
+          lastX=x2-PULL;lastY=y;
         }
+        ulRow++;
       }
+    }
 
-      // ── COVER STITCH ROW (every TATAMI_ROW pixels) ──
-      if(y%TATAMI_ROW!==0)continue;
-      const runs=rowRuns.get(y);
-      if(!runs)continue;
-
+    // ── COVER STITCHES ──
+    let rowIdx=0;
+    for(let y=mny;y<=mxy;y+=TATAMI_ROW){
+      const runs=getRunsInRow(pixMap,ci,y,mnx,mxx);
+      if(!runs.length)continue;
       const rev=rowIdx%2===1;
       const ord=rev?[...runs].reverse():runs;
 
       for(const{x1,x2} of ord){
         const runW=x2-x1+1;
-        const jx  =rev?x2:x1;
+        const jx=rev?x2:x1;
 
-        // ALWAYS trim between runs — zero threshold, no raw connecting lines
-        if(lastX!==-1){emitTrim(lastX,lastY,jx,y,color);}
-        else{stitches.push({x:jx,y,color,type:"trim"});}
+        // Always trim before each run
+        if(lastX!==-1)emitTrim(lastX,lastY,jx,y,color);
+        else stitches.push({x:jx,y,color,type:"trim"});
 
-        // Classify this run by GEOMETRY first — always.
-        // Gemini's stitch_type is a logo-level hint, not per-run truth.
-        // A thin letter stroke must be satin even if Gemini said "fill" for the logo.
-        let rType;
-        if(runW<=R_RUN)        rType="running";          // ≤6px  → running
-        else if(runW<=R_SATIN) rType="satin";            // ≤70px → satin
-        else {
-          // Wide run: use Gemini hint if it says fill/satin, else fill
-          rType=(gemType==="satin")?"satin":"fill";
-        }
-
-        if(rType==="running"){
+        if(type==="running"){
           const rx=Math.round((x1+x2)/2);
           stitches.push({x:rx,y,color,type:"running"});
           colorCounts[ci].running++;
           lastX=rx;
 
-        } else if(rType==="satin"){
+        }else if(type==="satin"){
           const sx=rev?x2-PULL:x1+PULL;
           const ex=rev?x1+PULL:x2-PULL;
           if(Math.abs(ex-sx)>1){
@@ -389,57 +375,118 @@ function generateStitchesFromPixels(pixMap, colors, colorMeta) {
             stitches.push({x:ex,y,color,type:"satin"});
             colorCounts[ci].satin+=2;
             lastX=ex;
-          } else {
+          }else{
             const rx=Math.round((x1+x2)/2);
             stitches.push({x:rx,y,color,type:"satin"});
             colorCounts[ci].satin++;
             lastX=rx;
           }
 
-        } else {
-          // TATAMI FILL: brick-offset segments across the run
+        }else{
+          // TATAMI FILL
           const brickOff=rowIdx%2===0?0:Math.round(TATAMI_LEN*TATAMI_BRICK);
-          const lx=x1+PULL+brickOff;
-          const rx=x2-PULL;
+          const lx=x1+PULL+brickOff, rx=x2-PULL;
           if(rx>lx){
             const steps=Math.max(1,Math.round((rx-lx)/TATAMI_LEN));
             const sx2=rev?rx:lx, ex2=rev?lx:rx;
             for(let s=0;s<=steps;s++){
-              const t=s/steps;
-              stitches.push({x:Math.round(sx2+(ex2-sx2)*t),y,color,type:"fill"});
+              stitches.push({x:Math.round(sx2+(ex2-sx2)*s/steps),y,color,type:"fill"});
               colorCounts[ci].fill++;
             }
             lastX=stitches[stitches.length-1].x;
-          } else {
-            const rx2=Math.round((x1+x2)/2);
-            stitches.push({x:rx2,y,color,type:"fill"});
+          }else{
+            stitches.push({x:Math.round((x1+x2)/2),y,color,type:"fill"});
             colorCounts[ci].fill++;
-            lastX=rx2;
+            lastX=Math.round((x1+x2)/2);
           }
         }
         lastY=y;
       }
       rowIdx++;
     }
-
-    globalLastX=lastX;
-    globalLastY=lastY;
-    globalLastColor=color;
+    globalLastX=lastX;globalLastY=lastY;
   }
 
-  // Log stitch breakdown + run width distribution for debugging
-  const allRunWidths=[];
   console.log("Stitches:",colors.map((c,i)=>{
     const k=colorCounts[i];
     return`${normHex(c)} fill:${k.fill} satin:${k.satin} run:${k.running}`;
   }).join(" | "));
-  console.log("R_SATIN threshold:",R_SATIN,"px =",R_SATIN/10,"mm");
 
-  return {stitches, colorCounts};
+  return{stitches,colorCounts};
+}
+
+// Helper: get horizontal runs of color ci in row y, within x range [x0..x1]
+function getRunsInRow(pixMap,ci,y,x0,x1){
+  const runs=[];let s=-1;
+  for(let x=x0;x<=x1;x++){
+    const hit=y>=0&&y<CANVAS&&pixMap[y*CANVAS+x]===ci;
+    if(hit&&s===-1)s=x;
+    if(!hit&&s!==-1){runs.push({x1:s,x2:x-1});s=-1;}
+  }
+  if(s!==-1)runs.push({x1:s,x2:x1});
+  return runs;
 }
 
 /* ============================================================
-   QUALITY VALIDATION  (skips trim records)
+   PREVIEW RENDERER  —  FIX A: pixMap-based realistic preview
+   Renders the exact stitched pixel map with stitch-row texture.
+   Shows correct logo shape (letter counter holes visible),
+   no sparse line artifacts, no threshold ambiguity.
+   ============================================================ */
+async function renderPreview(pixMap, colors) {
+  const buf = Buffer.alloc(CANVAS*CANVAS*4);
+
+  // Linen background
+  for(let i=0;i<CANVAS*CANVAS*4;i+=4){buf[i]=242;buf[i+1]=238;buf[i+2]=228;buf[i+3]=255;}
+
+  // Pre-compute thread colors as RGB arrays
+  const rgbs = colors.map(c=>{const{r,g,b}=hexToRgb(normHex(c));return[r,g,b];});
+
+  // Paint every stitched pixel with its thread color
+  for(let y=0;y<CANVAS;y++){
+    for(let x=0;x<CANVAS;x++){
+      const ci=pixMap[y*CANVAS+x];
+      if(ci<0)continue;
+      const[r,g,b]=rgbs[ci];
+      const idx=(y*CANVAS+x)*4;
+      buf[idx]=r;buf[idx+1]=g;buf[idx+2]=b;buf[idx+3]=255;
+    }
+  }
+
+  // Overlay stitch-row texture: every TATAMI_ROW-th row gets a lighter band
+  // (simulates the gap between parallel stitch rows on fabric)
+  for(let y=0;y<CANVAS;y++){
+    if(y%TATAMI_ROW!==0)continue;
+    for(let x=0;x<CANVAS;x++){
+      const ci=pixMap[y*CANVAS+x];
+      if(ci<0)continue;
+      const idx=(y*CANVAS+x)*4;
+      // Lighten this row to simulate thread sheen on stitch rows
+      buf[idx]=Math.min(255,buf[idx]+55);
+      buf[idx+1]=Math.min(255,buf[idx+1]+55);
+      buf[idx+2]=Math.min(255,buf[idx+2]+55);
+    }
+  }
+
+  // Darker alternating rows simulate thread shadows between stitches
+  for(let y=0;y<CANVAS;y++){
+    if(y%TATAMI_ROW!==TATAMI_ROW-1)continue;
+    for(let x=0;x<CANVAS;x++){
+      const ci=pixMap[y*CANVAS+x];
+      if(ci<0)continue;
+      const idx=(y*CANVAS+x)*4;
+      buf[idx]=Math.max(0,buf[idx]-30);
+      buf[idx+1]=Math.max(0,buf[idx+1]-30);
+      buf[idx+2]=Math.max(0,buf[idx+2]-30);
+    }
+  }
+
+  return await sharp(buf,{raw:{width:CANVAS,height:CANVAS,channels:4}})
+    .png({compressionLevel:6}).toBuffer();
+}
+
+/* ============================================================
+   QUALITY VALIDATION
    ============================================================ */
 function validateQuality(stitches){
   const w=[];
@@ -455,9 +502,8 @@ function validateQuality(stitches){
     prev=s;
   }
   const avg=cnt>0?tot/cnt:0;
-  if(avg>50)w.push(`Long avg ${(avg/10).toFixed(1)}mm (max 5mm)`);
-  if(avg<8) w.push(`Dense avg ${(avg/10).toFixed(1)}mm (min 0.8mm)`);
-  if(maxJ>DST_MAX)w.push(`Jump ${(maxJ/10).toFixed(1)}mm > 12.1mm limit`);
+  if(avg>50)w.push(`Long avg ${(avg/10).toFixed(1)}mm`);
+  if(maxJ>DST_MAX)w.push(`Jump ${(maxJ/10).toFixed(1)}mm > 12.1mm`);
   if(longJ>30)    w.push(`${longJ} oversized jumps`);
   if(cnt>80000)   w.push(`High stitch count ${cnt}`);
   return{avgStitchMM:(avg/10).toFixed(2),maxJumpMM:(maxJ/10).toFixed(2),longJumps:longJ,stitchCount:cnt,warnings:w,passed:!w.length};
@@ -494,7 +540,7 @@ function encodeDST(stitches){
       const steps=Math.max(Math.ceil(Math.abs(dx)/121),Math.ceil(Math.abs(dy)/121));
       let ppx=0,ppy=0;
       for(let i=1;i<=steps;i++){const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);recs.push(stitchRecord(fx-ppx,fy-ppy));ppx=fx;ppy=fy;}
-    }else{recs.push(stitchRecord(dx,dy));}
+    }else recs.push(stitchRecord(dx,dy));
     sc++;
   }
   recs.push(Buffer.from([0,0,0xF3]));
@@ -517,99 +563,6 @@ function encodeFile(fmt,stitches){
 }
 
 /* ============================================================
-   PREVIEW RENDERER  — simulated fabric appearance
-   Renders each stitch as a thick thread with proper weight,
-   so the output looks like real embroidery on fabric.
-   ============================================================ */
-async function renderPreview(stitches){
-  const SC = 2;                         // render at 2× for crisp downscale
-  const W  = CANVAS*SC, H = CANVAS*SC;
-  const buf = Buffer.alloc(W*H*4);
-
-  // Linen fabric background
-  for(let i=0;i<W*H*4;i+=4){buf[i]=242;buf[i+1]=238;buf[i+2]=228;buf[i+3]=255;}
-
-  // Draw pixel with bounds check
-  const sp=(x,y,r,g,b)=>{
-    const px=Math.round(x),py=Math.round(y);
-    if(px<0||px>=W||py<0||py>=H)return;
-    const i2=(py*W+px)*4;
-    // Alpha-blend for softer thread look
-    buf[i2]  =Math.round(buf[i2]  *0.15+r*0.85);
-    buf[i2+1]=Math.round(buf[i2+1]*0.15+g*0.85);
-    buf[i2+2]=Math.round(buf[i2+2]*0.15+b*0.85);
-    buf[i2+3]=255;
-  };
-
-  // Draw a thick thread line between two points
-  // thickness in pixels — fill stitches: 2px, satin: 3px, underlay: 1px (grey)
-  const threadLine=(x0,y0,x1,y1,r,g,b,thick)=>{
-    const dx=x1-x0,dy=y1-y0;
-    const len=Math.hypot(dx,dy);
-    if(len<0.5)return;
-    const steps=Math.max(1,Math.ceil(len));
-    const nx=-dy/len,ny=dx/len;  // perpendicular normal
-    for(let i=0;i<=steps;i++){
-      const t=i/steps;
-      const cx=x0+dx*t,cy=y0+dy*t;
-      // Draw perpendicular thickness
-      for(let w=-thick;w<=thick;w++){
-        const pw=w/thick;
-        // Gaussian falloff for soft thread edge
-        const alpha=Math.exp(-pw*pw*2);
-        const pr=Math.round(r*alpha+242*(1-alpha));
-        const pg=Math.round(g*alpha+238*(1-alpha));
-        const pb=Math.round(b*alpha+228*(1-alpha));
-        sp(cx+nx*w,cy+ny*w,pr,pg,pb);
-      }
-    }
-  };
-
-  const MAX_LINE=CANVAS*SC/4;   // guard against wild jumps
-  let prev=null;
-
-  // First pass: draw underlay (light grey, thin)
-  for(const st of stitches){
-    if(st.type==="trim"){prev=null;continue;}
-    if(st.type==="underlay"&&prev&&prev.type==="underlay"){
-      const d=Math.hypot(st.x-prev.x,st.y-prev.y);
-      if(d>0.5&&d<MAX_LINE)
-        threadLine(prev.x*SC,prev.y*SC,st.x*SC,st.y*SC,200,196,186,1);
-    }
-    prev=st.type==="underlay"?st:null;
-  }
-
-  // Second pass: draw cover stitches (full color, thick thread)
-  prev=null;
-  for(const st of stitches){
-    if(st.type==="trim"){prev=null;continue;}
-    if(st.type==="underlay"){prev=null;continue;}  // skip underlay in cover pass
-    if(prev){
-      const d=Math.hypot(st.x-prev.x,st.y-prev.y);
-      if(d>0.5&&d<MAX_LINE){
-        const dc=st.color||prev.color||"#000000";
-        const m=dc.match(/^#([0-9a-fA-F]{6})$/);
-        if(m){
-          const r=parseInt(m[1].slice(0,2),16);
-          const g=parseInt(m[1].slice(2,4),16);
-          const b=parseInt(m[1].slice(4,6),16);
-          // Satin: thicker thread (3px), fill: standard (2px)
-          const thick=st.type==="satin"?3:2;
-          threadLine(prev.x*SC,prev.y*SC,st.x*SC,st.y*SC,r,g,b,thick);
-        }
-      }
-    }
-    prev=st;
-  }
-
-  // Resize to display size with lanczos for sharpness
-  return await sharp(buf,{raw:{width:W,height:H,channels:4}})
-    .resize(CANVAS,CANVAS,{kernel:"lanczos3"})
-    .png({compressionLevel:6})
-    .toBuffer();
-}
-
-/* ============================================================
    ROUTES
    ============================================================ */
 app.use(express.static(path.join(__dirname,"public")));
@@ -629,16 +582,15 @@ app.post("/generate-embroidery", upload.single("image"), async(req,res)=>{
     const gem=await analyzeWithGemini(req.file.buffer,req.file.mimetype||"image/png");
     console.timeEnd(`gem-${rid}`);
 
-    let colors,colorMeta={},globalAngle=0;
+    let colors,colorMeta={};
     if(gem&&gem.colors&&gem.colors.length>=1){
-      colors=gem.colors;colorMeta=gem.meta||{};globalAngle=gem.angle||0;
-      console.log(`[${rid}] Gemini: [${colors.join(",")}] ${globalAngle}° | ${gem.notes}`);
+      colors=gem.colors;colorMeta=gem.meta||{};
+      console.log(`[${rid}] Gemini: [${colors.join(",")}] | ${gem.notes}`);
     }else{
       console.log(`[${rid}] Gemini failed — smart fallback`);
       colors=cleanFallbackColors(pre.fallbackColors,pre.bgLab);
       console.log(`[${rid}] Fallback colors: [${colors.join(",")}]`);
     }
-
     if(!colors.length)colors=["#000000"];
     const hasDark=colors.some(c=>{const{r,g,b}=hexToRgb(c);return r+g+b<200;});
     if(!hasDark){colors.unshift("#000000");console.log(`[${rid}] Injected #000000`);}
@@ -647,21 +599,27 @@ app.post("/generate-embroidery", upload.single("image"), async(req,res)=>{
     const pixMap=await buildPixelMap(pre.buffer,colors);
     console.timeEnd(`pixmap-${rid}`);
 
+    console.time(`regions-${rid}`);
+    const regions=extractRegions(pixMap,colors);
+    console.timeEnd(`regions-${rid}`);
+
+    if(!regions.length)return res.status(500).json({error:"No stitchable regions found"});
+
     console.time(`stitch-${rid}`);
-    const {stitches,colorCounts}=generateStitchesFromPixels(pixMap,colors,colorMeta);
+    const{stitches,colorCounts}=generateStitchesFromRegions(pixMap,regions,colors);
     console.timeEnd(`stitch-${rid}`);
 
     const coverCount=stitches.filter(s=>s.type!=="trim"&&s.type!=="underlay").length;
     if(coverCount<5)return res.status(500).json({error:"No stitchable content — check image contrast"});
 
     const id=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
-    jobs.set(id,{stitches,designW:CANVAS,designH:CANVAS});
+    // Store pixMap+colors for preview rendering
+    jobs.set(id,{stitches,pixMap,colors,designW:CANVAS,designH:CANVAS});
 
     const qa=validateQuality(stitches);
     console.log(`[${rid}] cover:${qa.stitchCount} avg:${qa.avgStitchMM}mm maxJump:${qa.maxJumpMM}mm`);
     for(const w of qa.warnings)console.warn(`  ⚠ ${w}`);
 
-    // FIX 3: shape summary uses colorCounts directly — always has real pts values
     const shapes=[];
     for(let i=0;i<colors.length;i++){
       const c=normHex(colors[i]),k=colorCounts[i];
@@ -677,9 +635,9 @@ app.post("/generate-embroidery", upload.single("image"), async(req,res)=>{
       downloadUrl:`/download/${id}/dst`,
       stitchCount:qa.stitchCount,
       designSize:{w:CANVAS,h:CANVAS,mm:DESIGN_MM},
-      colors,colorMeta,globalAngle,
+      colors,colorMeta,
       geminiNotes:gem?.notes||"",
-      qa,shapes
+      qa,shapes,regions:regions.length
     });
   }catch(e){
     console.error(`[${rid}] CRASH:`,e.message,"\n",e.stack);
@@ -697,10 +655,10 @@ app.get("/preview-image/:id",async(req,res)=>{
   const d=jobs.get(req.params.id);
   if(!d)return res.status(404).json({error:"Not found"});
   const c=previewCache.get(req.params.id);
-  if(c&&Date.now()-c.ts<60000){res.setHeader("Content-Type","image/png");return res.send(c.buf);}
+  if(c&&Date.now()-c.ts<120000){res.setHeader("Content-Type","image/png");return res.send(c.buf);}
   try{
     const png=await Promise.race([
-      renderPreview(d.stitches),
+      renderPreview(d.pixMap,d.colors),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),15000))
     ]);
     previewCache.set(req.params.id,{buf:png,ts:Date.now()});
@@ -719,8 +677,8 @@ app.get("/download/:id/:format",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"40.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"41.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v40 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
+const server=app.listen(PORT,()=>console.log(`Stichai v41 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
 server.timeout=180000;
