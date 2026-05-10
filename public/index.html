@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stichai Pro — Embroidery Digitizing</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;}
+  body{background:#0f0f0f;color:#f0f0f0;min-height:100vh;}
+  .container{max-width:1400px;margin:0 auto;padding:20px;}
+  header{text-align:center;padding:30px 0;border-bottom:1px solid #333;margin-bottom:20px;}
+  header h1{font-size:2.5em;font-weight:700;background:linear-gradient(135deg,#ff6b35,#f7c600);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+  header p{color:#888;margin-top:8px;}
+
+  .main-grid{display:grid;grid-template-columns:1fr 380px;gap:20px;}
+  @media(max-width:1100px){.main-grid{grid-template-columns:1fr;}}
+
+  .panel{background:#1a1a1a;border-radius:12px;padding:20px;border:1px solid #2a2a2a;}
+  .panel h2{font-size:1.1em;margin-bottom:15px;color:#f7c600;display:flex;align-items:center;gap:8px;}
+
+  /* Upload */
+  .upload-zone{border:2px dashed #444;border-radius:10px;padding:40px;text-align:center;cursor:pointer;transition:all .2s;margin-bottom:15px;position:relative;}
+  .upload-zone:hover{border-color:#f7c600;background:#1f1f1a;}
+  .upload-zone.has-image{border-style:solid;border-color:#f7c600;background:#1f1f1a;}
+  .upload-zone input{display:none;}
+  .upload-zone .icon{font-size:3em;margin-bottom:10px;}
+  .upload-zone h3{font-size:1.1em;color:#ccc;}
+  .upload-zone p{color:#666;font-size:.85em;margin-top:5px;}
+  #preview-img{max-width:100%;max-height:400px;border-radius:8px;display:none;margin-top:10px;}
+
+  /* Canvas */
+  .canvas-wrap{position:relative;display:none;margin-top:15px;border-radius:10px;overflow:hidden;border:2px solid #333;}
+  .canvas-wrap.active{display:block;}
+  #mainCanvas,#maskCanvas{display:block;width:100%;cursor:crosshair;}
+  #maskCanvas{position:absolute;top:0;left:0;pointer-events:none;opacity:.6;}
+
+  /* Tools */
+  .tools{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap;}
+  .tool-btn{padding:8px 16px;border-radius:8px;border:1px solid #444;background:#222;color:#ccc;cursor:pointer;transition:all .2s;font-size:.85em;}
+  .tool-btn:hover{border-color:#f7c600;color:#f7c600;}
+  .tool-btn.active{background:#f7c600;color:#000;border-color:#f7c600;font-weight:600;}
+
+  .brush-sizes{display:flex;gap:6px;align-items:center;}
+  .brush-sizes label{font-size:.8em;color:#888;}
+  .size-btn{width:32px;height:32px;border-radius:50%;border:2px solid #444;background:#222;color:#ccc;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:.8em;}
+  .size-btn.active{border-color:#f7c600;color:#f7c600;}
+
+  .mask-actions{display:flex;gap:8px;margin-top:10px;}
+  .btn{padding:10px 20px;border-radius:8px;border:none;cursor:pointer;font-size:.9em;font-weight:600;transition:all .2s;}
+  .btn-primary{background:linear-gradient(135deg,#ff6b35,#f7c600);color:#000;}
+  .btn-primary:hover{opacity:.9;transform:translateY(-1px);}
+  .btn-secondary{background:#222;color:#ccc;border:1px solid #444;}
+  .btn-secondary:hover{border-color:#f7c600;color:#f7c600;}
+  .btn:disabled{opacity:.4;cursor:not-allowed;transform:none;}
+
+  /* Specs Form */
+  .spec-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .spec-group label{display:block;font-size:.8em;color:#888;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px;}
+  .spec-group select,.spec-group input{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #333;background:#222;color:#f0f0f0;font-size:.9em;outline:none;}
+  .spec-group select:focus,.spec-group input:focus{border-color:#f7c600;}
+  .spec-group.full{grid-column:1/-1;}
+
+  /* Results */
+  .result-img{max-width:100%;border-radius:10px;border:1px solid #333;margin-top:10px;display:none;}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:15px;}
+  .stat{background:#222;padding:12px;border-radius:8px;text-align:center;border:1px solid #2a2a2a;}
+  .stat-value{font-size:1.5em;font-weight:700;color:#f7c600;}
+  .stat-label{font-size:.75em;color:#888;margin-top:4px;}
+
+  .spinner{width:24px;height:24px;border:2px solid #333;border-top-color:#f7c600;border-radius:50%;animation:spin 1s linear infinite;display:none;margin:0 auto;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  .progress-bar{height:4px;background:#222;border-radius:2px;margin:10px 0;overflow:hidden;display:none;}
+  .progress-bar-fill{height:100%;background:linear-gradient(90deg,#ff6b35,#f7c600);width:0%;transition:width .3s;}
+
+  .error{background:#3a1515;color:#ff6b6b;padding:12px;border-radius:8px;border:1px solid #5a2525;margin-top:10px;font-size:.85em;display:none;}
+  .success{background:#152a15;color:#6bff6b;padding:12px;border-radius:8px;border:1px solid #255a25;margin-top:10px;font-size:.85em;display:none;}
+
+  .shapes-list{max-height:300px;overflow-y:auto;margin-top:10px;}
+  .shape-row{display:flex;align-items:center;gap:10px;padding:8px;background:#222;border-radius:6px;margin-bottom:6px;font-size:.8em;}
+  .shape-color{width:20px;height:20px;border-radius:4px;border:1px solid #444;flex-shrink:0;}
+  .shape-info{flex:1;}
+  .shape-type{padding:2px 8px;border-radius:4px;font-size:.7em;font-weight:600;text-transform:uppercase;}
+  .shape-type.fill{background:#1a3a1a;color:#6bff6b;}
+  .shape-type.satin{background:#1a1a3a;color:#6b6bff;}
+  .shape-type.satin_fill{background:#3a1a3a;color:#ff6bff;}
+  .shape-type.running{background:#3a3a1a;color:#f7c600;}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>STICHAI PRO</h1>
+    <p>Professional embroidery digitizing — AI-powered, user-controlled</p>
+  </header>
+
+  <div class="main-grid">
+    <!-- LEFT: Image + Mask Tool -->
+    <div>
+      <div class="panel">
+        <h2>1. Upload Your Design</h2>
+        <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+          <input type="file" id="fileInput" accept="image/*" onchange="handleImage(event)">
+          <div class="icon">📁</div>
+          <h3>Drop image here or click to browse</h3>
+          <p>PNG, JPG, WEBP — Max 10MB</p>
+          <img id="preview-img" alt="Preview">
+        </div>
+
+        <div class="canvas-wrap" id="canvasWrap">
+          <canvas id="mainCanvas"></canvas>
+          <canvas id="maskCanvas"></canvas>
+        </div>
+
+        <div id="maskTools" style="display:none;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0;flex-wrap:wrap;gap:10px;">
+            <div class="tools">
+              <button class="tool-btn active" id="brushBtn" onclick="setTool('brush')">🖌️ Brush (Remove)</button>
+              <button class="tool-btn" id="eraserBtn" onclick="setTool('eraser')">↩️ Undo Brush</button>
+              <button class="tool-btn" id="clearBtn" onclick="clearMask()">🗑️ Clear All</button>
+            </div>
+            <div class="brush-sizes">
+              <label>Size:</label>
+              <button class="size-btn" data-size="10" onclick="setBrushSize(10)">S</button>
+              <button class="size-btn active" data-size="30" onclick="setBrushSize(30)">M</button>
+              <button class="size-btn" data-size="60" onclick="setBrushSize(60)">L</button>
+              <button class="size-btn" data-size="100" onclick="setBrushSize(100)">XL</button>
+            </div>
+          </div>
+          <p style="font-size:.8em;color:#888;margin-top:8px;">Paint over areas you want to REMOVE (background, frame, etc.). Everything not painted will be stitched.</p>
+        </div>
+      </div>
+
+      <!-- Results -->
+      <div class="panel" id="resultPanel" style="display:none;margin-top:20px;">
+        <h2>4. Preview & Download</h2>
+        <img id="resultImg" class="result-img" alt="Result">
+        <div class="stats" id="stats"></div>
+        <div class="shapes-list" id="shapesList"></div>
+        <div class="mask-actions" style="margin-top:15px;">
+          <button class="btn btn-primary" id="downloadBtn" onclick="downloadFile()">⬇ Download .DST</button>
+          <button class="btn btn-secondary" onclick="downloadFile('pes')">.PES</button>
+          <button class="btn btn-secondary" onclick="downloadFile('jef')">.JEF</button>
+          <button class="btn btn-secondary" onclick="downloadFile('exp')">.EXP</button>
+          <button class="btn btn-secondary" onclick="downloadFile('vp3')">.VP3</button>
+        </div>
+        <div class="success" id="successMsg"></div>
+        <div class="error" id="errorMsg"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Specifications -->
+    <div>
+      <div class="panel">
+        <h2>2. Embroidery Specs</h2>
+        <div class="spec-grid">
+          <div class="spec-group">
+            <label>Fabric Type</label>
+            <select id="fabricType">
+              <option value="cotton">Cotton (T-shirt)</option>
+              <option value="denim">Denim / Jeans</option>
+              <option value="fleece">Fleece / Hoodie</option>
+              <option value="pique">Piqué (Polo)</option>
+              <option value="twill">Twill (Cap / Hat)</option>
+              <option value="satin">Satin / Silk</option>
+              <option value="leather">Leather / PU</option>
+              <option value="towel">Terry Towel</option>
+              <option value="canvas">Canvas / Duck</option>
+              <option value="knit">Light Knit</option>
+            </select>
+          </div>
+          <div class="spec-group">
+            <label>Machine Brand</label>
+            <select id="machineBrand">
+              <option value="tajima">Tajima</option>
+              <option value="brother">Brother</option>
+              <option value="barudan">Barudan</option>
+              <option value="happy">Happy</option>
+              <option value="zsk">ZSK</option>
+              <option value="melco">Melco</option>
+              <option value="ricoma">Ricoma</option>
+              <option value="swf">SWF</option>
+              <option value="toyota">Toyota</option>
+              <option value="generic">Generic / Other</option>
+            </select>
+          </div>
+          <div class="spec-group">
+            <label>Hoop Size</label>
+            <select id="hoopSize">
+              <option value="4x4">4" × 4" (100×100mm)</option>
+              <option value="5x7" selected>5" × 7" (130×180mm)</option>
+              <option value="6x10">6" × 10" (160×260mm)</option>
+              <option value="8x12">8" × 12" (200×300mm)</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="spec-group">
+            <label>Stitch Density</label>
+            <select id="stitchDensity">
+              <option value="low">Low (sparse)</option>
+              <option value="medium" selected>Medium (standard)</option>
+              <option value="high">High (dense)</option>
+              <option value="auto">Auto-detect</option>
+            </select>
+          </div>
+          <div class="spec-group">
+            <label>Thread Brand</label>
+            <select id="threadBrand">
+              <option value="madeira">Madeira</option>
+              <option value="isacord">Isacord</option>
+              <option value="robinson">Robinson-Anton</option>
+              <option value="exquisite">Exquisite</option>
+              <option value="gunold">Gunold</option>
+              <option value="generic">Generic Polyester</option>
+            </select>
+          </div>
+          <div class="spec-group">
+            <label>Stabilizer</label>
+            <select id="stabilizer">
+              <option value="cutaway">Cutaway (woven)</option>
+              <option value="tearaway">Tearaway (stable)</option>
+              <option value="washaway">Washaway (sheer)</option>
+              <option value="fusible">Fusible (knits)</option>
+              <option value="none">None / Hoop only</option>
+            </select>
+          </div>
+          <div class="spec-group full">
+            <label>Special Instructions</label>
+            <input type="text" id="specialInstructions" placeholder="e.g., 'Text must be satin columns', 'Logo max 80mm wide'">
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:20px;">
+        <h2>3. Generate</h2>
+        <div class="progress-bar" id="progressBar"><div class="progress-bar-fill" id="progressFill"></div></div>
+        <div class="spinner" id="spinner"></div>
+        <button class="btn btn-primary" id="generateBtn" onclick="generate()" style="width:100%;padding:14px;font-size:1.1em;" disabled>⚡ Generate Embroidery</button>
+        <p style="font-size:.8em;color:#666;margin-top:10px;text-align:center;">Processing takes 10-30 seconds depending on complexity.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── STATE ───
+let canvas,ctx,maskCanvas,maskCtx;
+let imgWidth,imgHeight,scale;
+let isDrawing=false,currentTool='brush',brushSize=30;
+let lastX,lastY;
+let jobId=null,resultData=null;
+let imageFile=null;
+
+// ─── IMAGE UPLOAD ───
+function handleImage(e){
+  const f=e.target.files[0];if(!f)return;
+  imageFile=f;
+  const reader=new FileReader();
+  reader.onload=(ev)=>{
+    const img=new Image();
+    img.onload=()=>{
+      document.getElementById('preview-img').src=ev.target.result;
+      document.getElementById('preview-img').style.display='block';
+      document.getElementById('dropZone').classList.add('has-image');
+      setupCanvas(img);
+      document.getElementById('maskTools').style.display='block';
+      document.getElementById('generateBtn').disabled=false;
+    };
+    img.src=ev.target.result;
+  };
+  reader.readAsDataURL(f);
+}
+
+// Drag & drop
+document.getElementById('dropZone').addEventListener('dragover',e=>{e.preventDefault();e.currentTarget.style.borderColor='#f7c600';});
+document.getElementById('dropZone').addEventListener('dragleave',e=>{e.currentTarget.style.borderColor='';});
+document.getElementById('dropZone').addEventListener('drop',e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(f){document.getElementById('fileInput').files=e.dataTransfer.files;handleImage({target:{files:[f]}});}});
+
+// ─── CANVAS SETUP ───
+function setupCanvas(img){
+  canvas=document.getElementById('mainCanvas');
+  maskCanvas=document.getElementById('maskCanvas');
+  ctx=canvas.getContext('2d');
+  maskCtx=maskCanvas.getContext('2d');
+
+  const wrap=document.getElementById('canvasWrap');
+  const maxW=wrap.clientWidth;
+  scale=maxW/img.width;
+  const w=Math.round(img.width*scale);
+  const h=Math.round(img.height*scale);
+
+  canvas.width=w;canvas.height=h;
+  maskCanvas.width=w;maskCanvas.height=h;
+  imgWidth=w;imgHeight=h;
+
+  ctx.drawImage(img,0,0,w,h);
+
+  // Init mask (transparent)
+  maskCtx.clearRect(0,0,w,h);
+
+  // Events
+  canvas.addEventListener('mousedown',startDraw);
+  canvas.addEventListener('mousemove',draw);
+  canvas.addEventListener('mouseup',stopDraw);
+  canvas.addEventListener('mouseleave',stopDraw);
+  canvas.addEventListener('touchstart',e=>{e.preventDefault();startDraw(e.touches[0]);},{passive:false});
+  canvas.addEventListener('touchmove',e=>{e.preventDefault();draw(e.touches[0]);},{passive:false});
+  canvas.addEventListener('touchend',stopDraw);
+
+  wrap.classList.add('active');
+}
+
+function getPos(e){
+  const r=canvas.getBoundingClientRect();
+  return{x:(e.clientX-r.left)*(canvas.width/r.width),y:(e.clientY-r.top)*(canvas.height/r.height)};
+}
+
+function startDraw(e){isDrawing=true;const p=getPos(e);lastX=p.x;lastY=p.y;draw(e);}
+function stopDraw(){isDrawing=false;}
+
+function draw(e){
+  if(!isDrawing)return;
+  const p=getPos(e);
+  maskCtx.lineCap='round';maskCtx.lineJoin='round';
+  maskCtx.lineWidth=brushSize;
+
+  if(currentTool==='brush'){
+    maskCtx.strokeStyle='rgba(255,255,255,0.85)';
+    maskCtx.globalCompositeOperation='source-over';
+  }else{
+    maskCtx.globalCompositeOperation='destination-out';
+  }
+
+  maskCtx.beginPath();
+  maskCtx.moveTo(lastX,lastY);
+  maskCtx.lineTo(p.x,p.y);
+  maskCtx.stroke();
+
+  lastX=p.x;lastY=p.y;
+}
+
+function setTool(tool){
+  currentTool=tool;
+  document.querySelectorAll('.tool-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById(tool+'Btn').classList.add('active');
+}
+
+function setBrushSize(size){
+  brushSize=size;
+  document.querySelectorAll('.size-btn').forEach(b=>b.classList.remove('active'));
+  document.querySelector(`.size-btn[data-size="${size}"]`).classList.add('active');
+}
+
+function clearMask(){maskCtx.clearRect(0,0,maskCanvas.width,maskCanvas.height);}
+
+// ─── GENERATE ───
+async function generate(){
+  if(!imageFile)return;
+
+  const btn=document.getElementById('generateBtn');
+  const spinner=document.getElementById('spinner');
+  const bar=document.getElementById('progressBar');
+  const fill=document.getElementById('progressFill');
+  btn.disabled=true;spinner.style.display='block';bar.style.display='block';
+
+  try{
+    // Build form data
+    const fd=new FormData();
+    fd.append('image',imageFile);
+
+    // Add mask if user painted anything
+    const maskData=maskCtx.getImageData(0,0,maskCanvas.width,maskCanvas.height).data;
+    const hasMask=maskData.some((v,i)=>i%4===3&&v>0);
+    if(hasMask){
+      // Convert mask canvas to blob
+      const maskBlob=await new Promise(r=>maskCanvas.toBlob(r,'image/png'));
+      fd.append('mask',maskBlob,'mask.png');
+    }
+
+    // Add specs
+    fd.append('fabric',document.getElementById('fabricType').value);
+    fd.append('machine',document.getElementById('machineBrand').value);
+    fd.append('hoop',document.getElementById('hoopSize').value);
+    fd.append('density',document.getElementById('stitchDensity').value);
+    fd.append('thread',document.getElementById('threadBrand').value);
+    fd.append('stabilizer',document.getElementById('stabilizer').value);
+    fd.append('instructions',document.getElementById('specialInstructions').value);
+
+    fill.style.width='30%';
+    const res=await fetch('/generate-embroidery',{method:'POST',body:fd});
+    fill.style.width='70%';
+
+    if(!res.ok)throw new Error(`HTTP ${res.status}`);
+    const data=await res.json();
+    if(!data.success)throw new Error(data.error||'Generation failed');
+
+    fill.style.width='100%';
+    jobId=data.id;
+    resultData=data;
+
+    // Show results
+    document.getElementById('resultPanel').style.display='block';
+    document.getElementById('resultImg').src=data.previewImageUrl+'?t='+Date.now();
+    document.getElementById('resultImg').style.display='block';
+
+    // Stats
+    const statsEl=document.getElementById('stats');
+    statsEl.innerHTML=`
+      <div class="stat"><div class="stat-value">${data.stitchCount||'?'}</div><div class="stat-label">Stitches</div></div>
+      <div class="stat"><div class="stat-value">${data.shapes?.length||'?'}</div><div class="stat-label">Shapes</div></div>
+      <div class="stat"><div class="stat-value">${data.colors?.length||'?'}</div><div class="stat-label">Colors</div></div>
+      <div class="stat"><div class="stat-value">${data.audit?.avgStitchLength||'?'}mm</div><div class="stat-label">Avg Stitch</div></div>
+    `;
+
+    // Shapes list
+    const listEl=document.getElementById('shapesList');
+    if(data.shapes){
+      listEl.innerHTML=data.shapes.map(s=>`
+        <div class="shape-row">
+          <div class="shape-color" style="background:${s.color}"></div>
+          <div class="shape-info">${s.color} — ${Math.round(s.bounds?.w||0)}×${Math.round(s.bounds?.h||0)}mm</div>
+          <span class="shape-type ${s.type}">${s.type}</span>
+          <span style="color:#888;font-size:.75em;">${s.stitchCount||s.pts||''} st</span>
+        </div>
+      `).join('');
+    }
+
+    document.getElementById('successMsg').textContent='✅ Embroidery generated successfully!';
+    document.getElementById('successMsg').style.display='block';
+    document.getElementById('errorMsg').style.display='none';
+
+    // Scroll to results
+    document.getElementById('resultPanel').scrollIntoView({behavior:'smooth'});
+
+  }catch(err){
+    document.getElementById('errorMsg').textContent='❌ '+err.message;
+    document.getElementById('errorMsg').style.display='block';
+    document.getElementById('successMsg').style.display='none';
+  }finally{
+    btn.disabled=false;spinner.style.display='none';
+    setTimeout(()=>{bar.style.display='none';fill.style.width='0%';},1000);
+  }
+}
+
+function downloadFile(fmt='dst'){
+  if(!jobId)return;
+  window.open(`/download/${jobId}/${fmt}`,'_blank');
+}
+</script>
+</body>
+</html>
