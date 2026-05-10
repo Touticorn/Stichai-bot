@@ -863,38 +863,29 @@ function encodeFile(fmt,stitches){
 }
 
 /* ============================================================
+   DETECTION CACHE (short-lived, for Detect → Select → Generate flow)
+   ============================================================ */
+const detections = new Map();   // detectionId → {pixMap,regions,colors,pre,geminiNotes,timestamp}
+setInterval(()=>{
+  const now = Date.now();
+  for(const [id,d] of detections){ if(now-d.timestamp>300000) detections.delete(id); }
+}, 60000); // TTL 5 min
+
+/* ============================================================
    ROUTES
    ============================================================ */
 app.use(express.static(path.join(__dirname,"public")));
 app.get("/",(_, res)=>res.sendFile(path.join(__dirname,"public","index.html")));
 
-app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:"mask",maxCount:1}]), async(req,res)=>{
+/* ─── DETECT SHAPES (Step 1: analyze, return colors + shapes only) ── */
+app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask",maxCount:1}]), async(req,res)=>{
   res.setTimeout(0);
   const rid=Math.random().toString(36).slice(2,6);
   try{
     const imgFile=req.files?.image?.[0];
     const maskFile=req.files?.mask?.[0];
-    if(!imgFile){
-      console.error(`[${rid}] No image in req.files`);
-      return res.status(400).json({error:"No image uploaded"});
-    }
-    console.log(`[${rid}] Request: image=${imgFile.size}B mime=${imgFile.mimetype} mask=${maskFile?maskFile.size+'B':'none'}`);
-
-    // ── Parse specs from req.body (multer puts non-file fields here) ──
-    const body = req.body || {};
-    const specs = {
-      fabric: body.fabric || "cotton",
-      machine: body.machine || "generic",
-      hoop: body.hoop || "5x7",
-      density: body.density || "medium",
-      thread: body.thread || "generic",
-      stabilizer: body.stabilizer || "cutaway",
-      instructions: body.instructions || ""
-    };
-    console.log(`[${rid}] Specs:`, JSON.stringify(specs));
-
-    const params = getStitchParams(specs);
-    console.log(`[${rid}] Tuned: row=${params.tatamiRow} len=${params.tatamiLen} pull=${params.pull} ul=${params.tatamiUl}`);
+    if(!imgFile) return res.status(400).json({error:"No image uploaded"});
+    console.log(`[${rid}] DETECT: image=${imgFile.size}B mask=${maskFile?maskFile.size+'B':'none'}`);
 
     console.time(`pre-${rid}`);
     let pre=await preprocessImage(imgFile.buffer);
@@ -913,14 +904,14 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
 
     let colors,colorMeta={};
     if(gem&&gem.colors&&gem.colors.length>=1){
-      colors=gem.colors;colorMeta=gem.meta||{};
+      colors=gem.colors; colorMeta=gem.meta||{};
       console.log(`[${rid}] Gemini: [${colors.join(",")}] | ${gem.notes}`);
     }else{
-      console.log(`[${rid}] Gemini failed — fallback colors`);
+      console.log(`[${rid}] Gemini failed — fallback`);
       colors=cleanFallbackColors(pre.fallbackColors,pre.bgLab);
       console.log(`[${rid}] Fallback: [${colors.join(",")}]`);
     }
-    if(!colors.length)colors=["#000000"];
+    if(!colors.length) colors=["#000000"];
     const hasDark=colors.some(c=>{const{r,g,b}=hexToRgb(c);return r+g+b<200;});
     if(!hasDark){colors.unshift("#000000");console.log(`[${rid}] Injected #000000`);}
 
@@ -933,27 +924,181 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
     console.timeEnd(`regions-${rid}`);
 
     if(!regions.length){
-      return res.status(500).json({error:"No stitchable regions found — image may be too low contrast"});
+      return res.status(500).json({error:"No stitchable regions found"});
+    }
+    console.log(`[${rid}] Regions: ${regions.length}`);
+
+    // Count stitches per region (quick estimate using same logic as generate)
+    const shapes=[];
+    for(const r of regions){
+      const pts=[[r.mnx,r.mny],[r.mxx,r.mny],[r.mxx,r.mxy],[r.mnx,r.mxy],[r.mnx,r.mny]];
+      shapes.push({type:r.type,color:normHex(r.color),points:pts,
+        bounds:{x:r.mnx,y:r.mny,w:r.mxx-r.mnx,h:r.mxy-r.mny},stitchCount:0});
     }
 
+    const detectionId=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+    detections.set(detectionId,{
+      pixMap,regions,colors,pre,geminiNotes:gem?.notes||"",timestamp:Date.now()
+    });
+
+    // Coverage data for color swatches
+    const colorInfo = {};
+    colors.forEach(c => { colorInfo[c] = {label: '', coverage_pct: 0}; });
+
+    console.log(`[${rid}] DETECT DONE: ${shapes.length} shapes, ${colors.length} colors`);
+
+    return res.json({
+      success:true,
+      detectionId,
+      colors,
+      colorMeta:colorInfo,
+      shapes,
+      geminiNotes:gem?.notes||""
+    });
+  }catch(e){
+    console.error(`[${rid}] DETECT CRASH:`,e.message);
+    return res.status(500).json({error:e.message||"Detection failed"});
+  }
+});
+
+/* ─── GENERATE EMBROIDERY (Step 2: uses cached detection + user selections) ── */
+app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:"mask",maxCount:1}]), async(req,res)=>{
+  res.setTimeout(0);
+  const rid=Math.random().toString(36).slice(2,6);
+  try{
+    const imgFile=req.files?.image?.[0];
+    const maskFile=req.files?.mask?.[0];
+    if(!imgFile) return res.status(400).json({error:"No image uploaded"});
+
+    const body = req.body || {};
+    console.log(`[${rid}] GENERATE: image=${imgFile.size}B detectionId=${body.detectionId || 'none'}`);
+
+    // ── Parse specs ──
+    const specs = {
+      fabric: body.fabric || "cotton",
+      machine: body.machine || "generic",
+      hoop: body.hoop || "5x7",
+      density: body.density || "medium",
+      thread: body.thread || "generic",
+      stabilizer: body.stabilizer || "cutaway",
+      instructions: body.instructions || ""
+    };
+    const params = getStitchParams(specs);
+    console.log(`[${rid}] Specs:`, JSON.stringify(specs));
+    console.log(`[${rid}] Tuned: row=${params.tatamiRow} len=${params.tatamiLen} pull=${params.pull} ul=${params.tatamiUl}`);
+
+    // ── Load cached detection ──
+    const detectionId = body.detectionId;
+    const det = detectionId ? detections.get(detectionId) : null;
+    let pixMap, regions, colors;
+
+    if(det){
+      console.log(`[${rid}] Using cached detection ${detectionId}`);
+      pixMap = det.pixMap;
+      regions = det.regions;
+      colors = det.colors;
+    }else{
+      // Fallback: full re-analysis (for API users not using /detect-shapes)
+      console.log(`[${rid}] No cache — full re-analysis`);
+      console.time(`pre-${rid}`);
+      let pre=await preprocessImage(imgFile.buffer);
+      console.timeEnd(`pre-${rid}`);
+
+      if(maskFile){
+        console.time(`mask-${rid}`);
+        pre=await applyUserMask(pre,maskFile.buffer);
+        console.timeEnd(`mask-${rid}`);
+      }
+
+      console.time(`gem-${rid}`);
+      const gem=await analyzeWithGemini(imgFile.buffer,imgFile.mimetype||"image/png");
+      console.timeEnd(`gem-${rid}`);
+
+      let colorMeta={};
+      if(gem&&gem.colors&&gem.colors.length>=1){
+        colors=gem.colors;colorMeta=gem.meta||{};
+      }else{
+        colors=cleanFallbackColors(pre.fallbackColors,pre.bgLab);
+      }
+      if(!colors.length) colors=["#000000"];
+      const hasDark=colors.some(c=>{const{r,g,b}=hexToRgb(c);return r+g+b<200;});
+      if(!hasDark){colors.unshift("#000000");console.log(`[${rid}] Injected #000000`);}
+
+      console.time(`pixmap-${rid}`);
+      pixMap=await buildPixelMap(pre.buffer,colors);
+      console.timeEnd(`pixmap-${rid}`);
+
+      console.time(`regions-${rid}`);
+      regions=extractRegions(pixMap,colors);
+      console.timeEnd(`regions-${rid}`);
+    }
+
+    if(!regions || !regions.length){
+      return res.status(500).json({error:"No stitchable regions found"});
+    }
+
+    // ── Apply user's color selection ──
+    let selectedColors = colors;
+    try{
+      if(body.selectedColors){
+        const parsed = JSON.parse(body.selectedColors);
+        if(Array.isArray(parsed) && parsed.length>0){
+          // Normalize to hex for comparison
+          selectedColors = parsed.map(c => normHex(c));
+          console.log(`[${rid}] Selected colors: [${selectedColors.join(",")}]`);
+        }
+      }
+    }catch(e){ console.log(`[${rid}] No color filter`); }
+
+    // ── Apply user's shape selection ──
+    let filteredRegions = regions;
+    try{
+      if(body.selectedShapes){
+        const parsed = JSON.parse(body.selectedShapes);
+        if(Array.isArray(parsed) && parsed.length>0 && parsed.length < regions.length){
+          filteredRegions = parsed.map(idx => regions[idx]).filter(Boolean);
+          console.log(`[${rid}] Selected shapes: ${parsed.length}/${regions.length}`);
+        }
+      }
+    }catch(e){ console.log(`[${rid}] No shape filter`); }
+
+    // ── Rebuild pixMap: exclude deselected colors ──
+    if(selectedColors.length < colors.length){
+      const excludedCis = new Set();
+      colors.forEach((c,ci) => { if(!selectedColors.includes(normHex(c))) excludedCis.add(ci); });
+      // Update pixMap: set excluded color pixels to -1
+      for(let i=0;i<pixMap.length;i++){ if(excludedCis.has(pixMap[i])) pixMap[i]=-1; }
+      // Filter regions whose color was excluded
+      filteredRegions = filteredRegions.filter(r => {
+        const ci = colors.findIndex(c => normHex(c) === normHex(r.color));
+        return selectedColors.includes(normHex(r.color));
+      });
+      console.log(`[${rid}] After color filter: ${filteredRegions.length} regions`);
+    }
+
+    if(!filteredRegions.length){
+      return res.status(400).json({error:"No regions left after selection — select more colors/shapes"});
+    }
+
+    // ── Generate stitches ──
     console.time(`stitch-${rid}`);
-    const{stitches,colorCounts}=generateStitchesFromRegions(pixMap,regions,colors,params);
+    const{stitches,colorCounts}=generateStitchesFromRegions(pixMap,filteredRegions,selectedColors,params);
     console.timeEnd(`stitch-${rid}`);
 
     const coverCount=stitches.filter(s=>s.type!=="trim"&&s.type!=="underlay").length;
     if(coverCount<5){
-      return res.status(500).json({error:"Not enough stitches generated — check image contrast"});
+      return res.status(500).json({error:"Not enough stitches — select more shapes or check contrast"});
     }
 
     const id=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
-    jobs.set(id,{stitches,pixMap,colors,params,designW:CANVAS,designH:CANVAS});
+    jobs.set(id,{stitches,pixMap,colors:selectedColors,params,designW:CANVAS,designH:CANVAS});
 
     const qa=validateQuality(stitches);
-    console.log(`[${rid}] DONE: ${qa.stitchCount} stitches, ${regions.length} regions, ${colors.length} colors`);
+    console.log(`[${rid}] DONE: ${qa.stitchCount} stitches, ${filteredRegions.length} regions, ${selectedColors.length} colors`);
     for(const w of qa.warnings)console.warn(`  ⚠ ${w}`);
 
     const shapes=[];
-    for(const r of regions){
+    for(const r of filteredRegions){
       const pts=[[r.mnx,r.mny],[r.mxx,r.mny],[r.mxx,r.mxy],[r.mnx,r.mxy],[r.mnx,r.mny]];
       const sc=stitches.filter(s=>s.color===r.color&&s.type!=="trim"&&s.type!=="underlay"&&s.x>=r.mnx&&s.x<=r.mxx&&s.y>=r.mny&&s.y<=r.mxy).length;
       shapes.push({type:r.type,color:normHex(r.color),points:pts,
@@ -967,11 +1112,11 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       downloadUrl:`/download/${id}/dst`,
       stitchCount:qa.stitchCount,
       designSize:{w:CANVAS,h:CANVAS,mm:DESIGN_MM},
-      colors,colorMeta,
-      geminiNotes:gem?.notes||"",
+      colors:selectedColors,colorMeta:{},
+      geminiNotes:det?.geminiNotes||"",
       specs,
       tunedParams:params,
-      qa,shapes,regions:regions.length
+      qa,shapes,regions:filteredRegions.length
     });
   }catch(e){
     console.error(`[${rid}] CRASH:`,e.message,"\n",e.stack);
