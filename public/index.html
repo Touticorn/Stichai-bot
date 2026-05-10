@@ -2,43 +2,50 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Stichai Pro</title>
 <style>
-*{box-sizing:border-box}
-body{margin:0;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:#f3f0ea;color:#2c2c2c}
+*{box-sizing:border-box;touch-action:manipulation}
+body{margin:0;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#f3f0ea;color:#2c2c2c;-webkit-tap-highlight-color:transparent}
 header{background:#1a1a2e;color:#fff;padding:18px 24px}
 header h1{margin:0;font-size:22px}
-.container{max-width:1200px;margin:0 auto;padding:24px}
-.card{background:#fff;border-radius:16px;padding:24px;margin-bottom:20px;box-shadow:0 4px 20px rgba(0,0,0,0.06)}
+.container{max-width:1200px;margin:0 auto;padding:16px}
+.card{background:#fff;border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:0 4px 20px rgba(0,0,0,0.06)}
 .stage-label{font-size:11px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
 
-.dropzone{border:2px dashed #c7c7c7;border-radius:12px;padding:48px 24px;text-align:center;cursor:pointer;transition:border-color .2s;display:block}
+/* Upload */
+.dropzone{border:2px dashed #c7c7c7;border-radius:12px;padding:40px 20px;text-align:center;cursor:pointer;transition:border-color .2s;display:block}
 .dropzone:hover{border-color:#e94560}
 .dropzone.dragover{border-color:#e94560;background:#fff5f7}
 .dropzone input{display:none}
-.btn{display:inline-block;background:#e94560;color:#fff;border:none;padding:12px 28px;border-radius:8px;font-size:15px;cursor:pointer;font-weight:600}
+.btn{display:inline-block;background:#e94560;color:#fff;border:none;padding:12px 28px;border-radius:8px;font-size:15px;cursor:pointer;font-weight:600;width:100%}
 .btn:hover{background:#d13650}
 .btn:disabled{background:#aaa;cursor:not-allowed}
 .btn-secondary{background:#16213e}
-.btn-sm{padding:8px 16px;font-size:13px}
-.photo-wrap{position:relative;width:100%;border:1px solid #d4cfc5;border-radius:12px;overflow:hidden;background:#fff;margin-top:12px;display:none}
+.btn-sm{padding:10px 16px;font-size:13px}
+.photo-wrap{position:relative;width:100%;max-width:800px;margin:0 auto;border:1px solid #d4cfc5;border-radius:12px;overflow:hidden;background:#fff;margin-top:12px;display:none}
 .photo-wrap img{display:block;width:100%;height:auto}
 
-.mask-wrap{position:relative;width:100%;border:1px solid #d4cfc5;border-radius:12px;overflow:hidden;background:#000;margin-top:12px;display:none}
+/* Mask — Mobile Optimized */
+.mask-wrap{position:relative;width:100%;max-width:800px;margin:0 auto;border:1px solid #d4cfc5;border-radius:12px;overflow:hidden;background:#000;margin-top:12px;display:none;aspect-ratio:1/1}
 .mask-wrap.on{display:block}
-#maskCanvas{position:absolute;top:0;left:0;pointer-events:none;opacity:.7}
-.tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;padding:12px;background:#f8f6f1;border-radius:8px}
-.tools button{padding:8px 14px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600}
+#c1,#c2{position:absolute;top:0;left:0;width:100%;height:100%;display:block;touch-action:none}
+#c2{pointer-events:none;opacity:.75;z-index:2}
+#c1{z-index:1}
+
+/* Tools — Grid for thumbs */
+.tools{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0;padding:12px;background:#f8f6f1;border-radius:8px}
+.tools button{padding:10px 4px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;min-height:44px;-webkit-touch-callout:none}
 .tools button.on{background:#e94560;color:#fff;border-color:#e94560}
 
-.color-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin:10px 0}
+/* Selection */
+.color-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin:10px 0}
 .c-item{display:flex;align-items:center;gap:10px;padding:10px;background:#f8f6f1;border-radius:8px;border:2px solid transparent;cursor:pointer}
 .c-item.on{border-color:#e94560;background:#fff0f2}
 .c-box{width:36px;height:36px;border-radius:6px;border:2px solid #ddd;flex-shrink:0}
 .c-name{font-weight:600;font-size:14px}
 .c-hex{font-size:12px;color:#888}
-.shape-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;margin:10px 0;max-height:350px;overflow-y:auto}
+.shape-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin:10px 0;max-height:350px;overflow-y:auto}
 .s-item{display:flex;align-items:center;gap:8px;padding:8px;background:#f8f6f1;border-radius:8px;border:1px solid #e0ddd5}
 .s-item.off{opacity:.4;background:#e8e5de}
 .s-box{width:24px;height:24px;border-radius:5px;border:1px solid #ccc;flex-shrink:0}
@@ -48,10 +55,20 @@ header h1{margin:0;font-size:22px}
 .tag-s{background:#cce5ff;color:#004085}
 .tag-r{background:#fff3cd;color:#856404}
 .btns{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap}
-select{padding:8px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px}
+select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;background:#fff;width:100%}
 .meta{font-size:13px;color:#666;margin-top:8px}
 .error{color:#c0392b;background:#fdecea;padding:10px;border-radius:6px;margin-top:8px;font-size:13px}
 .ok{color:#27ae60}
+
+/* Mobile tweaks */
+@media (max-width:480px){
+  .container{padding:12px}
+  .card{padding:16px}
+  .tools{grid-template-columns:repeat(4,1fr)}
+  .tools button{font-size:12px;padding:8px 2px}
+  .color-grid{grid-template-columns:1fr}
+  .shape-grid{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
@@ -59,6 +76,7 @@ select{padding:8px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px}
 
 <div class="container">
 
+  <!-- UPLOAD -->
   <div class="card">
     <div class="stage-label">Step 1: Upload photo</div>
     <label class="dropzone" id="dz" for="fi">
@@ -70,9 +88,10 @@ select{padding:8px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px}
     <div id="st"></div>
   </div>
 
+  <!-- MASK -->
   <div class="card" id="mc" style="display:none">
     <div class="stage-label">Step 2: Remove areas (optional)</div>
-    <p style="font-size:12px;color:#666;margin:0 0 8px">Paint <strong style="color:#e94560">RED</strong> over what you don't want stitched</p>
+    <p style="font-size:12px;color:#666;margin:0 0 8px">Paint <strong style="color:#e94560">RED</strong> over what you don't want stitched. Pinch to zoom page if needed.</p>
     <div class="mask-wrap" id="mw">
       <canvas id="c1"></canvas>
       <canvas id="c2"></canvas>
@@ -86,9 +105,10 @@ select{padding:8px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px}
       <button onclick="setSize(70,this)">L</button>
       <button onclick="setSize(120,this)">XL</button>
     </div>
-    <button class="btn" id="aB" onclick="analyze()" style="width:100%;padding:14px;font-size:16px">🔍 Analyze</button>
+    <button class="btn" id="aB" onclick="analyze()" style="padding:14px;font-size:16px">🔍 Analyze</button>
   </div>
 
+  <!-- SELECT -->
   <div class="card" id="sc" style="display:none">
     <div class="stage-label">Step 3: Select colors & shapes</div>
     <p style="font-size:12px;color:#666;margin:0 0 8px">Uncheck what you don't want stitched</p>
@@ -106,16 +126,17 @@ select{padding:8px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px}
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:8px">
         <select id="fb"><option value="cotton">Cotton</option><option value="denim">Denim</option><option value="fleece">Fleece</option><option value="twill">Twill</option><option value="satin">Satin</option><option value="leather">Leather</option><option value="towel">Towel</option></select>
         <select id="mb"><option value="tajima">Tajima</option><option value="brother">Brother</option><option value="barudan">Barudan</option><option value="generic">Generic</option></select>
-        <select id="hp"><option value="4x4">4x4</option><option value="5x7" selected>5x7</option><option value="6x10">6x10</option></select>
+        <select id="hp"><option value="4x4">4x4</option><option value="5x7" selected>5x7</option><option value="6x10">6x10</option><option value="8x8">8x8</option><option value="8x12">8x12</option></select>
         <select id="ds"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select>
       </div>
     </div>
-    <button class="btn" id="gB" onclick="generate()" style="width:100%;margin-top:12px;padding:14px;font-size:16px">⚡ Generate</button>
+    <button class="btn" id="gB" onclick="generate()" style="margin-top:12px;padding:14px;font-size:16px">⚡ Generate</button>
   </div>
 
+  <!-- RESULTS -->
   <div class="card" id="rc" style="display:none">
     <div class="stage-label">Step 4: Preview & Download</div>
-    <div class="photo-wrap" id="rpw" style="display:block"><img id="ri" alt="Preview" style="display:block;width:100%"></div>
+    <div class="photo-wrap" id="rpw" style="display:block;max-width:800px"><img id="ri" alt="Preview" style="display:block;width:100%"></div>
     <div class="meta" id="rm"></div>
     <div class="btns" style="margin-top:12px">
       <select id="fs">
@@ -132,7 +153,7 @@ select{padding:8px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px}
 var CN={"#000000":"Black","#FFFFFF":"White","#FF0000":"Red","#00FF00":"Green","#0000FF":"Blue","#FFFF00":"Yellow","#FF00FF":"Magenta","#00FFFF":"Cyan","#FFA500":"Orange","#800080":"Purple","#FFC0CB":"Pink","#A52A2A":"Brown","#808080":"Gray","#C0C0C0":"Silver","#FFD700":"Gold","#F5F5DC":"Beige","#20B2AA":"Light Sea Green","#87CEEB":"Sky Blue","#DDA0DD":"Plum","#F0E68C":"Khaki","#D2B48C":"Tan","#FF69B4":"Hot Pink","#CD853F":"Peru","#4682B4":"Steel Blue","#9ACD32":"Yellow Green","#D2691E":"Chocolate","#DC143C":"Crimson","#4B0082":"Indigo","#FF1493":"Deep Pink","#00CED1":"Dark Turquoise","#FF4500":"Orange Red","#2E8B57":"Sea Green","#9370DB":"Medium Purple","#FF6347":"Tomato","#40E0D0":"Turquoise","#EE82EE":"Violet","#F4A460":"Sandy Brown","#8B4513":"Saddle Brown","#2F4F4F":"Dark Slate Gray","#E9967A":"Dark Salmon","#483D8B":"Dark Slate Blue","#B22222":"Fire Brick","#228B22":"Forest Green","#6B8E23":"Olive Drab","#BC8F8F":"Rosy Brown","#4169E1":"Royal Blue","#8B0000":"Dark Red","#556B2F":"Dark Olive Green","#8FBC8F":"Dark Sea Green","#B8860B":"Dark Goldenrod","#BDB76B":"Dark Khaki","#DEB887":"Burlywood","#5F9EA0":"Cadet Blue","#7FFF00":"Chartreuse","#FF7F50":"Coral","#6495ED":"Cornflower Blue","#00008B":"Dark Blue","#008B8B":"Dark Cyan","#A9A9A9":"Dark Gray","#006400":"Dark Green","#696969":"Dim Gray","#1E90FF":"Dodger Blue","#F0FFFF":"Azure","#F5F5F5":"White Smoke","#FFE4C4":"Bisque","#8A2BE2":"Blue Violet","#A0522D":"Sienna","#FAEBD7":"Antique White","#7FFFD4":"Aquamarine","#F0F8FF":"Alice Blue","#E0FFFF":"Light Cyan","#FAFAD2":"Light Goldenrod","#D3D3D3":"Light Gray","#FFB6C1":"Light Pink","#FFA07A":"Light Salmon","#87CEFA":"Light Sky Blue","#778899":"Light Slate Gray","#B0C4DE":"Light Steel Blue","#FFFFE0":"Light Yellow","#32CD32":"Lime Green","#66CDAA":"Medium Aquamarine","#0000CD":"Medium Blue","#BA55D3":"Medium Orchid","#3CB371":"Medium Sea Green","#7B68EE":"Medium Slate Blue","#00FA9A":"Medium Spring Green","#48D1CC":"Medium Turquoise","#C71585":"Medium Violet Red","#191970":"Midnight Blue","#F5FFFA":"Mint Cream","#FFE4E1":"Misty Rose","#FFE4B5":"Moccasin","#FFDEAD":"Navajo White","#000080":"Navy","#FFEFD5":"Papaya Whip","#FFDAB9":"Peach Puff","#B0E0E6":"Powder Blue","#800000":"Maroon","#E6E6FA":"Lavender","#F08080":"Light Coral","#ADD8E6":"Light Blue"};
 function gN(h){var u=h.toUpperCase();if(CN[u])return CN[u];var r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16),bn=null,bd=999;for(var k in CN){var r2=parseInt(k.slice(1,3),16),g2=parseInt(k.slice(3,5),16),b2=parseInt(k.slice(5,7),16);var d=Math.abs(r-r2)+Math.abs(g-g2)+Math.abs(b-b2);if(d<bd){bd=d;bn=CN[k]}}return bn||h}
 
-var cf=null,cdu=null,ci=null,dd=null,jid=null;
+var cf=null,cdu=null,dd=null,ci=null,jid=null;
 var mC,mX,c1,c2,dr=false,tl='brush',sz=35,lx,ly,hm=false;
 
 document.getElementById('fi').addEventListener('change', function(){
@@ -140,20 +161,10 @@ document.getElementById('fi').addEventListener('change', function(){
 });
 
 var dz = document.getElementById('dz');
-dz.addEventListener('dragover', function(e){
-  e.preventDefault();
-  e.stopPropagation();
-  dz.classList.add('dragover');
-});
-dz.addEventListener('dragleave', function(e){
-  e.preventDefault();
-  e.stopPropagation();
-  dz.classList.remove('dragover');
-});
+dz.addEventListener('dragover', function(e){ e.preventDefault(); e.stopPropagation(); dz.classList.add('dragover'); });
+dz.addEventListener('dragleave', function(e){ e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover'); });
 dz.addEventListener('drop', function(e){
-  e.preventDefault();
-  e.stopPropagation();
-  dz.classList.remove('dragover');
+  e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover');
   var files = e.dataTransfer && e.dataTransfer.files;
   if(files && files[0]) handleFile(files[0]);
 });
@@ -192,17 +203,21 @@ function initMask(u){
 
     mC.drawImage(i,0,0,800,800);
     mX.clearRect(0,0,800,800);
+
     document.getElementById('mw').className='mask-wrap on';
     document.getElementById('mc').style.display='block';
 
+    // Mouse
     c1.onmousedown=function(e){e.preventDefault();dr=true;var p=gp(e);lx=p.x;ly=p.y;dm(e)};
     c1.onmousemove=function(e){if(!dr)return;e.preventDefault();dm(e)};
     c1.onmouseup=function(){dr=false};
     c1.onmouseleave=function(){dr=false};
 
+    // Touch — passive:false prevents scroll while drawing
     c1.addEventListener('touchstart',function(e){e.preventDefault();dr=true;var p=gp(e.touches[0]);lx=p.x;ly=p.y;dm(e.touches[0])},{passive:false});
     c1.addEventListener('touchmove',function(e){if(!dr)return;e.preventDefault();dm(e.touches[0])},{passive:false});
     c1.addEventListener('touchend',function(){dr=false},{passive:false});
+    c1.addEventListener('touchcancel',function(){dr=false},{passive:false});
   };
   i.src=u;
 }
@@ -216,7 +231,7 @@ function dm(e){
   mX.lineJoin='round';
   mX.lineWidth=sz;
   if(tl=='brush'){
-    mX.strokeStyle='rgba(255,60,60,0.85)';
+    mX.strokeStyle='rgba(255,60,60,0.9)';
     mX.globalCompositeOperation='source-over';
     hm=true;
   }else{
@@ -230,7 +245,7 @@ function dm(e){
 }
 function setTool(t,btn){tl=t;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<btns.length;i++)btns[i].className='';btn.className='on'}
 function setSize(s,btn){sz=s;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<btns.length;i++)btns[i].className='';btn.className='on'}
-function clearMask(){if(!mX)return;mX.clearRect(0,0,c2.width,c2.height);hm=false}
+function clearMask(){if(!mX)return;mX.clearRect(0,0,800,800);hm=false}
 
 function analyze(){
   if(!cf)return;
@@ -252,10 +267,12 @@ function doAnalyze(fd){
   var xhr=new XMLHttpRequest();
   xhr.open('POST','/detect-shapes',true);
   xhr.onload=function(){
-    if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">HTTP '+xhr.status+'</div>';document.getElementById('aB').disabled=false;return}
+    document.getElementById('aB').disabled=false;
+    if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">HTTP '+xhr.status+'</div>';return}
     var d;
-    try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">Invalid response</div>';document.getElementById('aB').disabled=false;return}
-    if(!d.success){document.getElementById('st').innerHTML='<div class="error">'+(d.error||'Unknown error')+'</div>';document.getElementById('aB').disabled=false;return}
+    try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">Invalid response</div>';return}
+    if(!d.success){document.getElementById('st').innerHTML='<div class="error">'+(d.error||'Unknown error')+'</div>';return}
+
     dd=d;ci=d.detectionId;
 
     var cg=document.getElementById('cg');
@@ -283,9 +300,8 @@ function doAnalyze(fd){
     document.getElementById('sc').style.display='block';
     document.getElementById('sc').scrollIntoView({behavior:'smooth'});
     document.getElementById('st').innerHTML='<p class="ok">Found '+d.shapes.length+' shape'+(d.shapes.length!==1?'s':'')+'!</p>';
-    document.getElementById('aB').disabled=false;
   };
-  xhr.onerror=function(){document.getElementById('st').innerHTML='<div class="error">Network error</div>';document.getElementById('aB').disabled=false};
+  xhr.onerror=function(){document.getElementById('aB').disabled=false;document.getElementById('st').innerHTML='<div class="error">Network error</div>'};
   xhr.send(fd);
 }
 function tC(i){
