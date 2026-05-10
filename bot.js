@@ -1,5 +1,5 @@
 /**
- * Stichai v36
+ * Stichai v37
  * ═══════════════════════════════════════════════════════
  *  3 SURGICAL FIXES from Railway log (v33 → v34)
  * ═══════════════════════════════════════════════════════
@@ -352,12 +352,15 @@ function generateStitchesFromPixels(pixMap, colors, colorMeta) {
         if(lastX!==-1){emitTrim(lastX,lastY,jx,y,color);}
         else{stitches.push({x:jx,y,color,type:"trim"});}
 
-        // Classify this run
-        let rType=gemType;
-        if(!rType){
-          if(runW<=R_RUN)        rType="running";
-          else if(runW<=R_SATIN) rType="satin";
-          else                   rType="fill";
+        // Classify this run by GEOMETRY first — always.
+        // Gemini's stitch_type is a logo-level hint, not per-run truth.
+        // A thin letter stroke must be satin even if Gemini said "fill" for the logo.
+        let rType;
+        if(runW<=R_RUN)        rType="running";          // ≤6px  → running
+        else if(runW<=R_SATIN) rType="satin";            // ≤70px → satin
+        else {
+          // Wide run: use Gemini hint if it says fill/satin, else fill
+          rType=(gemType==="satin")?"satin":"fill";
         }
 
         if(rType==="running"){
@@ -500,12 +503,11 @@ function encodeFile(fmt,stitches){
 }
 
 /* ============================================================
-   PREVIEW RENDERER
-   Wild-jump guard: skip lines > CANVAS/3 units.
-   Satin rendered 2px thick, fill 1px, underlay faint grey.
+   PREVIEW RENDERER  — 2× scale so thin satin text is visible
    ============================================================ */
 async function renderPreview(stitches){
-  const W=CANVAS,H=CANVAS;
+  const SC=2;                       // 2x scale: 1600×1600 output
+  const W=CANVAS*SC,H=CANVAS*SC;
   const buf=Buffer.alloc(W*H*4);
   for(let i=0;i<W*H*4;i+=4){buf[i]=245;buf[i+1]=242;buf[i+2]=235;buf[i+3]=255;}
 
@@ -528,7 +530,7 @@ async function renderPreview(stitches){
     }
   };
 
-  const MAX_LINE=Math.round(CANVAS/3);
+  const MAX_LINE=CANVAS*SC/3;
   let prev=null;
   for(const st of stitches){
     if(st.type==="trim"){prev=null;continue;}
@@ -541,16 +543,17 @@ async function renderPreview(stitches){
           let r=parseInt(m[1].slice(0,2),16);
           let g=parseInt(m[1].slice(2,4),16);
           let b=parseInt(m[1].slice(4,6),16);
-          // Underlay: render as faint grey so it doesn't obscure cover
-          if(st.type==="underlay"){r=180;g=180;b=180;}
+          if(st.type==="underlay"){r=195;g=195;b=195;}
           const thick=st.type==="satin"?2:1;
-          ln(prev.x,prev.y,st.x,st.y,r,g,b,thick);
+          ln(prev.x*SC,prev.y*SC,st.x*SC,st.y*SC,r,g,b,thick);
         }
       }
     }
     prev=st;
   }
-  return await sharp(buf,{raw:{width:W,height:H,channels:4}}).png().toBuffer();
+  return await sharp(buf,{raw:{width:W,height:H,channels:4}})
+    .resize(CANVAS,CANVAS)   // resize back to CANVAS for consistent display size
+    .png().toBuffer();
 }
 
 /* ============================================================
@@ -663,8 +666,8 @@ app.get("/download/:id/:format",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"36.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"37.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v36 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
+const server=app.listen(PORT,()=>console.log(`Stichai v37 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
 server.timeout=180000;
