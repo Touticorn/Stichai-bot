@@ -49,13 +49,154 @@ const CANVAS    = 800;
 const DESIGN_MM = CANVAS / 10;
 
 /* ─── STITCH CONSTANTS (DST units = 0.1mm) ─────────────────*/
-const TATAMI_ROW   = 4;    // 0.40mm row spacing
-const TATAMI_LEN   = 30;   // 3.0mm fill stitch length
+// These are defaults — getStitchParams() below overrides them based on user specs
+let TATAMI_ROW   = 4;    // 0.40mm row spacing
+let TATAMI_LEN   = 30;   // 3.0mm fill stitch length
 const TATAMI_BRICK = 0.5;  // 50% brick offset
-const TATAMI_UL    = 40;   // 4.0mm underlay row spacing
+let TATAMI_UL    = 40;   // 4.0mm underlay row spacing
 const RUN_LEN      = 25;   // 2.5mm running stitch
-const PULL         = 2;    // 0.2mm pull compensation
+let PULL         = 2;    // 0.2mm pull compensation
 const DST_MAX      = 121;  // 12.1mm max DST move
+
+/* ─── SPEC-AWARE PARAMETER TUNING ──────────────────────────
+   Different fabrics, machines, and user preferences require
+   different stitch parameters for optimal results.
+   ============================================================ */
+function getStitchParams(specs) {
+  const s = specs || {};
+  const fabric = (s.fabric || "cotton").toLowerCase();
+  const density = (s.density || "medium").toLowerCase();
+  const machine = (s.machine || "generic").toLowerCase();
+  const stabilizer = (s.stabilizer || "cutaway").toLowerCase();
+
+  // Base params
+  const p = {
+    tatamiRow: 4,
+    tatamiLen: 30,
+    tatamiUl: 40,
+    pull: 2,
+    machine,
+    fabric,
+    stabilizer,
+    density,
+    // Machine-specific: max stitch length before jump trim
+    maxStitchLen: machine === "tajima" ? 121 : machine === "barudan" ? 121 : 121,
+  };
+
+  // ── FABRIC TYPE ADJUSTMENTS ──
+  // Stretchy/thick fabrics need more underlay + higher pull comp
+  const fabricMap = {
+    cotton:    { pull: 2,  tatamiRow: 4,  tatamiUl: 40, tatamiLen: 30 },
+    denim:     { pull: 4,  tatamiRow: 3,  tatamiUl: 30, tatamiLen: 25 }, // dense, strong
+    fleece:    { pull: 5,  tatamiRow: 3,  tatamiUl: 25, tatamiLen: 25 }, // stretchy + thick
+    pique:     { pull: 3,  tatamiRow: 3,  tatamiUl: 30, tatamiLen: 25 }, // textured
+    twill:     { pull: 4,  tatamiRow: 3,  tatamiUl: 30, tatamiLen: 25 }, // caps/hats — dense
+    satin:     { pull: 1,  tatamiRow: 5,  tatamiUl: 50, tatamiLen: 35 }, // delicate — wider spacing
+    leather:   { pull: 1,  tatamiRow: 5,  tatamiUl: 50, tatamiLen: 35 }, // no holes — longer stitches
+    towel:     { pull: 6,  tatamiRow: 2,  tatamiUl: 20, tatamiLen: 20 }, // very dense to hold pile
+    canvas:    { pull: 4,  tatamiRow: 3,  tatamiUl: 30, tatamiLen: 25 }, // heavy
+    knit:      { pull: 5,  tatamiRow: 3,  tatamiUl: 25, tatamiLen: 25 }, // very stretchy
+  };
+  const f = fabricMap[fabric] || fabricMap.cotton;
+  Object.assign(p, f);
+
+  // ── DENSITY OVERRIDE ──
+  const densityMap = {
+    low:    { tatamiRow: 6,  tatamiLen: 40, tatamiUl: 60 },
+    medium: { }, // use fabric defaults
+    high:   { tatamiRow: 2,  tatamiLen: 20, tatamiUl: 25 },
+  };
+  if (densityMap[density]) Object.assign(p, densityMap[density]);
+
+  // ── STABILIZER ADJUSTMENTS ──
+  // Less stabilizer → more underlay needed to prevent distortion
+  if (stabilizer === "none" || stabilizer === "hoop") {
+    p.tatamiUl = Math.max(15, p.tatamiUl - 15);
+    p.pull = Math.max(1, p.pull - 1);
+  } else if (stabilizer === "washaway") {
+    p.tatamiUl = Math.max(20, p.tatamiUl - 10);
+  }
+
+  // Cap fabric (twill) + no cutaway = warning-level params
+  if (fabric === "twill" && stabilizer !== "cutaway") {
+    p.tatamiRow = Math.max(2, p.tatamiRow);
+    p.tatamiUl = Math.max(20, p.tatamiUl);
+  }
+
+  return p;
+}
+
+/* ─── APPLY USER MASK ───────────────────────────────────────
+   The user paints white strokes on a transparent mask canvas.
+   White pixels = REMOVE (treat as background).
+   We composite the mask over the preprocessed image: where
+   mask is bright/white, replace with background color.
+   ============================================================ */
+async function applyUserMask(pre, maskBuffer) {
+  // Read mask and resize to CANVAS
+  const maskRaw = await sharp(maskBuffer)
+    .resize(CANVAS, CANVAS, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { data: mData, info: mInfo } = maskRaw;
+  const channels = mInfo.channels;
+
+  // Parse background color from pre (stored as hex string like "#FFFFFF")
+  const bgRgb = hexToRgb(pre.bgColor);
+
+  // Read the preprocessed image as raw RGBA
+  const imgRaw = await sharp(pre.buffer)
+    .resize(CANVAS, CANVAS, { fit: "contain", background: { r: bgRgb.r, g: bgRgb.g, b: bgRgb.b, alpha: 1 } })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { data: iData, info: iInfo } = imgRaw;
+  const iCh = iInfo.channels;
+  const out = Buffer.alloc(CANVAS * CANVAS * iCh);
+
+  // For each pixel: if mask is bright (white stroke painted), set to bgColor
+  let maskedPixels = 0;
+  for (let y = 0; y < CANVAS; y++) {
+    for (let x = 0; x < CANVAS; x++) {
+      const idx = (y * CANVAS + x);
+      const iOff = idx * iCh;
+      const mOff = idx * channels;
+
+      // Mask brightness: average of RGB channels (ignore alpha)
+      const mR = mData[mOff] || 0;
+      const mG = mData[mOff + 1] || 0;
+      const mB = mData[mOff + 2] || 0;
+      const mA = channels >= 4 ? mData[mOff + 3] : 255;
+      const maskBrightness = (mR + mG + mB) / 3;
+
+      // If mask pixel is bright/white and has some alpha → user painted this area to REMOVE
+      const shouldRemove = maskBrightness > 180 && mA > 30;
+
+      if (shouldRemove) {
+        out[iOff] = bgRgb.r;
+        out[iOff + 1] = bgRgb.g;
+        out[iOff + 2] = bgRgb.b;
+        if (iCh >= 4) out[iOff + 3] = 255;
+        maskedPixels++;
+      } else {
+        out[iOff] = iData[iOff];
+        out[iOff + 1] = iData[iOff + 1];
+        out[iOff + 2] = iData[iOff + 2];
+        if (iCh >= 4) out[iOff + 3] = iData[iOff + 3];
+      }
+    }
+  }
+
+  console.log(`Mask applied: ${maskedPixels} pixels masked (${(maskedPixels / (CANVAS * CANVAS) * 100).toFixed(1)}%)`);
+
+  // Convert back to PNG buffer
+  const maskedBuffer = await sharp(out, {
+    raw: { width: CANVAS, height: CANVAS, channels: iCh }
+  }).png().toBuffer();
+
+  return { ...pre, buffer: maskedBuffer };
+}
 
 /* ─── REGION CLASSIFICATION (by connected-component bounding box) ──
    Aspect ratio = height / width of each connected region.
@@ -304,9 +445,16 @@ function extractRegions(pixMap, colors) {
    Uses the per-region stitch type from extractRegions,
    then scans only the pixels within each region's bbox.
    ============================================================ */
-function generateStitchesFromRegions(pixMap, regions, colors) {
+function generateStitchesFromRegions(pixMap, regions, colors, params) {
   const stitches    = [];
   const colorCounts = colors.map(()=>({fill:0,satin:0,running:0}));
+
+  // Use tuned params if provided, else fall back to module globals
+  const P = params || {};
+  const pRow   = P.tatamiRow   !== undefined ? P.tatamiRow   : TATAMI_ROW;
+  const pLen   = P.tatamiLen   !== undefined ? P.tatamiLen   : TATAMI_LEN;
+  const pUl    = P.tatamiUl    !== undefined ? P.tatamiUl    : TATAMI_UL;
+  const pPull  = P.pull        !== undefined ? P.pull        : PULL;
 
   function emitTrim(x0,y0,x1,y1,color){
     stitches.push({x:Math.round(x0),y:Math.round(y0),color,type:"trim"});
@@ -326,20 +474,20 @@ function generateStitchesFromRegions(pixMap, regions, colors) {
     const {ci,color,type,mnx,mny,mxx,mxy}=reg;
     let lastX=globalLastX,lastY=globalLastY;
 
-    // ── UNDERLAY (sparse horizontal pass at perpendicular spacing) ──
+    // ── UNDERLAY (sparse horizontal pass at tuned spacing) ──
     if(type==="fill"){
       let ulRow=0;
-      for(let y=mny;y<=mxy;y+=TATAMI_UL){
+      for(let y=mny;y<=mxy;y+=pUl){
         const runs=getRunsInRow(pixMap,ci,y,mnx,mxx);
         if(!runs.length)continue;
         const rev=ulRow%2===1;
         for(const{x1,x2} of (rev?[...runs].reverse():runs)){
-          const ux=rev?x2-PULL:x1+PULL;
+          const ux=rev?x2-pPull:x1+pPull;
           if(lastX!==-1)emitTrim(lastX,lastY,ux,y,color);
           else stitches.push({x:ux,y,color,type:"trim"});
-          stitches.push({x:x1+PULL,y,color,type:"underlay"});
-          stitches.push({x:x2-PULL,y,color,type:"underlay"});
-          lastX=x2-PULL;lastY=y;
+          stitches.push({x:x1+pPull,y,color,type:"underlay"});
+          stitches.push({x:x2-pPull,y,color,type:"underlay"});
+          lastX=x2-pPull;lastY=y;
         }
         ulRow++;
       }
@@ -347,7 +495,7 @@ function generateStitchesFromRegions(pixMap, regions, colors) {
 
     // ── COVER STITCHES ──
     let rowIdx=0;
-    for(let y=mny;y<=mxy;y+=TATAMI_ROW){
+    for(let y=mny;y<=mxy;y+=pRow){
       const runs=getRunsInRow(pixMap,ci,y,mnx,mxx);
       if(!runs.length)continue;
       const rev=rowIdx%2===1;
@@ -368,8 +516,8 @@ function generateStitchesFromRegions(pixMap, regions, colors) {
           lastX=rx;
 
         }else if(type==="satin"){
-          const sx=rev?x2-PULL:x1+PULL;
-          const ex=rev?x1+PULL:x2-PULL;
+          const sx=rev?x2-pPull:x1+pPull;
+          const ex=rev?x1+pPull:x2-pPull;
           if(Math.abs(ex-sx)>1){
             stitches.push({x:sx,y,color,type:"satin"});
             stitches.push({x:ex,y,color,type:"satin"});
@@ -383,11 +531,11 @@ function generateStitchesFromRegions(pixMap, regions, colors) {
           }
 
         }else{
-          // TATAMI FILL
-          const brickOff=rowIdx%2===0?0:Math.round(TATAMI_LEN*TATAMI_BRICK);
-          const lx=x1+PULL+brickOff, rx=x2-PULL;
+          // TATAMI FILL with tuned parameters
+          const brickOff=rowIdx%2===0?0:Math.round(pLen*TATAMI_BRICK);
+          const lx=x1+pPull+brickOff, rx=x2-pPull;
           if(rx>lx){
-            const steps=Math.max(1,Math.round((rx-lx)/TATAMI_LEN));
+            const steps=Math.max(1,Math.round((rx-lx)/pLen));
             const sx2=rev?rx:lx, ex2=rev?lx:rx;
             for(let s=0;s<=steps;s++){
               stitches.push({x:Math.round(sx2+(ex2-sx2)*s/steps),y,color,type:"fill"});
@@ -428,116 +576,207 @@ function getRunsInRow(pixMap,ci,y,x0,x1){
 }
 
 /* ============================================================
-   PREVIEW RENDERER  —  FIX A: pixMap-based realistic preview
-   Renders the exact stitched pixel map with stitch-row texture.
-   Shows correct logo shape (letter counter holes visible),
-   no sparse line artifacts, no threshold ambiguity.
+   STITCH-BASED PREVIEW RENDERER
+   Draws every individual stitch as an anti-aliased line segment
+   on a fabric background. Shows the actual stitch pattern:
+   - Tatami fill: staggered horizontal rows with gaps
+   - Satin:     zigzag columns perpendicular to stroke
+   - Running:   sparse dotted lines
+   - Underlay:  fainter sparse grid beneath cover stitches
+
+   This produces a realistic embroidery simulation similar to
+   Wilcom/Hatch "Realistic View" mode.
    ============================================================ */
-async function renderPreview(pixMap, colors) {
-  const buf = Buffer.alloc(CANVAS*CANVAS*4);
+async function renderPreview(pixMap, colors, stitches, params) {
+  const W = CANVAS, H = CANVAS;
+  const buf = Buffer.alloc(W * H * 4);
 
-  // Linen background
-  for(let i=0;i<CANVAS*CANVAS*4;i+=4){buf[i]=242;buf[i+1]=238;buf[i+2]=228;buf[i+3]=255;}
-
-  // Pre-compute thread colors as RGB arrays
-  const rgbs = colors.map(c=>{const{r,g,b}=hexToRgb(normHex(c));return[r,g,b];});
-
-  // Paint every stitched pixel with its thread color
-  for(let y=0;y<CANVAS;y++){
-    for(let x=0;x<CANVAS;x++){
-      const ci=pixMap[y*CANVAS+x];
-      if(ci<0)continue;
-      const[r,g,b]=rgbs[ci];
-      const idx=(y*CANVAS+x)*4;
-      buf[idx]=r;buf[idx+1]=g;buf[idx+2]=b;buf[idx+3]=255;
+  // ── Fabric background (subtle linen texture) ──
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = (y * W + x) * 4;
+      // Base linen color with slight weave pattern
+      const weave = ((x + y) % 2 === 0) ? 4 : -2;
+      buf[idx]     = 242 + weave;
+      buf[idx + 1] = 238 + weave;
+      buf[idx + 2] = 228 + weave;
+      buf[idx + 3] = 255;
     }
   }
 
-  // Overlay stitch-row texture: every TATAMI_ROW-th row gets a lighter band
-  // (simulates the gap between parallel stitch rows on fabric)
-  for(let y=0;y<CANVAS;y++){
-    if(y%TATAMI_ROW!==0)continue;
-    for(let x=0;x<CANVAS;x++){
-      const ci=pixMap[y*CANVAS+x];
-      if(ci<0)continue;
-      const idx=(y*CANVAS+x)*4;
-      // Lighten this row to simulate thread sheen on stitch rows
-      buf[idx]=Math.min(255,buf[idx]+20);
-      buf[idx+1]=Math.min(255,buf[idx+1]+20);
-      buf[idx+2]=Math.min(255,buf[idx+2]+20);
+  // Pre-compute thread colors as RGB + a slightly darker shade for stitch edges
+  const threadColors = colors.map(c => {
+    const { r, g, b } = hexToRgb(normHex(c));
+    return {
+      r, g, b,
+      dr: Math.max(0, r - 40),  // darker for edges/shadows
+      dg: Math.max(0, g - 40),
+      db: Math.max(0, b - 40),
+    };
+  });
+
+  // Helper: set pixel with blend (simple alpha blend onto fabric)
+  function setPixel(x, y, r, g, b, alpha) {
+    const px = Math.round(x), py = Math.round(y);
+    if (px < 0 || px >= W || py < 0 || py >= H) return;
+    const idx = (py * W + px) * 4;
+    const a = alpha / 255;
+    buf[idx]     = Math.round(buf[idx]     * (1 - a) + r * a);
+    buf[idx + 1] = Math.round(buf[idx + 1] * (1 - a) + g * a);
+    buf[idx + 2] = Math.round(buf[idx + 2] * (1 - a) + b * a);
+    buf[idx + 3] = 255;
+  }
+
+  // Helper: draw anti-aliased line (Xiaolin Wu-ish, simplified)
+  function drawLine(x0, y0, x1, y1, r, g, b, thickness) {
+    const dx = x1 - x0, dy = y1 - y0;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 0.5) { setPixel(x0, y0, r, g, b, 220); return; }
+    const steps = Math.ceil(dist * 2);
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const x = x0 + dx * t, y = y0 + dy * t;
+      // Main pixel
+      setPixel(x, y, r, g, b, 230);
+      // Thickness: add neighbors for 2px wide stitches
+      if (thickness >= 2) {
+        if (Math.abs(dx) > Math.abs(dy)) { setPixel(x, y + 1, r, g, b, 180); setPixel(x, y - 1, r, g, b, 80); }
+        else { setPixel(x + 1, y, r, g, b, 180); setPixel(x - 1, y, r, g, b, 80); }
+      }
     }
   }
 
-  // Darker alternating rows simulate thread shadows between stitches
-  for(let y=0;y<CANVAS;y++){
-    if(y%TATAMI_ROW!==TATAMI_ROW-1)continue;
-    for(let x=0;x<CANVAS;x++){
-      const ci=pixMap[y*CANVAS+x];
-      if(ci<0)continue;
-      const idx=(y*CANVAS+x)*4;
-      buf[idx]=Math.max(0,buf[idx]-10);
-      buf[idx+1]=Math.max(0,buf[idx+1]-10);
-      buf[idx+2]=Math.max(0,buf[idx+2]-10);
-    }
+  // ── GROUP STITCHES BY COLOR ──
+  const byColor = new Map();
+  for (const s of stitches) {
+    if (s.type === "trim") continue;
+    if (!byColor.has(s.color)) byColor.set(s.color, []);
+    byColor.get(s.color).push(s);
   }
 
-  // Draw visible stitch direction lines for fill regions
-  const seenRows=new Set();
-  for(const st of stitches){
-    if(st.type!=="fill")continue;
-    const py=Math.round((st.y-OFFSET)*PIXEL_SCALE);
-    if(py<0||py>=CANVAS)continue;
-    const key=`${st.color}_${py}`;
-    if(seenRows.has(key))continue;
-    seenRows.add(key);
-    const rowStitches=stitches.filter(s=>s.type==="fill"&&s.color===st.color&&Math.abs(s.y-st.y)<0.5);
-    if(rowStitches.length<2)continue;
-    rowStitches.sort((a,b)=>a.x-b.x);
-    for(let i=1;i<rowStitches.length;i++){
-      const x1=Math.round((rowStitches[i-1].x-OFFSET)*PIXEL_SCALE);
-      const x2=Math.round((rowStitches[i].x-OFFSET)*PIXEL_SCALE);
-      if(x2<x1||x1<0||x2>=CANVAS)continue;
-      const[cr,cg,cb]=hexToRgb(st.color);
-      const lr=Math.max(0,cr-50),lg=Math.max(0,cg-50),lb=Math.max(0,cb-50);
-      for(let lx=x1;lx<=x2;lx++){
-        if(lx>=0&&lx<CANVAS&&py>=0&&py<CANVAS){
-          const idx=(py*CANVAS+lx)*4;
-          buf[idx]=lr;buf[idx+1]=lg;buf[idx+2]=lb;buf[idx+3]=255;
+  // ── DRAW STITCHES IN COLOR ORDER ──
+  for (const [color, colStitches] of byColor) {
+    const ci = colors.findIndex(c => normHex(c) === normHex(color));
+    const tc = ci >= 0 ? threadColors[ci] : { r: 128, g: 128, b: 128, dr: 80, dg: 80, db: 80 };
+
+    // Separate by type
+    const underlays = colStitches.filter(s => s.type === "underlay");
+    const covers    = colStitches.filter(s => s.type !== "underlay");
+
+    // Draw underlays first (fainter)
+    for (let i = 1; i < underlays.length; i++) {
+      const a = underlays[i - 1], b = underlays[i];
+      const dy = Math.abs(b.y - a.y);
+      // Skip jumps
+      if (Math.hypot(b.x - a.x, dy) > 80) continue;
+      drawLine(a.x, a.y, b.x, b.y, tc.r, tc.g, tc.b, 1);
+    }
+
+    // Group cover stitches by row (same Y) for fill pattern visualization
+    const rowMap = new Map();
+    for (const s of covers) {
+      const ry = Math.round(s.y);
+      if (!rowMap.has(ry)) rowMap.set(ry, []);
+      rowMap.get(ry).push(s);
+    }
+
+    // Draw cover stitches
+    let prevStitch = null;
+    for (let i = 0; i < covers.length; i++) {
+      const s = covers[i];
+      const nextStitch = covers[i + 1] || null;
+
+      // Draw the stitch point itself
+      const isSatin = s.type === "satin";
+      const isFill  = s.type === "fill";
+      const isRun   = s.type === "running";
+
+      // Dot/endpoint for each stitch
+      const dotAlpha = isRun ? 200 : 240;
+      const dotSize = isSatin ? 2 : isFill ? 1.5 : 1;
+      setPixel(s.x, s.y, tc.r, tc.g, tc.b, dotAlpha);
+      if (dotSize >= 2) {
+        setPixel(s.x + 1, s.y, tc.dr, tc.dg, tc.db, 160);
+        setPixel(s.x, s.y + 1, tc.dr, tc.dg, tc.db, 120);
+      }
+
+      // Connect to next stitch in sequence (same row/region)
+      if (nextStitch && nextStitch.color === s.color) {
+        const jump = Math.hypot(nextStitch.x - s.x, nextStitch.y - s.y);
+        if (jump < 50) {  // < 5mm — same region
+          // Satin gets thick zigzag lines
+          // Fill gets medium horizontal lines
+          // Running gets thin dotted lines
+          const thick = isSatin ? 3 : isFill ? 2 : 1;
+          const alpha = isRun ? 180 : 220;
+          // Use brighter color for stitch body, darker for edges
+          drawLine(s.x, s.y, nextStitch.x, nextStitch.y, tc.r, tc.g, tc.b, thick);
+        }
+      }
+
+      prevStitch = s;
+    }
+
+    // ── ADD STITCH ROW TEXTURE FOR FILL REGIONS ──
+    // Darken the gaps between stitch rows to show fabric peeking through
+    const pRow = (params && params.tatamiRow) ? params.tatamiRow : TATAMI_ROW;
+    for (const [ry, rowStitches] of rowMap) {
+      if (rowStitches.length < 2) continue;
+      // Only for fill-type rows
+      const hasFill = rowStitches.some(s => s.type === "fill");
+      if (!hasFill) continue;
+
+      rowStitches.sort((a, b) => a.x - b.x);
+      // Between consecutive stitches on same row, add subtle shadow
+      for (let i = 1; i < rowStitches.length; i++) {
+        const a = rowStitches[i - 1], b = rowStitches[i];
+        const gap = b.x - a.x;
+        if (gap > 8 && gap < 60) {  // reasonable gap — add shadow
+          const mx = (a.x + b.x) / 2;
+          const my = (a.y + b.y) / 2;
+          // Shadow pixel beneath the stitch row
+          if (my + 1 < H) {
+            const idx = (Math.round(my + 1) * W + Math.round(mx)) * 4;
+            buf[idx]     = Math.max(0, buf[idx] - 15);
+            buf[idx + 1] = Math.max(0, buf[idx + 1] - 15);
+            buf[idx + 2] = Math.max(0, buf[idx + 2] - 15);
+          }
         }
       }
     }
   }
 
-  // Crop preview to content bounds
-  let cminX=CANVAS,cmaxX=0,cminY=CANVAS,cmaxY=0;
-  for(let y=0;y<CANVAS;y++){
-    for(let x=0;x<CANVAS;x++){
-      if(pixMap[y*CANVAS+x]>=0){
-        if(x<cminX)cminX=x;if(x>cmaxX)cmaxX=x;
-        if(y<cminY)cminY=y;if(y>cmaxY)cmaxY=y;
+  // ── CROP TO CONTENT BOUNDS ──
+  let cminX = W, cmaxX = 0, cminY = H, cmaxY = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (pixMap[y * W + x] >= 0) {
+        if (x < cminX) cminX = x; if (x > cmaxX) cmaxX = x;
+        if (y < cminY) cminY = y; if (y > cmaxY) cmaxY = y;
       }
     }
   }
-  const pad=20;
-  const cropX=Math.max(0,cminX-pad),cropY=Math.max(0,cminY-pad);
-  const cropW=Math.min(CANVAS,cmaxX+pad)-cropX;
-  const cropH=Math.min(CANVAS,cmaxY+pad)-cropY;
-  if(cropW>50&&cropH>50){
-    const cropped=Buffer.alloc(cropW*cropH*4);
-    for(let y=0;y<cropH;y++){
-      for(let x=0;x<cropW;x++){
-        const sIdx=((cropY+y)*CANVAS+(cropX+x))*4;
-        const dIdx=(y*cropW+x)*4;
-        cropped[dIdx]=buf[sIdx];cropped[dIdx+1]=buf[sIdx+1];
-        cropped[dIdx+2]=buf[sIdx+2];cropped[dIdx+3]=buf[sIdx+3];
+  const pad = 30;
+  const cropX = Math.max(0, cminX - pad), cropY = Math.max(0, cminY - pad);
+  const cropW = Math.min(W, cmaxX + pad) - cropX;
+  const cropH = Math.min(H, cmaxY + pad) - cropY;
+
+  if (cropW > 50 && cropH > 50) {
+    const cropped = Buffer.alloc(cropW * cropH * 4);
+    for (let y = 0; y < cropH; y++) {
+      for (let x = 0; x < cropW; x++) {
+        const sIdx = ((cropY + y) * W + (cropX + x)) * 4;
+        const dIdx = (y * cropW + x) * 4;
+        cropped[dIdx] = buf[sIdx]; cropped[dIdx + 1] = buf[sIdx + 1];
+        cropped[dIdx + 2] = buf[sIdx + 2]; cropped[dIdx + 3] = buf[sIdx + 3];
       }
     }
-    return await sharp(cropped,{raw:{width:cropW,height:cropH,channels:4}})
-      .png({compressionLevel:6}).toBuffer();
+    return await sharp(cropped, { raw: { width: cropW, height: cropH, channels: 4 } })
+      .png({ compressionLevel: 6 }).toBuffer();
   }
 
-  return await sharp(buf,{raw:{width:CANVAS,height:CANVAS,channels:4}})
-    .png({compressionLevel:6}).toBuffer();
+  return await sharp(buf, { raw: { width: W, height: H, channels: 4 } })
+    .png({ compressionLevel: 6 }).toBuffer();
 }
 
 /* ============================================================
@@ -621,20 +860,48 @@ function encodeFile(fmt,stitches){
    ROUTES
    ============================================================ */
 app.use(express.static(path.join(__dirname,"public")));
-app.get("/",(_, res)=>res.sendFile(path.join(__dirname,"index.html")));
+app.use(express.json({limit:"10mb"}));
+app.use(express.urlencoded({extended:true,limit:"10mb"}));
+app.get("/",(_, res)=>res.sendFile(path.join(__dirname,"public","index.html")));
 
-app.post("/generate-embroidery", upload.single("image"), async(req,res)=>{
+app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:"mask",maxCount:1}]), async(req,res)=>{
   res.setTimeout(0);
   const rid=Math.random().toString(36).slice(2,6);
   try{
-    if(!req.file)return res.status(400).json({error:"No image uploaded"});
+    const imgFile=req.files?.image?.[0];
+    const maskFile=req.files?.mask?.[0];
+    if(!imgFile)return res.status(400).json({error:"No image uploaded"});
+
+    // ── Parse embroidery specs from form data ──
+    const specs = {
+      fabric: req.body?.fabric || "cotton",
+      machine: req.body?.machine || "generic",
+      hoop: req.body?.hoop || "5x7",
+      density: req.body?.density || "medium",
+      thread: req.body?.thread || "generic",
+      stabilizer: req.body?.stabilizer || "cutaway",
+      instructions: req.body?.instructions || ""
+    };
+    console.log(`[${rid}] Specs:`, JSON.stringify(specs));
+
+    // Get tuned stitch parameters based on specs
+    const params = getStitchParams(specs);
+    console.log(`[${rid}] Tuned params: row=${params.tatamiRow} len=${params.tatamiLen} pull=${params.pull} ul=${params.tatamiUl}`);
 
     console.time(`pre-${rid}`);
-    const pre=await preprocessImage(req.file.buffer);
+    let pre=await preprocessImage(imgFile.buffer);
     console.timeEnd(`pre-${rid}`);
 
+    // Apply user mask if provided (white=remove, black/transparent=keep)
+    if(maskFile){
+      console.time(`mask-${rid}`);
+      pre=await applyUserMask(pre,maskFile.buffer);
+      console.timeEnd(`mask-${rid}`);
+      console.log(`[${rid}] User mask applied`);
+    }
+
     console.time(`gem-${rid}`);
-    const gem=await analyzeWithGemini(req.file.buffer,req.file.mimetype||"image/png");
+    const gem=await analyzeWithGemini(imgFile.buffer,imgFile.mimetype||"image/png");
     console.timeEnd(`gem-${rid}`);
 
     let colors,colorMeta={};
@@ -661,25 +928,33 @@ app.post("/generate-embroidery", upload.single("image"), async(req,res)=>{
     if(!regions.length)return res.status(500).json({error:"No stitchable regions found"});
 
     console.time(`stitch-${rid}`);
-    const{stitches,colorCounts}=generateStitchesFromRegions(pixMap,regions,colors);
+    // Pass tuned params to stitch generation
+    const{stitches,colorCounts}=generateStitchesFromRegions(pixMap,regions,colors,params);
     console.timeEnd(`stitch-${rid}`);
 
     const coverCount=stitches.filter(s=>s.type!=="trim"&&s.type!=="underlay").length;
     if(coverCount<5)return res.status(500).json({error:"No stitchable content — check image contrast"});
 
     const id=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
-    // Store pixMap+colors for preview rendering
-    jobs.set(id,{stitches,pixMap,colors,designW:CANVAS,designH:CANVAS});
+    // Store everything needed for preview + download
+    jobs.set(id,{stitches,pixMap,colors,params,designW:CANVAS,designH:CANVAS});
 
     const qa=validateQuality(stitches);
     console.log(`[${rid}] cover:${qa.stitchCount} avg:${qa.avgStitchMM}mm maxJump:${qa.maxJumpMM}mm`);
     for(const w of qa.warnings)console.warn(`  ⚠ ${w}`);
 
+    // Count stitches per region by bbox + color match
     const shapes=[];
     for(const r of regions){
       const pts=[[r.mnx,r.mny],[r.mxx,r.mny],[r.mxx,r.mxy],[r.mnx,r.mxy],[r.mnx,r.mny]];
+      // Count stitches inside this region's bbox with matching color and non-trim/underlay types
+      const sc = stitches.filter(s =>
+        s.color === r.color &&
+        s.type !== "trim" && s.type !== "underlay" &&
+        s.x >= r.mnx && s.x <= r.mxx && s.y >= r.mny && s.y <= r.mxy
+      ).length;
       shapes.push({type:r.type,color:normHex(r.color),points:pts,
-        bounds:{x:r.mnx,y:r.mny,w:r.mxx-r.mnx,h:r.mxy-r.mny}});
+        bounds:{x:r.mnx,y:r.mny,w:r.mxx-r.mnx,h:r.mxy-r.mny},stitchCount:sc});
     }
 
     return res.json({
@@ -691,6 +966,8 @@ app.post("/generate-embroidery", upload.single("image"), async(req,res)=>{
       designSize:{w:CANVAS,h:CANVAS,mm:DESIGN_MM},
       colors,colorMeta,
       geminiNotes:gem?.notes||"",
+      specs,                 // echo back the specs used
+      tunedParams:params,    // the actual params applied
       qa,shapes,regions:regions.length
     });
   }catch(e){
@@ -712,7 +989,7 @@ app.get("/preview-image/:id",async(req,res)=>{
   if(c&&Date.now()-c.ts<120000){res.setHeader("Content-Type","image/png");return res.send(c.buf);}
   try{
     const png=await Promise.race([
-      renderPreview(d.pixMap,d.colors),
+      renderPreview(d.pixMap,d.colors,d.stitches,d.params),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),15000))
     ]);
     previewCache.set(req.params.id,{buf:png,ts:Date.now()});
