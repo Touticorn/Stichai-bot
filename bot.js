@@ -282,24 +282,23 @@ async function preprocessImage(buffer) {
   const sorted  = [...cm.entries()].sort((a,b)=>b[1]-a[1]);
   const bgColor = sorted[0][0];
   const bgLab   = rgbToLab(hexToRgb(bgColor));
-  const fallback= sorted.slice(1,10)
-    .filter(([h])=>dE(rgbToLab(hexToRgb(h)),bgLab)>35)
-    .map(([h])=>h);
+  // Include ALL colors — user decides which to stitch via Step 3 UI
+  const fallback= sorted.slice(0,8).map(([h])=>h);
 
   return {buffer:cleaned, bgColor, bgLab, fallbackColors:fallback};
 }
 
-function cleanFallbackColors(rawColors, bgLab) {
-  let cols = rawColors.filter(c=>dE(rgbToLab(hexToRgb(c)),bgLab)>35);
-  if(!cols.length) return ["#000000"];
+// Just deduplicates similar colors — user picks what to stitch via UI
+function cleanFallbackColors(rawColors) {
+  if(!rawColors.length) return ["#000000"];
   const merged=[];
-  for(const c of cols){
+  for(const c of rawColors){
     const cLab=rgbToLab(hexToRgb(c));
-    const mi=merged.findIndex(m=>dE(cLab,rgbToLab(hexToRgb(m)))<25);
-    if(mi===-1)merged.push(c);
-    else if(cLab.l<rgbToLab(hexToRgb(merged[mi])).l)merged[mi]=c;
+    const mi=merged.findIndex(m=>dE(cLab,rgbToLab(hexToRgb(m)))<20);
+    if(mi===-1) merged.push(normHex(c));
+    // When two colors are near-identical, keep the one with more coverage (first encountered)
   }
-  return merged.slice(0,4);
+  return merged.slice(0,6);
 }
 
 /* ============================================================
@@ -309,11 +308,12 @@ async function analyzeWithGemini(originalBuffer, mime) {
   const b64 = originalBuffer.toString("base64");
   const prompt = `You are a senior machine-embroidery digitizer (Wilcom EmbroideryStudio).
 Analyze this image and return ONE JSON object for DST file generation.
-Background fabric is NEVER a thread color. Skip white, cream, grey backgrounds.
-Only list colors visible in the actual design artwork.
+List ALL distinct colors present in the image — including white, light colors, dark colors, and background colors.
+The user will decide which colors to stitch. Do not skip any color.
+For each color, classify stitch_type: "fill" (large solid area >7mm), "satin" (column 1.5-7mm), "running" (thin line <1.5mm).
 Return ONLY valid JSON, no markdown.
 
-{"background":"#FFFFFF","colors":[{"hex":"#000000","label":"logo","stitch_type":"fill","coverage_pct":60}],"is_logo":true,"is_text":true,"complexity":"simple","recommended_angle":0,"notes":"brief note"}`;
+{"background":"#FFFFFF","colors":[{"hex":"#000000","label":"logo black","stitch_type":"fill","coverage_pct":60},{"hex":"#FFFFFF","label":"background white","stitch_type":"fill","coverage_pct":40}],"is_logo":true,"is_text":true,"complexity":"simple","recommended_angle":0,"notes":"brief note"}`;
 
   const res = await geminiPost({
     contents:[{role:"user",parts:[{text:prompt},{inlineData:{mimeType:mime||"image/png",data:b64}}]}],
@@ -908,12 +908,10 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
       console.log(`[${rid}] Gemini: [${colors.join(",")}] | ${gem.notes}`);
     }else{
       console.log(`[${rid}] Gemini failed — fallback`);
-      colors=cleanFallbackColors(pre.fallbackColors,pre.bgLab);
+      colors=cleanFallbackColors(pre.fallbackColors);
       console.log(`[${rid}] Fallback: [${colors.join(",")}]`);
     }
     if(!colors.length) colors=["#000000"];
-    const hasDark=colors.some(c=>{const{r,g,b}=hexToRgb(c);return r+g+b<200;});
-    if(!hasDark){colors.unshift("#000000");console.log(`[${rid}] Injected #000000`);}
 
     console.time(`pixmap-${rid}`);
     const pixMap=await buildPixelMap(pre.buffer,colors);
@@ -1018,11 +1016,9 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       if(gem&&gem.colors&&gem.colors.length>=1){
         colors=gem.colors;colorMeta=gem.meta||{};
       }else{
-        colors=cleanFallbackColors(pre.fallbackColors,pre.bgLab);
+        colors=cleanFallbackColors(pre.fallbackColors);
       }
       if(!colors.length) colors=["#000000"];
-      const hasDark=colors.some(c=>{const{r,g,b}=hexToRgb(c);return r+g+b<200;});
-      if(!hasDark){colors.unshift("#000000");console.log(`[${rid}] Injected #000000`);}
 
       console.time(`pixmap-${rid}`);
       pixMap=await buildPixelMap(pre.buffer,colors);
