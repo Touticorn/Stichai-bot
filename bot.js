@@ -1,5 +1,5 @@
 /**
- * Stichai v38
+ * Stichai v39
  * ═══════════════════════════════════════════════════════
  *  3 SURGICAL FIXES from Railway log (v33 → v34)
  * ═══════════════════════════════════════════════════════
@@ -71,9 +71,14 @@ const RUN_LEN      = 25;   // 2.5mm running stitch
 const PULL         = 2;    // 0.2mm pull compensation
 const DST_MAX      = 121;  // 12.1mm max DST move per record
 
-/* ─── RUN WIDTH THRESHOLDS (px = DST units) ─────────────────*/
-const R_RUN   = 6;   // ≤6px  → running stitch
-const R_SATIN = 70;  // ≤70px → satin  |  >70px → tatami fill
+/* ─── RUN WIDTH THRESHOLDS (px = DST units) ─────────────────
+   R_RUN:   ≤6px  → running stitch (very thin lines)
+   R_SATIN: ≤120px → satin  (covers all letter strokes up to 12mm)
+            >120px → tatami fill (only very wide stripe bodies)
+   Keeping R_SATIN high ensures letter strokes NEVER get tatami fill.
+*/
+const R_RUN   = 6;
+const R_SATIN = 120;
 
 /* ============================================================
    GEMINI HTTP — tries each model, logs exact error per model
@@ -221,7 +226,9 @@ async function buildPixelMap(buffer, colors) {
     image.resize(CANVAS,CANVAS);
 
   const labC  = colors.map(c=>rgbToLab(hexToRgb(c)));
-  const TOL   = 40;
+  // TOL=50: catches JPEG anti-aliasing greys at stroke edges (ΔE~20-35 from black)
+  // without over-reaching into inter-letter white gaps
+  const TOL   = 50;
   const pixMap= new Int16Array(CANVAS*CANVAS).fill(-1);
   const imgD  = image.bitmap.data;
 
@@ -235,19 +242,21 @@ async function buildPixelMap(buffer, colors) {
     }
   }
 
-  // 3-pass gap fill for JPEG anti-aliasing
-  for(let pass=0;pass<3;pass++){
-    for(let y=1;y<CANVAS-1;y++){
-      for(let x=1;x<CANVAS-1;x++){
-        const idx=y*CANVAS+x;
-        if(pixMap[idx]!==-1)continue;
-        const nbr=[pixMap[idx-1],pixMap[idx+1],pixMap[idx-CANVAS],pixMap[idx+CANVAS]].filter(n=>n!==-1);
-        if(nbr.length>=2){
-          const freq={};
-          for(const n of nbr)freq[n]=(freq[n]||0)+1;
-          const top=Object.entries(freq).sort((a,b)=>+b[1]-+a[1])[0];
-          if(top&&+top[1]>=2)pixMap[idx]=+top[0];
-        }
+  // SINGLE pass gap fill with STRICT 3-neighbor threshold.
+  // 3 passes with 2-neighbor threshold was merging inter-letter white gaps (3-6px)
+  // into solid runs, making 'adidas' letters fuse into one wide block.
+  // 1 pass + threshold≥3: only fills truly isolated noise pixels surrounded by color
+  // on 3 sides. Letter gaps (surrounded by white on at least 2 sides) stay open.
+  for(let y=1;y<CANVAS-1;y++){
+    for(let x=1;x<CANVAS-1;x++){
+      const idx=y*CANVAS+x;
+      if(pixMap[idx]!==-1)continue;
+      const nbr=[pixMap[idx-1],pixMap[idx+1],pixMap[idx-CANVAS],pixMap[idx+CANVAS]].filter(n=>n!==-1);
+      if(nbr.length>=3){  // strict: need 3 of 4 neighbors matched
+        const freq={};
+        for(const n of nbr)freq[n]=(freq[n]||0)+1;
+        const top=Object.entries(freq).sort((a,b)=>+b[1]-+a[1])[0];
+        if(top&&+top[1]>=3)pixMap[idx]=+top[0];  // only if 3+ agree
       }
     }
   }
@@ -705,8 +714,8 @@ app.get("/download/:id/:format",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"38.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"39.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v38 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
+const server=app.listen(PORT,()=>console.log(`Stichai v39 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
 server.timeout=180000;
