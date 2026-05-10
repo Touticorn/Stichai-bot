@@ -19,12 +19,12 @@ header p{color:#888;margin-top:8px}
 .panel h2{font-size:1.1em;margin-bottom:15px;color:#f7c600;display:flex;align-items:center;gap:8px}
 
 /* Upload */
-.upload-zone{border:2px dashed #444;border-radius:10px;padding:30px;text-align:center;transition:all .2s;margin-bottom:15px}
+.upload-zone{border:2px dashed #444;border-radius:10px;padding:35px;text-align:center;transition:all .2s;margin-bottom:15px}
 .upload-zone:hover{border-color:#f7c600;background:#1f1f1a}
 .upload-zone.has-image{border-style:solid;border-color:#f7c600;background:#1f1f1a;padding:20px}
 .upload-zone.has-image .upload-inner{display:none}
-.upload-zone input[type=file]{display:none}  /* shown via button click only */
-.upload-btn{display:inline-block;padding:14px 36px;background:linear-gradient(135deg,#ff6b35,#f7c600);color:#000;border:none;border-radius:10px;font-size:1.1em;font-weight:600;cursor:pointer;margin:10px 0}
+.upload-zone input[type=file]{display:none}  /* hidden inside label */
+.upload-label{display:inline-block;padding:14px 36px;background:linear-gradient(135deg,#ff6b35,#f7c600);color:#000;border-radius:10px;font-size:1.1em;font-weight:600;cursor:pointer;margin-top:10px}
 .upload-zone .icon{font-size:3em;margin-bottom:10px}
 .upload-zone h3{font-size:1.1em;color:#ccc}
 .upload-zone p{color:#666;font-size:.85em;margin-top:5px}
@@ -50,18 +50,18 @@ header p{color:#888;margin-top:8px}
 .size-btn.active{border-color:#f7c600;color:#f7c600}
 .mask-hint{font-size:.85em;color:#aaa;margin:12px 0;padding:10px;background:#1f1111;border-radius:8px;border-left:3px solid #ff4444}
 
-/* Shape Selection */
+/* Color Selection */
 .selection-panel{display:none}
 .selection-panel.active{display:block}
-.color-swatches{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
-.color-swatch{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#222;border-radius:8px;border:2px solid #444;cursor:pointer;transition:all .2s}
+.color-swatch{display:flex;align-items:center;gap:12px;padding:12px 14px;background:#222;border-radius:8px;border:2px solid #444;margin-bottom:8px;cursor:pointer;transition:all .2s}
 .color-swatch:hover{border-color:#888}
 .color-swatch.selected{border-color:#f7c600;background:#2a2a1a}
-.color-swatch .swatch-box{width:28px;height:28px;border-radius:6px;border:2px solid #666}
-.color-swatch .swatch-info{font-size:.85em}
-.color-swatch .swatch-info .swatch-hex{font-weight:600;color:#f0f0f0}
-.color-swatch .swatch-info .swatch-coverage{font-size:.75em;color:#888}
+.color-swatch .swatch-box{width:36px;height:36px;border-radius:8px;border:2px solid #666;flex-shrink:0}
+.color-swatch .swatch-info{flex:1}
+.color-swatch .swatch-name{font-weight:600;color:#f0f0f0;font-size:.95em}
+.color-swatch .swatch-hex{color:#888;font-size:.8em}
 
+/* Shape Selection */
 .shape-select-list{max-height:350px;overflow-y:auto;margin-top:12px}
 .shape-select-row{display:flex;align-items:center;gap:10px;padding:10px;background:#1e1e1e;border-radius:8px;margin-bottom:6px;border:1px solid #333;transition:all .2s}
 .shape-select-row:hover{border-color:#555}
@@ -69,13 +69,12 @@ header p{color:#888;margin-top:8px}
 .shape-select-row input[type=checkbox]{width:20px;height:20px;cursor:pointer;accent-color:#f7c600;flex-shrink:0}
 .shape-select-row .shape-color-box{width:24px;height:24px;border-radius:5px;border:1px solid #444;flex-shrink:0}
 .shape-select-row .shape-info{flex:1;font-size:.85em}
-.shape-select-row .shape-info .shape-dims{color:#888;font-size:.8em}
+.shape-select-row .shape-dims{color:#888;font-size:.8em}
 .shape-select-row .shape-type-badge{padding:3px 10px;border-radius:4px;font-size:.7em;font-weight:600;text-transform:uppercase}
 .shape-type-badge.fill{background:#1a3a1a;color:#6bff6b}
 .shape-type-badge.satin{background:#1a1a3a;color:#6b6bff}
 .shape-type-badge.running{background:#3a3a1a;color:#f7c600}
-
-.select-actions{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap}
+.select-actions{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap}
 
 /* Specs Form */
 .spec-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -104,8 +103,6 @@ header p{color:#888;margin-top:8px}
 .msg.info{background:#1a1a2e;color:#88f;border:1px solid #335}
 .msg.warn{background:#3a2a15;color:#f7c600;border:1px solid #5a4a25}
 
-.shapes-list{max-height:300px;overflow-y:auto;margin-top:10px}
-
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:12px 24px;border-radius:8px;border:none;cursor:pointer;font-size:1em;font-weight:600;transition:all .2s}
 .btn-primary{background:linear-gradient(135deg,#ff6b35,#f7c600);color:#000}
 .btn-primary:hover{opacity:.9;transform:translateY(-1px)}
@@ -121,7 +118,7 @@ header p{color:#888;margin-top:8px}
 <div class="container">
   <header>
     <h1>STICHAI PRO</h1>
-    <p>Upload → Paint areas to remove → Detect shapes → Select colors & shapes → Generate</p>
+    <p>Upload → Remove areas → Detect → Select shapes/colors → Generate</p>
   </header>
 
   <div class="main-grid">
@@ -129,14 +126,17 @@ header p{color:#888;margin-top:8px}
     <div>
       <!-- Upload -->
       <div class="panel">
-        <h2>1. Upload Your Design</h2>
+        <h2>1. Upload</h2>
         <div class="upload-zone" id="dropZone">
           <div class="upload-inner">
-            <input type="file" id="fileInput" accept="image/*" onchange="handleImage(this)">
-            <div class="icon" id="uploadIcon">📁</div>
-            <h3 id="uploadText">Choose a photo</h3>
+            <div class="icon">📁</div>
+            <h3>Choose a photo</h3>
             <p>PNG, JPG, WEBP — Max 10MB</p>
-            <button class="upload-btn" id="uploadBtn" type="button" onclick="pickPhoto()">Select Photo</button>
+            <!-- The most reliable upload pattern: input INSIDE label -->
+            <label class="upload-label" for="fileInput">
+              <input type="file" id="fileInput" accept="image/*" onchange="handleImage(this)">
+              📷 Select Photo
+            </label>
           </div>
           <img id="preview-img" alt="Preview">
         </div>
@@ -148,11 +148,11 @@ header p{color:#888;margin-top:8px}
 
         <div id="maskTools" style="display:none;">
           <div class="mask-header">
-            <div class="mask-status" id="maskStatus">🔴 Remove Mode: Paint over areas to EXCLUDE</div>
+            <div class="mask-status" id="maskStatus">🔴 Remove Mode: Paint areas to exclude</div>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin:10px 0;">
             <div class="tools">
-              <button class="tool-btn active" id="brushBtn" onclick="setTool('brush')">🖌️ Remove Area</button>
+              <button class="tool-btn active" id="brushBtn" onclick="setTool('brush')">🖌️ Remove</button>
               <button class="tool-btn" id="eraserBtn" onclick="setTool('eraser')">❌ Undo</button>
               <button class="tool-btn" id="clearBtn" onclick="clearMask()">🗑️ Clear</button>
             </div>
@@ -165,37 +165,32 @@ header p{color:#888;margin-top:8px}
             </div>
           </div>
           <div class="mask-hint">
-            <strong>Paint RED over anything you do NOT want embroidered</strong> (background, frames, watermarks). Everything else will be detected as shapes for you to choose from.
+            <strong>Paint RED</strong> over anything you do NOT want embroidered. Click <strong>Analyze</strong> when done.
           </div>
-          <!-- Detect button appears after image upload -->
-          <button class="btn btn-primary" id="detectBtn" onclick="detectShapes()" style="width:100%;margin-top:15px;padding:14px;font-size:1.1em;">🔍 Detect Shapes</button>
+          <button class="btn btn-primary" id="detectBtn" onclick="detectShapes()" style="width:100%;margin-top:10px;padding:14px;font-size:1.1em;">🔍 Analyze Image</button>
         </div>
       </div>
 
-      <!-- Shape Selection Panel (appears after detection) -->
+      <!-- Selection Panel -->
       <div class="panel selection-panel" id="selectPanel" style="margin-top:20px;">
         <h2>3. Select Colors & Shapes</h2>
-        <p style="font-size:.85em;color:#888;margin-bottom:12px;">Uncheck colors or shapes you do NOT want in the final embroidery. Only checked items will be stitched.</p>
+        <p style="font-size:.85em;color:#888;margin-bottom:12px;">Uncheck items you do NOT want stitched. Only checked items will be in the final embroidery.</p>
 
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <strong style="color:#f7c600;font-size:.9em;">Colors</strong>
-          <div class="select-actions">
-            <button class="btn btn-secondary btn-sm" onclick="selectAllColors(true)">All</button>
-            <button class="btn btn-secondary btn-sm" onclick="selectAllColors(false)">None</button>
-          </div>
+        <strong style="color:#f7c600;font-size:.9em;">Detected Colors</strong>
+        <div style="margin:8px 0;">
+          <button class="btn btn-secondary btn-sm" onclick="selectAllColors(true)">All</button>
+          <button class="btn btn-secondary btn-sm" onclick="selectAllColors(false)">None</button>
         </div>
-        <div class="color-swatches" id="colorSwatches"></div>
+        <div id="colorSwatches"></div>
 
-        <div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 8px;">
-          <strong style="color:#f7c600;font-size:.9em;">Shapes (<span id="shapeCount">0</span> found)</strong>
-          <div class="select-actions">
-            <button class="btn btn-secondary btn-sm" onclick="selectAllShapes(true)">All</button>
-            <button class="btn btn-secondary btn-sm" onclick="selectAllShapes(false)">None</button>
-          </div>
+        <strong style="color:#f7c600;font-size:.9em;display:block;margin-top:16px;">Detected Shapes (<span id="shapeCount">0</span>)</strong>
+        <div style="margin:8px 0;">
+          <button class="btn btn-secondary btn-sm" onclick="selectAllShapes(true)">All</button>
+          <button class="btn btn-secondary btn-sm" onclick="selectAllShapes(false)">None</button>
         </div>
         <div class="shape-select-list" id="shapeSelectList"></div>
 
-        <button class="btn btn-primary" id="generateBtn" onclick="generateSelected()" style="width:100%;margin-top:15px;padding:14px;font-size:1.1em;">⚡ Generate Selected</button>
+        <button class="btn btn-primary" id="generateBtn" onclick="generateSelected()" style="width:100%;margin-top:15px;padding:14px;font-size:1.1em;">⚡ Generate Embroidery</button>
       </div>
 
       <!-- Results -->
@@ -204,7 +199,7 @@ header p{color:#888;margin-top:8px}
         <img id="resultImg" class="result-img" alt="Result">
         <div class="stats" id="stats"></div>
         <div style="display:flex;gap:8px;margin-top:15px;flex-wrap:wrap;">
-          <button class="btn btn-primary" onclick="downloadFile('dst')">⬇ Download .DST</button>
+          <button class="btn btn-primary" onclick="downloadFile('dst')">⬇ .DST</button>
           <button class="btn btn-secondary" onclick="downloadFile('pes')">.PES</button>
           <button class="btn btn-secondary" onclick="downloadFile('jef')">.JEF</button>
           <button class="btn btn-secondary" onclick="downloadFile('exp')">.EXP</button>
@@ -220,42 +215,20 @@ header p{color:#888;margin-top:8px}
       <div class="panel">
         <h2>2. Machine Specs</h2>
         <div class="spec-grid">
-          <div class="spec-group">
-            <label>Fabric Type</label>
-            <select id="fabricType"><option value="cotton">Cotton (T-shirt)</option><option value="denim">Denim / Jeans</option><option value="fleece">Fleece / Hoodie</option><option value="pique">Pique (Polo)</option><option value="twill">Twill (Cap/Hat)</option><option value="satin">Satin / Silk</option><option value="leather">Leather / PU</option><option value="towel">Terry Towel</option><option value="canvas">Canvas / Duck</option><option value="knit">Light Knit</option></select>
-          </div>
-          <div class="spec-group">
-            <label>Machine Brand</label>
-            <select id="machineBrand"><option value="tajima">Tajima</option><option value="brother">Brother</option><option value="barudan">Barudan</option><option value="happy">Happy</option><option value="zsk">ZSK</option><option value="melco">Melco</option><option value="ricoma">Ricoma</option><option value="swf">SWF</option><option value="toyota">Toyota</option><option value="generic">Generic/Other</option></select>
-          </div>
-          <div class="spec-group">
-            <label>Hoop Size</label>
-            <select id="hoopSize"><option value="4x4">4x4 (100x100mm)</option><option value="5x7" selected>5x7 (130x180mm)</option><option value="6x10">6x10 (160x260mm)</option><option value="8x12">8x12 (200x300mm)</option></select>
-          </div>
-          <div class="spec-group">
-            <label>Stitch Density</label>
-            <select id="stitchDensity"><option value="low">Low (sparse)</option><option value="medium" selected>Medium (standard)</option><option value="high">High (dense)</option></select>
-          </div>
-          <div class="spec-group">
-            <label>Thread Brand</label>
-            <select id="threadBrand"><option value="madeira">Madeira</option><option value="isacord">Isacord</option><option value="robinson">Robinson-Anton</option><option value="exquisite">Exquisite</option><option value="gunold">Gunold</option><option value="generic">Generic Polyester</option></select>
-          </div>
-          <div class="spec-group">
-            <label>Stabilizer</label>
-            <select id="stabilizer"><option value="cutaway">Cutaway (woven)</option><option value="tearaway">Tearaway (stable)</option><option value="washaway">Washaway (sheer)</option><option value="fusible">Fusible (knits)</option><option value="none">None / Hoop only</option></select>
-          </div>
-          <div class="spec-group full">
-            <label>Special Instructions</label>
-            <input type="text" id="specialInstructions" placeholder="e.g. 'Text must be satin', 'Max 80mm wide'">
-          </div>
+          <div class="spec-group"><label>Fabric Type</label><select id="fabricType"><option value="cotton">Cotton (T-shirt)</option><option value="denim">Denim / Jeans</option><option value="fleece">Fleece / Hoodie</option><option value="pique">Pique (Polo)</option><option value="twill">Twill (Cap/Hat)</option><option value="satin">Satin / Silk</option><option value="leather">Leather / PU</option><option value="towel">Terry Towel</option><option value="canvas">Canvas / Duck</option><option value="knit">Light Knit</option></select></div>
+          <div class="spec-group"><label>Machine Brand</label><select id="machineBrand"><option value="tajima">Tajima</option><option value="brother">Brother</option><option value="barudan">Barudan</option><option value="happy">Happy</option><option value="zsk">ZSK</option><option value="melco">Melco</option><option value="ricoma">Ricoma</option><option value="swf">SWF</option><option value="toyota">Toyota</option><option value="generic">Generic/Other</option></select></div>
+          <div class="spec-group"><label>Hoop Size</label><select id="hoopSize"><option value="4x4">4x4 (100mm)</option><option value="5x7" selected>5x7 (130x180mm)</option><option value="6x10">6x10 (160x260mm)</option><option value="8x12">8x12 (200x300mm)</option></select></div>
+          <div class="spec-group"><label>Stitch Density</label><select id="stitchDensity"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div>
+          <div class="spec-group"><label>Thread Brand</label><select id="threadBrand"><option value="madeira">Madeira</option><option value="isacord">Isacord</option><option value="robinson">Robinson-Anton</option><option value="exquisite">Exquisite</option><option value="gunold">Gunold</option><option value="generic">Generic Polyester</option></select></div>
+          <div class="spec-group"><label>Stabilizer</label><select id="stabilizer"><option value="cutaway">Cutaway</option><option value="tearaway">Tearaway</option><option value="washaway">Washaway</option><option value="fusible">Fusible</option><option value="none">None</option></select></div>
+          <div class="spec-group full"><label>Special Instructions</label><input type="text" id="specialInstructions" placeholder="e.g. 'Text must be satin', 'Max 80mm wide'"></div>
         </div>
       </div>
-
       <div class="panel" style="margin-top:20px;">
         <h2>Status</h2>
         <div class="progress-bar" id="progressBar"><div class="progress-bar-fill" id="progressFill"></div></div>
         <div class="spinner" id="spinner"></div>
-        <div class="msg info" id="statusMsg" style="display:block;">🔴 Step 1: Upload an image</div>
+        <div class="msg info" id="statusMsg" style="display:block;">🔴 Step 1: Upload a photo</div>
         <div class="debug-log" id="debugLog"></div>
       </div>
     </div>
@@ -263,52 +236,15 @@ header p{color:#888;margin-top:8px}
 </div>
 
 <script>
-// ─── DEBUG ───
-function log(msg) {
-  const el = document.getElementById('debugLog');
-  el.style.display = 'block';
-  const line = document.createElement('div');
-  line.textContent = new Date().toLocaleTimeString() + ' ' + msg;
-  el.appendChild(line);
-  el.scrollTop = el.scrollHeight;
-  console.log('[STICHAI]', msg);
-}
-
-// ─── STATE ───
-let canvas, ctx, maskCanvas, maskCtx;
-let isDrawing = false, currentTool = 'brush', brushSize = 35, lastX, lastY;
-let imageFile = null, hasMaskPainted = false;
-let detectionId = null, detectedData = null;
-let jobId = null;
-
-// ─── HELPERS ───
-function status(html, type) {
-  const el = document.getElementById('statusMsg');
-  el.innerHTML = html; el.className = 'msg ' + (type || 'info'); el.style.display = 'block';
-}
-function error(msg) { status('❌ ' + msg, 'error'); log('ERROR: ' + msg); }
-function success(msg) { status('✅ ' + msg, 'success'); log('OK: ' + msg); }
-function setLoading(on, pct) {
-  document.getElementById('spinner').style.display = on ? 'block' : 'none';
-  const bar = document.getElementById('progressBar');
-  const fill = document.getElementById('progressFill');
-  bar.style.display = on ? 'block' : 'none';
-  if (pct !== undefined) fill.style.width = pct + '%';
-}
-
-// ─── UPLOAD ───
-function handleImage(inputEl) {
-  if (!inputEl || !inputEl.files || !inputEl.files.length) { log('No files'); return; }
-  const f = inputEl.files[0];
-  const isImg = /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name) || (f.type && f.type.startsWith('image/'));
-  if (!isImg) { error('Not an image: ' + f.name); return; }
-  if (f.size > 10 * 1024 * 1024) { error('File too large. Max 10MB.'); return; }
-
-  log('Selected: ' + f.name + ' (' + (f.size/1024).toFixed(0) + 'KB)');
-  imageFile = f;
-  const reader = new FileReader();
-  reader.onload = function(ev) {
-    const img = new Image();
-    img.onload = function() {
-      document.getElementById('preview-img').src = ev.target.result;
-      document.getElementById('previ
+// ─── COLOR NAME LOOKUP ───
+var COLOR_NAMES = {"#000000":"Black","#FFFFFF":"White","#FF0000":"Red","#00FF00":"Green","#0000FF":"Blue","#FFFF00":"Yellow","#FF00FF":"Magenta","#00FFFF":"Cyan","#FFA500":"Orange","#800080":"Purple","#FFC0CB":"Pink","#A52A2A":"Brown","#808080":"Gray","#C0C0C0":"Silver","#FFD700":"Gold","#F5F5DC":"Beige","#20B2AA":"Light Sea Green","#87CEEB":"Sky Blue","#DDA0DD":"Plum","#F0E68C":"Khaki","#D2B48C":"Tan","#FF69B4":"Hot Pink","#CD853F":"Peru","#4682B4":"Steel Blue","#9ACD32":"Yellow Green","#D2691E":"Chocolate","#DC143C":"Crimson","#4B0082":"Indigo","#FF1493":"Deep Pink","#00CED1":"Dark Turquoise","#FF4500":"Orange Red","#2E8B57":"Sea Green","#9370DB":"Medium Purple","#FF6347":"Tomato","#40E0D0":"Turquoise","#EE82EE":"Violet","#F4A460":"Sandy Brown","#8B4513":"Saddle Brown","#2F4F4F":"Dark Slate Gray","#E9967A":"Dark Salmon","#483D8B":"Dark Slate Blue","#B22222":"Fire Brick","#228B22":"Forest Green","#6B8E23":"Olive Drab","#BC8F8F":"Rosy Brown","#4169E1":"Royal Blue","#8B0000":"Dark Red","#556B2F":"Dark Olive Green","#8FBC8F":"Dark Sea Green","#B8860B":"Dark Goldenrod","#BDB76B":"Dark Khaki","#DEB887":"Burlywood","#5F9EA0":"Cadet Blue","#7FFF00":"Chartreuse","#FF7F50":"Coral","#6495ED":"Cornflower Blue","#00008B":"Dark Blue","#008B8B":"Dark Cyan","#A9A9A9":"Dark Gray","#006400":"Dark Green","#696969":"Dim Gray","#1E90FF":"Dodger Blue","#F0FFFF":"Azure","#F5F5F5":"White Smoke","#FFE4C4":"Bisque","#8A2BE2":"Blue Violet","#A0522D":"Sienna","#FAEBD7":"Antique White","#7FFFD4":"Aquamarine","#F0F8FF":"Alice Blue","#E0FFFF":"Light Cyan","#FAFAD2":"Light Goldenrod","#D3D3D3":"Light Gray","#FFB6C1":"Light Pink","#FFA07A":"Light Salmon","#87CEFA":"Light Sky Blue","#778899":"Light Slate Gray","#B0C4DE":"Light Steel Blue","#FFFFE0":"Light Yellow","#32CD32":"Lime Green","#66CDAA":"Medium Aquamarine","#0000CD":"Medium Blue","#BA55D3":"Medium Orchid","#3CB371":"Medium Sea Green","#7B68EE":"Medium Slate Blue","#00FA9A":"Medium Spring Green","#48D1CC":"Medium Turquoise","#C71585":"Medium Violet Red","#191970":"Midnight Blue","#F5FFFA":"Mint Cream","#FFE4E1":"Misty Rose","#FFE4B5":"Moccasin","#FFDEAD":"Navajo White","#000080":"Navy","#FFEFD5":"Papaya Whip","#FFDAB9":"Peach Puff","#FFC0CB":"Pink","#B0E0E6":"Powder Blue","#800000":"Maroon","#E6E6FA":"Lavender","#F08080":"Light Coral","#ADD8E6":"Light Blue"};
+function getColorName(hex) {
+  var h = hex.toUpperCase();
+  if (COLOR_NAMES[h]) return COLOR_NAMES[h];
+  // Try to find closest
+  var best = null, bestDist = Infinity;
+  var r1 = parseInt(h.slice(1,3),16), g1 = parseInt(h.slice(3,5),16), b1 = parseInt(h.slice(5,7),16);
+  for (var k in COLOR_NAMES) {
+    var r2 = parseInt(k.slice(1,3),16), g2 = parseInt(k.slice(3,5),16), b2 = parseInt(k.slice(5,7),16);
+    var d = Math.abs(r1-r2) + Math.abs(g1-g2) + Math.abs(b1-b2);
+    if (d < bestDist) { bestDist = d; best = COLOR_NA
