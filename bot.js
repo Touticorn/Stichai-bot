@@ -1,15 +1,5 @@
 /**
- * Stichai v41-patched
- * ═══════════════════════════════════════════════════════
- *  FIXES APPLIED
- *  ──────────────────────────────────────────────────
- *  1. Red mask detection (frontend paints rgba(255,60,60))
- *  2. Quantized buffer returned for pixel mapping
- *  3. 8-connectivity flood fill + MIN_AREA 20
- *  4. Per-region avgRunW classification (text → satin)
- *  5. Smart trim (only when gap > 30 / 3mm)
- *  6. Honest DST only (fake PES/JEF/EXP/VP3 removed)
- *  7. Railway timeouts set to 120s
+ * Stichai v41.2 — cors removed, native headers
  */
 
 "use strict";
@@ -19,12 +9,19 @@ const multer  = require("multer");
 const axios   = require("axios");
 const path    = require("path");
 const sharp   = require("sharp");
-const cors    = require("cors");
 
 const app    = express();
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 
-app.use(cors());
+// Native CORS — no npm package needed
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
+
 app.use(express.json({limit:"10mb"}));
 app.use(express.urlencoded({extended:true,limit:"10mb"}));
 
@@ -405,7 +402,6 @@ function generateStitchesFromRegions(pixMap, regions, colors, params) {
     const {ci,color,type,mnx,mny,mxx,mxy}=reg;
     let lastX=globalLastX,lastY=globalLastY;
 
-    // Smart trim when moving to new region
     if(lastX!==-1){
       const gap=Math.hypot(reg.mnx-lastX, reg.mny-lastY);
       if(gap>SMART_TRIM) emitTrim(lastX,lastY,reg.mnx,reg.mny,color);
@@ -996,9 +992,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"41.1",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"41.2",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v41.1 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
+const server=app.listen(PORT,()=>console.log(`Stichai v41.2 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
