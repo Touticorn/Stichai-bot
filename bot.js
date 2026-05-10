@@ -1,5 +1,5 @@
 /**
- * Stichai v37
+ * Stichai v38
  * ═══════════════════════════════════════════════════════
  *  3 SURGICAL FIXES from Railway log (v33 → v34)
  * ═══════════════════════════════════════════════════════
@@ -503,57 +503,96 @@ function encodeFile(fmt,stitches){
 }
 
 /* ============================================================
-   PREVIEW RENDERER  — 2× scale so thin satin text is visible
+   PREVIEW RENDERER  — simulated fabric appearance
+   Renders each stitch as a thick thread with proper weight,
+   so the output looks like real embroidery on fabric.
    ============================================================ */
 async function renderPreview(stitches){
-  const SC=2;                       // 2x scale: 1600×1600 output
-  const W=CANVAS*SC,H=CANVAS*SC;
-  const buf=Buffer.alloc(W*H*4);
-  for(let i=0;i<W*H*4;i+=4){buf[i]=245;buf[i+1]=242;buf[i+2]=235;buf[i+3]=255;}
+  const SC = 2;                         // render at 2× for crisp downscale
+  const W  = CANVAS*SC, H = CANVAS*SC;
+  const buf = Buffer.alloc(W*H*4);
 
-  const sp=(x,y,r,g,b,t)=>{
-    for(let ox=-t;ox<=t;ox++)for(let oy=-t;oy<=t;oy++){
-      const px=x+ox,py=y+oy;
-      if(px<0||px>=W||py<0||py>=H)return;
-      const i2=(py*W+px)*4;buf[i2]=r;buf[i2+1]=g;buf[i2+2]=b;buf[i2+3]=255;
-    }
-  };
-  const ln=(x0,y0,x1,y1,r,g,b,t)=>{
-    const dx=Math.abs(x1-x0),dy=Math.abs(y1-y0),sx=x0<x1?1:-1,sy=y0<y1?1:-1;
-    let err=dx-dy,x=x0,y=y0;
-    for(let guard=0;guard<W+H;guard++){
-      sp(x,y,r,g,b,t);
-      if(x===x1&&y===y1)break;
-      const e2=2*err;
-      if(e2>-dy){err-=dy;x+=sx;}
-      if(e2<dx) {err+=dx;y+=sy;}
-    }
+  // Linen fabric background
+  for(let i=0;i<W*H*4;i+=4){buf[i]=242;buf[i+1]=238;buf[i+2]=228;buf[i+3]=255;}
+
+  // Draw pixel with bounds check
+  const sp=(x,y,r,g,b)=>{
+    const px=Math.round(x),py=Math.round(y);
+    if(px<0||px>=W||py<0||py>=H)return;
+    const i2=(py*W+px)*4;
+    // Alpha-blend for softer thread look
+    buf[i2]  =Math.round(buf[i2]  *0.15+r*0.85);
+    buf[i2+1]=Math.round(buf[i2+1]*0.15+g*0.85);
+    buf[i2+2]=Math.round(buf[i2+2]*0.15+b*0.85);
+    buf[i2+3]=255;
   };
 
-  const MAX_LINE=CANVAS*SC/3;
+  // Draw a thick thread line between two points
+  // thickness in pixels — fill stitches: 2px, satin: 3px, underlay: 1px (grey)
+  const threadLine=(x0,y0,x1,y1,r,g,b,thick)=>{
+    const dx=x1-x0,dy=y1-y0;
+    const len=Math.hypot(dx,dy);
+    if(len<0.5)return;
+    const steps=Math.max(1,Math.ceil(len));
+    const nx=-dy/len,ny=dx/len;  // perpendicular normal
+    for(let i=0;i<=steps;i++){
+      const t=i/steps;
+      const cx=x0+dx*t,cy=y0+dy*t;
+      // Draw perpendicular thickness
+      for(let w=-thick;w<=thick;w++){
+        const pw=w/thick;
+        // Gaussian falloff for soft thread edge
+        const alpha=Math.exp(-pw*pw*2);
+        const pr=Math.round(r*alpha+242*(1-alpha));
+        const pg=Math.round(g*alpha+238*(1-alpha));
+        const pb=Math.round(b*alpha+228*(1-alpha));
+        sp(cx+nx*w,cy+ny*w,pr,pg,pb);
+      }
+    }
+  };
+
+  const MAX_LINE=CANVAS*SC/4;   // guard against wild jumps
   let prev=null;
+
+  // First pass: draw underlay (light grey, thin)
   for(const st of stitches){
     if(st.type==="trim"){prev=null;continue;}
+    if(st.type==="underlay"&&prev&&prev.type==="underlay"){
+      const d=Math.hypot(st.x-prev.x,st.y-prev.y);
+      if(d>0.5&&d<MAX_LINE)
+        threadLine(prev.x*SC,prev.y*SC,st.x*SC,st.y*SC,200,196,186,1);
+    }
+    prev=st.type==="underlay"?st:null;
+  }
+
+  // Second pass: draw cover stitches (full color, thick thread)
+  prev=null;
+  for(const st of stitches){
+    if(st.type==="trim"){prev=null;continue;}
+    if(st.type==="underlay"){prev=null;continue;}  // skip underlay in cover pass
     if(prev){
-      const dist=Math.hypot(st.x-prev.x,st.y-prev.y);
-      if(dist>0.5&&dist<MAX_LINE){
+      const d=Math.hypot(st.x-prev.x,st.y-prev.y);
+      if(d>0.5&&d<MAX_LINE){
         const dc=st.color||prev.color||"#000000";
         const m=dc.match(/^#([0-9a-fA-F]{6})$/);
         if(m){
-          let r=parseInt(m[1].slice(0,2),16);
-          let g=parseInt(m[1].slice(2,4),16);
-          let b=parseInt(m[1].slice(4,6),16);
-          if(st.type==="underlay"){r=195;g=195;b=195;}
-          const thick=st.type==="satin"?2:1;
-          ln(prev.x*SC,prev.y*SC,st.x*SC,st.y*SC,r,g,b,thick);
+          const r=parseInt(m[1].slice(0,2),16);
+          const g=parseInt(m[1].slice(2,4),16);
+          const b=parseInt(m[1].slice(4,6),16);
+          // Satin: thicker thread (3px), fill: standard (2px)
+          const thick=st.type==="satin"?3:2;
+          threadLine(prev.x*SC,prev.y*SC,st.x*SC,st.y*SC,r,g,b,thick);
         }
       }
     }
     prev=st;
   }
+
+  // Resize to display size with lanczos for sharpness
   return await sharp(buf,{raw:{width:W,height:H,channels:4}})
-    .resize(CANVAS,CANVAS)   // resize back to CANVAS for consistent display size
-    .png().toBuffer();
+    .resize(CANVAS,CANVAS,{kernel:"lanczos3"})
+    .png({compressionLevel:6})
+    .toBuffer();
 }
 
 /* ============================================================
@@ -666,8 +705,8 @@ app.get("/download/:id/:format",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"37.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"38.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v37 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
+const server=app.listen(PORT,()=>console.log(`Stichai v38 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
 server.timeout=180000;
