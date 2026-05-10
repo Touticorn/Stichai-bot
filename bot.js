@@ -1,5 +1,5 @@
 /**
- * Stichai v34
+ * Stichai v35
  * ═══════════════════════════════════════════════════════
  *  3 SURGICAL FIXES from Railway log (v33 → v34)
  * ═══════════════════════════════════════════════════════
@@ -43,14 +43,15 @@ const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-/* ─── GEMINI MODELS — updated May 2026 ─────────────────────
-   Listed in preference order. geminiPost() tries each in turn
-   and logs the exact error for any 404/403/429.
+/* ─── GEMINI MODELS — correct names as of May 2026 ──────────
+   1.x and 2.0 models are SHUT DOWN (return 404).
+   Use 2.5-flash (stable alias) → 2.5-flash latest preview → 2.5-pro.
+   v1beta URL is correct for all 2.5 models.
 */
 const GEMINI_MODELS = [
-  "gemini-2.5-flash-preview-04-17",   // best quality, vision-capable
-  "gemini-2.5-pro-preview-05-06",     // fallback pro
-  "gemini-2.0-flash-lite",            // fast, cheap, widely available
+  "gemini-2.5-flash",                  // stable alias, always latest 2.5-flash
+  "gemini-2.5-flash-preview-05-20",    // specific latest preview (May 2026)
+  "gemini-2.5-pro",                    // pro fallback
 ];
 
 /* ─── CANVAS ────────────────────────────────────────────────
@@ -321,13 +322,10 @@ function generateStitchesFromPixels(pixMap, colors, colorMeta) {
           for(const{x1,x2} of ord){
             const ux=rev?x2-PULL:x1+PULL;
             const ux2=rev?x1+PULL:x2-PULL;
-            // Always trim before underlay — FIX 2: no distance threshold
-            if(lastX!==-1){
-              const d=Math.hypot(ux-lastX,y-lastY);
-              if(d>TATAMI_ROW){emitTrim(lastX,lastY,ux,y,color);}
-            } else {
-              stitches.push({x:ux,y,color,type:"trim"});
-            }
+            // ALWAYS trim before every underlay stitch — zero threshold
+            // Any unguarded stitch between runs draws a diagonal line
+            if(lastX!==-1){emitTrim(lastX,lastY,ux,y,color);}
+            else{stitches.push({x:ux,y,color,type:"trim"});}
             stitches.push({x:ux, y,color,type:"underlay"});
             stitches.push({x:ux2,y,color,type:"underlay"});
             colorCounts[ci].underlay+=2;
@@ -668,8 +666,8 @@ app.get("/download/:id/:format",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"34.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"35.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v34 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
+const server=app.listen(PORT,()=>console.log(`Stichai v35 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
 server.timeout=180000;
