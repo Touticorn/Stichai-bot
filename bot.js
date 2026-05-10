@@ -122,7 +122,7 @@ async function preprocessImage(buffer) {
     .resize(CANVAS, CANVAS, {fit:"contain",background:{r:255,g:255,b:255,alpha:1}})
     .median(2)
     .sharpen({sigma:1.0})
-    .normalize()
+    .linear(1.2,-15)
     .toBuffer();
 
   const q = await sharp(cleaned).png({colours:10,dither:0}).toBuffer();
@@ -462,9 +462,9 @@ async function renderPreview(pixMap, colors) {
       if(ci<0)continue;
       const idx=(y*CANVAS+x)*4;
       // Lighten this row to simulate thread sheen on stitch rows
-      buf[idx]=Math.min(255,buf[idx]+55);
-      buf[idx+1]=Math.min(255,buf[idx+1]+55);
-      buf[idx+2]=Math.min(255,buf[idx+2]+55);
+      buf[idx]=Math.min(255,buf[idx]+20);
+      buf[idx+1]=Math.min(255,buf[idx+1]+20);
+      buf[idx+2]=Math.min(255,buf[idx+2]+20);
     }
   }
 
@@ -475,10 +475,65 @@ async function renderPreview(pixMap, colors) {
       const ci=pixMap[y*CANVAS+x];
       if(ci<0)continue;
       const idx=(y*CANVAS+x)*4;
-      buf[idx]=Math.max(0,buf[idx]-30);
-      buf[idx+1]=Math.max(0,buf[idx+1]-30);
-      buf[idx+2]=Math.max(0,buf[idx+2]-30);
+      buf[idx]=Math.max(0,buf[idx]-10);
+      buf[idx+1]=Math.max(0,buf[idx+1]-10);
+      buf[idx+2]=Math.max(0,buf[idx+2]-10);
     }
+  }
+
+  // Draw visible stitch direction lines for fill regions
+  const seenRows=new Set();
+  for(const st of stitches){
+    if(st.type!=="fill")continue;
+    const py=Math.round((st.y-OFFSET)*PIXEL_SCALE);
+    if(py<0||py>=CANVAS)continue;
+    const key=`${st.color}_${py}`;
+    if(seenRows.has(key))continue;
+    seenRows.add(key);
+    const rowStitches=stitches.filter(s=>s.type==="fill"&&s.color===st.color&&Math.abs(s.y-st.y)<0.5);
+    if(rowStitches.length<2)continue;
+    rowStitches.sort((a,b)=>a.x-b.x);
+    for(let i=1;i<rowStitches.length;i++){
+      const x1=Math.round((rowStitches[i-1].x-OFFSET)*PIXEL_SCALE);
+      const x2=Math.round((rowStitches[i].x-OFFSET)*PIXEL_SCALE);
+      if(x2<x1||x1<0||x2>=CANVAS)continue;
+      const[cr,cg,cb]=hexToRgb(st.color);
+      const lr=Math.max(0,cr-50),lg=Math.max(0,cg-50),lb=Math.max(0,cb-50);
+      for(let lx=x1;lx<=x2;lx++){
+        if(lx>=0&&lx<CANVAS&&py>=0&&py<CANVAS){
+          const idx=(py*CANVAS+lx)*4;
+          buf[idx]=lr;buf[idx+1]=lg;buf[idx+2]=lb;buf[idx+3]=255;
+        }
+      }
+    }
+  }
+
+  // Crop preview to content bounds
+  let cminX=CANVAS,cmaxX=0,cminY=CANVAS,cmaxY=0;
+  for(let y=0;y<CANVAS;y++){
+    for(let x=0;x<CANVAS;x++){
+      if(pixMap[y*CANVAS+x]>=0){
+        if(x<cminX)cminX=x;if(x>cmaxX)cmaxX=x;
+        if(y<cminY)cminY=y;if(y>cmaxY)cmaxY=y;
+      }
+    }
+  }
+  const pad=20;
+  const cropX=Math.max(0,cminX-pad),cropY=Math.max(0,cminY-pad);
+  const cropW=Math.min(CANVAS,cmaxX+pad)-cropX;
+  const cropH=Math.min(CANVAS,cmaxY+pad)-cropY;
+  if(cropW>50&&cropH>50){
+    const cropped=Buffer.alloc(cropW*cropH*4);
+    for(let y=0;y<cropH;y++){
+      for(let x=0;x<cropW;x++){
+        const sIdx=((cropY+y)*CANVAS+(cropX+x))*4;
+        const dIdx=(y*cropW+x)*4;
+        cropped[dIdx]=buf[sIdx];cropped[dIdx+1]=buf[sIdx+1];
+        cropped[dIdx+2]=buf[sIdx+2];cropped[dIdx+3]=buf[sIdx+3];
+      }
+    }
+    return await sharp(cropped,{raw:{width:cropW,height:cropH,channels:4}})
+      .png({compressionLevel:6}).toBuffer();
   }
 
   return await sharp(buf,{raw:{width:CANVAS,height:CANVAS,channels:4}})
@@ -621,11 +676,10 @@ app.post("/generate-embroidery", upload.single("image"), async(req,res)=>{
     for(const w of qa.warnings)console.warn(`  ⚠ ${w}`);
 
     const shapes=[];
-    for(let i=0;i<colors.length;i++){
-      const c=normHex(colors[i]),k=colorCounts[i];
-      if(k.fill>0)    shapes.push({type:"fill",   color:c,pts:k.fill});
-      if(k.satin>0)   shapes.push({type:"satin",  color:c,pts:k.satin});
-      if(k.running>0) shapes.push({type:"running",color:c,pts:k.running});
+    for(const r of regions){
+      const pts=[[r.mnx,r.mny],[r.mxx,r.mny],[r.mxx,r.mxy],[r.mnx,r.mxy],[r.mnx,r.mny]];
+      shapes.push({type:r.type,color:normHex(r.color),points:pts,
+        bounds:{x:r.mnx,y:r.mny,w:r.mxx-r.mnx,h:r.mxy-r.mny}});
     }
 
     return res.json({
