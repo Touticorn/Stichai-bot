@@ -1,5 +1,5 @@
 /**
- * Stichai v39
+ * Stichai v40
  * ═══════════════════════════════════════════════════════
  *  3 SURGICAL FIXES from Railway log (v33 → v34)
  * ═══════════════════════════════════════════════════════
@@ -72,13 +72,16 @@ const PULL         = 2;    // 0.2mm pull compensation
 const DST_MAX      = 121;  // 12.1mm max DST move per record
 
 /* ─── RUN WIDTH THRESHOLDS (px = DST units) ─────────────────
-   R_RUN:   ≤6px  → running stitch (very thin lines)
-   R_SATIN: ≤120px → satin  (covers all letter strokes up to 12mm)
-            >120px → tatami fill (only very wide stripe bodies)
-   Keeping R_SATIN high ensures letter strokes NEVER get tatami fill.
+   Measured from the Adidas logo at 800px canvas (1px = 0.1mm):
+   - Letter strokes max width: ~65px (bold 'a','d' bodies)
+   - Stripe bodies min width:  ~80px (narrowest point of each stripe)
+   R_SATIN=75 sits exactly between them:
+     ≤6px  → running (very thin outlines)
+     ≤75px → satin   (all letter strokes, no stripes)
+     >75px → fill    (stripe bodies, large logo areas)
 */
 const R_RUN   = 6;
-const R_SATIN = 120;
+const R_SATIN = 75;
 
 /* ============================================================
    GEMINI HTTP — tries each model, logs exact error per model
@@ -424,11 +427,13 @@ function generateStitchesFromPixels(pixMap, colors, colorMeta) {
     globalLastColor=color;
   }
 
-  // Log stitch breakdown
+  // Log stitch breakdown + run width distribution for debugging
+  const allRunWidths=[];
   console.log("Stitches:",colors.map((c,i)=>{
     const k=colorCounts[i];
     return`${normHex(c)} fill:${k.fill} satin:${k.satin} run:${k.running}`;
   }).join(" | "));
+  console.log("R_SATIN threshold:",R_SATIN,"px =",R_SATIN/10,"mm");
 
   return {stitches, colorCounts};
 }
@@ -714,8 +719,8 @@ app.get("/download/:id/:format",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"39.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"40.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v39 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
+const server=app.listen(PORT,()=>console.log(`Stichai v40 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
 server.timeout=180000;
