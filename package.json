@@ -1,19 +1,17 @@
 {
   "name": "stichai-bot",
-  "version": "15.0.0",
+  "version": "50.0.0",
+  "description": "AI embroidery digitizer with async job processing",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "postinstall": "node install-vtracer.js || true"
+    "dev": "node bot.js"
   },
   "dependencies": {
-    "axios": "^1.7.0",
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "jimp": "^0.22.12",
-    "multer": "^1.4.5-lts.1",
-    "sharp": "^0.33.5",
-    "xml2js": "^0.6.2"
+    "axios": "^1.8.0",
+    "express": "^5.1.0",
+    "multer": "^2.0.1",
+    "sharp": "^0.34.0"
   },
   "engines": {
     "node": ">=18.0.0"
