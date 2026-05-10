@@ -30,9 +30,15 @@ const multer  = require("multer");
 const axios   = require("axios");
 const path    = require("path");
 const sharp   = require("sharp");
+const cors    = require("cors");
 
 const app    = express();
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
+
+// CORS + body parsing
+app.use(cors());
+app.use(express.json({limit:"10mb"}));
+app.use(express.urlencoded({extended:true,limit:"10mb"}));
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
@@ -860,8 +866,6 @@ function encodeFile(fmt,stitches){
    ROUTES
    ============================================================ */
 app.use(express.static(path.join(__dirname,"public")));
-app.use(express.json({limit:"10mb"}));
-app.use(express.urlencoded({extended:true,limit:"10mb"}));
 app.get("/",(_, res)=>res.sendFile(path.join(__dirname,"public","index.html")));
 
 app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:"mask",maxCount:1}]), async(req,res)=>{
@@ -870,34 +874,37 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
   try{
     const imgFile=req.files?.image?.[0];
     const maskFile=req.files?.mask?.[0];
-    if(!imgFile)return res.status(400).json({error:"No image uploaded"});
+    if(!imgFile){
+      console.error(`[${rid}] No image in req.files`);
+      return res.status(400).json({error:"No image uploaded"});
+    }
+    console.log(`[${rid}] Request: image=${imgFile.size}B mime=${imgFile.mimetype} mask=${maskFile?maskFile.size+'B':'none'}`);
 
-    // ── Parse embroidery specs from form data ──
+    // ── Parse specs from req.body (multer puts non-file fields here) ──
+    const body = req.body || {};
     const specs = {
-      fabric: req.body?.fabric || "cotton",
-      machine: req.body?.machine || "generic",
-      hoop: req.body?.hoop || "5x7",
-      density: req.body?.density || "medium",
-      thread: req.body?.thread || "generic",
-      stabilizer: req.body?.stabilizer || "cutaway",
-      instructions: req.body?.instructions || ""
+      fabric: body.fabric || "cotton",
+      machine: body.machine || "generic",
+      hoop: body.hoop || "5x7",
+      density: body.density || "medium",
+      thread: body.thread || "generic",
+      stabilizer: body.stabilizer || "cutaway",
+      instructions: body.instructions || ""
     };
     console.log(`[${rid}] Specs:`, JSON.stringify(specs));
 
-    // Get tuned stitch parameters based on specs
     const params = getStitchParams(specs);
-    console.log(`[${rid}] Tuned params: row=${params.tatamiRow} len=${params.tatamiLen} pull=${params.pull} ul=${params.tatamiUl}`);
+    console.log(`[${rid}] Tuned: row=${params.tatamiRow} len=${params.tatamiLen} pull=${params.pull} ul=${params.tatamiUl}`);
 
     console.time(`pre-${rid}`);
     let pre=await preprocessImage(imgFile.buffer);
     console.timeEnd(`pre-${rid}`);
 
-    // Apply user mask if provided (white=remove, black/transparent=keep)
     if(maskFile){
       console.time(`mask-${rid}`);
       pre=await applyUserMask(pre,maskFile.buffer);
       console.timeEnd(`mask-${rid}`);
-      console.log(`[${rid}] User mask applied`);
+      console.log(`[${rid}] Mask applied`);
     }
 
     console.time(`gem-${rid}`);
@@ -909,9 +916,9 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       colors=gem.colors;colorMeta=gem.meta||{};
       console.log(`[${rid}] Gemini: [${colors.join(",")}] | ${gem.notes}`);
     }else{
-      console.log(`[${rid}] Gemini failed — smart fallback`);
+      console.log(`[${rid}] Gemini failed — fallback colors`);
       colors=cleanFallbackColors(pre.fallbackColors,pre.bgLab);
-      console.log(`[${rid}] Fallback colors: [${colors.join(",")}]`);
+      console.log(`[${rid}] Fallback: [${colors.join(",")}]`);
     }
     if(!colors.length)colors=["#000000"];
     const hasDark=colors.some(c=>{const{r,g,b}=hexToRgb(c);return r+g+b<200;});
@@ -925,34 +932,30 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
     const regions=extractRegions(pixMap,colors);
     console.timeEnd(`regions-${rid}`);
 
-    if(!regions.length)return res.status(500).json({error:"No stitchable regions found"});
+    if(!regions.length){
+      return res.status(500).json({error:"No stitchable regions found — image may be too low contrast"});
+    }
 
     console.time(`stitch-${rid}`);
-    // Pass tuned params to stitch generation
     const{stitches,colorCounts}=generateStitchesFromRegions(pixMap,regions,colors,params);
     console.timeEnd(`stitch-${rid}`);
 
     const coverCount=stitches.filter(s=>s.type!=="trim"&&s.type!=="underlay").length;
-    if(coverCount<5)return res.status(500).json({error:"No stitchable content — check image contrast"});
+    if(coverCount<5){
+      return res.status(500).json({error:"Not enough stitches generated — check image contrast"});
+    }
 
     const id=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
-    // Store everything needed for preview + download
     jobs.set(id,{stitches,pixMap,colors,params,designW:CANVAS,designH:CANVAS});
 
     const qa=validateQuality(stitches);
-    console.log(`[${rid}] cover:${qa.stitchCount} avg:${qa.avgStitchMM}mm maxJump:${qa.maxJumpMM}mm`);
+    console.log(`[${rid}] DONE: ${qa.stitchCount} stitches, ${regions.length} regions, ${colors.length} colors`);
     for(const w of qa.warnings)console.warn(`  ⚠ ${w}`);
 
-    // Count stitches per region by bbox + color match
     const shapes=[];
     for(const r of regions){
       const pts=[[r.mnx,r.mny],[r.mxx,r.mny],[r.mxx,r.mxy],[r.mnx,r.mxy],[r.mnx,r.mny]];
-      // Count stitches inside this region's bbox with matching color and non-trim/underlay types
-      const sc = stitches.filter(s =>
-        s.color === r.color &&
-        s.type !== "trim" && s.type !== "underlay" &&
-        s.x >= r.mnx && s.x <= r.mxx && s.y >= r.mny && s.y <= r.mxy
-      ).length;
+      const sc=stitches.filter(s=>s.color===r.color&&s.type!=="trim"&&s.type!=="underlay"&&s.x>=r.mnx&&s.x<=r.mxx&&s.y>=r.mny&&s.y<=r.mxy).length;
       shapes.push({type:r.type,color:normHex(r.color),points:pts,
         bounds:{x:r.mnx,y:r.mny,w:r.mxx-r.mnx,h:r.mxy-r.mny},stitchCount:sc});
     }
@@ -966,13 +969,13 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       designSize:{w:CANVAS,h:CANVAS,mm:DESIGN_MM},
       colors,colorMeta,
       geminiNotes:gem?.notes||"",
-      specs,                 // echo back the specs used
-      tunedParams:params,    // the actual params applied
+      specs,
+      tunedParams:params,
       qa,shapes,regions:regions.length
     });
   }catch(e){
     console.error(`[${rid}] CRASH:`,e.message,"\n",e.stack);
-    return res.status(500).json({error:e.message});
+    return res.status(500).json({error:e.message||"Server error"});
   }
 });
 
