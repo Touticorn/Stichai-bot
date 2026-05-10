@@ -152,7 +152,7 @@ async function applyUserMask(pre, maskBuffer) {
   return { ...pre, buffer: maskedBuffer };
 }
 
-const MIN_AREA    = 20;
+const MIN_AREA    = 25;
 const SATIN_MAX_W = 150;
 
 async function geminiPost(body, ms = 32000) {
@@ -358,12 +358,12 @@ function extractRegions(pixMap, colors) {
         }
         const avgRunW=runCount>0?totalRunW/runCount:bw;
 
-        let type;
-        if(area<MIN_AREA*3)         type="running";
-        else if(aspectRatio>1.6 && solidity>0.35) type="fill";
-        else if(avgRunW>8 && avgRunW<=100 && solidity>0.25) type="satin";
-        else if(bw<=SATIN_MAX_W && bh<=SATIN_MAX_W*2) type="satin";
-        else                        type="fill";
+                let type;
+        if(area < MIN_AREA * 3) type = "running";
+        else if(aspectRatio > 1.6 && solidity > 0.35) type = "fill"; // tall stripe-like
+        else if(avgRunW > 8 && avgRunW <= 25 && solidity > 0.5) type = "satin"; // VERY thin column only
+        else if(bw <= 50 && bh <= 100 && avgRunW <= 25 && solidity > 0.45) type = "satin"; // tiny narrow only
+        else type = "fill"; // DEFAULT: solid fill for logos, text, wide shapes
 
         regions.push({ci,color:normHex(colors[ci]),type,mnx,mny,mxx,mxy,bw,bh,area,aspectRatio,solidity});
       }
