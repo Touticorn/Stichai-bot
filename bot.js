@@ -1,5 +1,18 @@
 /**
- * Stichai v41.2 — cors removed, native headers
+ * Stichai v41.3 — Solid
+ * ═══════════════════════════════════════════════════════
+ *  ALL FIXES APPLIED
+ *  ──────────────────────────────────────────────────
+ *  1. Native CORS (no npm package needed)
+ *  2. Quantized buffer for pixel mapping
+ *  3. Red mask detection
+ *  4. 8-connectivity + mergeAdjacentRegions (fixes fragments)
+ *  5. Strict satin: only hairline columns (avgRunW ≤ 14)
+ *  6. 16-color quantization for photos
+ *  7. Smart trim (gap > 30px)
+ *  8. Thick preview with vertical overlap (no fabric stripes)
+ *  9. Honest DST only
+ *  10. Railway timeouts 120s
  */
 
 "use strict";
@@ -13,7 +26,7 @@ const sharp   = require("sharp");
 const app    = express();
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 
-// Native CORS — no npm package needed
+// Native CORS
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -26,7 +39,6 @@ app.use(express.json({limit:"10mb"}));
 app.use(express.urlencoded({extended:true,limit:"10mb"}));
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-
 const GEMINI_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.5-flash-preview-05-20",
@@ -45,6 +57,7 @@ let PULL         = 2;
 const DST_MAX      = 121;
 const SMART_TRIM   = 30;
 
+/* ─── SPEC TUNING ─────────────────────────────────────────*/
 function getStitchParams(specs) {
   const s = specs || {};
   const fabric = (s.fabric || "cotton").toLowerCase();
@@ -94,6 +107,7 @@ function getStitchParams(specs) {
   return p;
 }
 
+/* ─── MASK APPLICATION ───────────────────────────────────*/
 async function applyUserMask(pre, maskBuffer) {
   const maskRaw = await sharp(maskBuffer)
     .resize(CANVAS, CANVAS, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
@@ -102,7 +116,6 @@ async function applyUserMask(pre, maskBuffer) {
 
   const { data: mData, info: mInfo } = maskRaw;
   const channels = mInfo.channels;
-
   const bgRgb = hexToRgb(pre.bgColor);
 
   const imgRaw = await sharp(pre.buffer)
@@ -117,7 +130,7 @@ async function applyUserMask(pre, maskBuffer) {
   let maskedPixels = 0;
   for (let y = 0; y < CANVAS; y++) {
     for (let x = 0; x < CANVAS; x++) {
-      const idx = (y * CANVAS + x);
+      const idx = y * CANVAS + x;
       const iOff = idx * iCh;
       const mOff = idx * channels;
 
@@ -143,7 +156,7 @@ async function applyUserMask(pre, maskBuffer) {
     }
   }
 
-  console.log(`Mask applied: ${maskedPixels} pixels masked (${(maskedPixels / (CANVAS * CANVAS) * 100).toFixed(1)}%)`);
+  console.log(`Mask applied: ${maskedPixels}px (${(maskedPixels / (CANVAS * CANVAS) * 100).toFixed(1)}%)`);
 
   const maskedBuffer = await sharp(out, {
     raw: { width: CANVAS, height: CANVAS, channels: iCh }
@@ -152,26 +165,11 @@ async function applyUserMask(pre, maskBuffer) {
   return { ...pre, buffer: maskedBuffer };
 }
 
+/* ─── CONSTANTS ───────────────────────────────────────────*/
 const MIN_AREA    = 25;
 const SATIN_MAX_W = 150;
 
-async function geminiPost(body, ms = 32000) {
-  for (const model of GEMINI_MODELS) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-    try {
-      const res = await axios.post(url, body, { timeout: ms });
-      console.log(`Gemini OK: ${model}`);
-      return res;
-    } catch (e) {
-      console.error(`Gemini ${model} → ${e.response?.status}: ${e.response?.data?.error?.message||e.message}`);
-    }
-  }
-  return null;
-}
-
-const jobs         = new Map();
-const previewCache = new Map();
-
+/* ─── COLOR UTILITIES ────────────────────────────────────*/
 function hexToRgb(hex) {
   const m = (hex||"").match(/^#?([0-9a-fA-F]{6})$/);
   if (!m) return {r:0,g:0,b:0};
@@ -197,6 +195,7 @@ function dedupe(cols){
   return out;
 }
 
+/* ─── IMAGE PRE-PROCESSING (16-color quantized) ──────────*/
 async function preprocessImage(buffer) {
   const cleaned = await sharp(buffer)
     .resize(CANVAS, CANVAS, {fit:"contain",background:{r:255,g:255,b:255,alpha:1}})
@@ -205,7 +204,7 @@ async function preprocessImage(buffer) {
     .linear(1.2,-15)
     .toBuffer();
 
-  const q = await sharp(cleaned).png({colours:10,dither:0}).toBuffer();
+  const q = await sharp(cleaned).png({colours:16,dither:0}).toBuffer();
   const {data,info} = await sharp(q).raw().toBuffer({resolveWithObject:true});
   const cm = new Map();
   for(let i=0;i<data.length;i+=info.channels){
@@ -214,7 +213,7 @@ async function preprocessImage(buffer) {
   }
   const sorted  = [...cm.entries()].sort((a,b)=>b[1]-a[1]);
   const bgColor = sorted[0][0];
-  const fallback= sorted.slice(0,8).map(([h])=>h);
+  const fallback= sorted.slice(0,12).map(([h])=>h);
 
   return {buffer:q, bgColor, bgLab:rgbToLab(hexToRgb(bgColor)), fallbackColors:fallback};
 }
@@ -228,6 +227,21 @@ function cleanFallbackColors(rawColors) {
     if(mi===-1) merged.push(normHex(c));
   }
   return merged.slice(0,6);
+}
+
+/* ─── GEMINI ─────────────────────────────────────────────*/
+async function geminiPost(body, ms = 32000) {
+  for (const model of GEMINI_MODELS) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+    try {
+      const res = await axios.post(url, body, { timeout: ms });
+      console.log(`Gemini OK: ${model}`);
+      return res;
+    } catch (e) {
+      console.error(`Gemini ${model} → ${e.response?.status}: ${e.response?.data?.error?.message||e.message}`);
+    }
+  }
+  return null;
 }
 
 async function analyzeWithGemini(originalBuffer, mime) {
@@ -261,6 +275,7 @@ Return ONLY valid JSON, no markdown.
   }catch(e){console.error("Gemini JSON:",e.message);return null;}
 }
 
+/* ─── PIXEL MAP ──────────────────────────────────────────*/
 async function buildPixelMap(buffer, colors) {
   const Jimp  = require("jimp");
   const image = await Jimp.read(buffer);
@@ -305,6 +320,7 @@ async function buildPixelMap(buffer, colors) {
   return pixMap;
 }
 
+/* ─── RUN HELPER ─────────────────────────────────────────*/
 function getRunsInRow(pixMap,ci,y,x0,x1){
   const runs=[];let s=-1;
   for(let x=x0;x<=x1;x++){
@@ -316,6 +332,7 @@ function getRunsInRow(pixMap,ci,y,x0,x1){
   return runs;
 }
 
+/* ─── REGION EXTRACTION (8-connectivity) ──────────────────*/
 function extractRegions(pixMap, colors) {
   const visited  = new Uint8Array(CANVAS*CANVAS);
   const regions  = [];
@@ -358,23 +375,82 @@ function extractRegions(pixMap, colors) {
         }
         const avgRunW=runCount>0?totalRunW/runCount:bw;
 
-                let type;
+        // STRICT: only hairlines get satin. Everything else = solid fill.
+        let type;
         if(area < MIN_AREA * 3) type = "running";
-        else if(aspectRatio > 1.6 && solidity > 0.35) type = "fill"; // tall stripe-like
-        else if(avgRunW > 8 && avgRunW <= 25 && solidity > 0.5) type = "satin"; // VERY thin column only
-        else if(bw <= 50 && bh <= 100 && avgRunW <= 25 && solidity > 0.45) type = "satin"; // tiny narrow only
-        else type = "fill"; // DEFAULT: solid fill for logos, text, wide shapes
+        else if(aspectRatio > 2.5 && avgRunW <= 18 && solidity > 0.4) type = "satin";
+        else if(avgRunW > 3 && avgRunW <= 14 && solidity > 0.5 && aspectRatio > 1.5) type = "satin";
+        else type = "fill";
 
-        regions.push({ci,color:normHex(colors[ci]),type,mnx,mny,mxx,mxy,bw,bh,area,aspectRatio,solidity});
+        regions.push({ci,color:normHex(colors[ci]),type,mnx,mny,mxx,mxy,bw,bh,area,aspectRatio,solidity,avgRunW});
       }
     }
   }
 
-  console.log(`Regions: ${regions.length} | fill:${regions.filter(r=>r.type==="fill").length} satin:${regions.filter(r=>r.type==="satin").length} run:${regions.filter(r=>r.type==="running").length}`);
-  console.log("Aspect ratios sample:", regions.slice(0,8).map(r=>`${r.type}(${r.bw}×${r.bh},r=${r.aspectRatio.toFixed(1)})`).join(" "));
+  console.log(`Regions (raw): ${regions.length} | fill:${regions.filter(r=>r.type==="fill").length} satin:${regions.filter(r=>r.type==="satin").length} run:${regions.filter(r=>r.type==="running").length}`);
   return regions;
 }
 
+/* ─── MERGE ADJACENT FRAGMENTS ────────────────────────────*/
+function mergeAdjacentRegions(regions) {
+  if(!regions.length) return regions;
+  const merged = [];
+  const used = new Set();
+
+  for(let i=0;i<regions.length;i++){
+    if(used.has(i)) continue;
+    const base = regions[i];
+    let mnx=base.mnx, mny=base.mny, mxx=base.mxx, mxy=base.mxy, area=base.area;
+    let totalRunW = base.avgRunW * base.bh; // approximate
+    let runCount = base.bh;
+    used.add(i);
+
+    for(let j=i+1;j<regions.length;j++){
+      if(used.has(j)) continue;
+      const other = regions[j];
+      if(other.color !== base.color) continue;
+
+      const gap = 12; // merge if within 12px
+      const overlapX = !(mxx + gap < other.mnx || other.mxx + gap < mnx);
+      const overlapY = !(mxy + gap < other.mny || other.mxy + gap < mny);
+
+      if(overlapX && overlapY){
+        mnx = Math.min(mnx, other.mnx);
+        mny = Math.min(mny, other.mny);
+        mxx = Math.max(mxx, other.mxx);
+        mxy = Math.max(mxy, other.mxy);
+        area += other.area;
+        totalRunW += other.avgRunW * other.bh;
+        runCount += other.bh;
+        used.add(j);
+      }
+    }
+
+    const newBw = mxx-mnx+1, newBh = mxy-mny+1;
+    const newAvgRunW = runCount > 0 ? totalRunW / runCount : newBw;
+    const newAspect = newBh / Math.max(newBw, 1);
+    const newSolidity = area / (newBw * newBh);
+
+    // Re-classify after merge
+    let newType;
+    if(area < MIN_AREA * 3) newType = "running";
+    else if(newAspect > 2.5 && newAvgRunW <= 18 && newSolidity > 0.4) newType = "satin";
+    else if(newAvgRunW > 3 && newAvgRunW <= 14 && newSolidity > 0.5 && newAspect > 1.5) newType = "satin";
+    else newType = "fill";
+
+    merged.push({
+      ci: base.ci, color: base.color, type: newType,
+      mnx, mny, mxx, mxy,
+      bw: newBw, bh: newBh, area,
+      aspectRatio: newAspect, solidity: newSolidity, avgRunW: newAvgRunW
+    });
+  }
+
+  console.log(`Regions (merged): ${merged.length}`);
+  return merged;
+}
+
+/* ─── STITCH GENERATION ───────────────────────────────────*/
 function generateStitchesFromRegions(pixMap, regions, colors, params) {
   const stitches    = [];
   const colorCounts = colors.map(()=>({fill:0,satin:0,running:0}));
@@ -435,7 +511,6 @@ function generateStitchesFromRegions(pixMap, regions, colors, params) {
       const ord=rev?[...runs].reverse():runs;
 
       for(const{x1,x2} of ord){
-        const runW=x2-x1+1;
         const jx=rev?x2:x1;
 
         if(lastX!==-1){
@@ -496,6 +571,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params) {
   return{stitches,colorCounts};
 }
 
+/* ─── QUALITY VALIDATION ─────────────────────────────────*/
 function validateQuality(stitches){
   const w=[];
   let tot=0,cnt=0,maxJ=0,longJ=0,prev=null;
@@ -517,10 +593,12 @@ function validateQuality(stitches){
   return{avgStitchMM:(avg/10).toFixed(2),maxJumpMM:(maxJ/10).toFixed(2),longJumps:longJ,stitchCount:cnt,warnings:w,passed:!w.length};
 }
 
+/* ─── PREVIEW RENDERER (thick overlapping stitches) ───────*/
 async function renderPreview(pixMap, colors, stitches, params) {
   const W = CANVAS, H = CANVAS;
   const buf = Buffer.alloc(W * H * 4);
 
+  // Fabric background
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const idx = (y * W + x) * 4;
@@ -534,37 +612,59 @@ async function renderPreview(pixMap, colors, stitches, params) {
 
   const threadColors = colors.map(c => {
     const { r, g, b } = hexToRgb(normHex(c));
-    return {
-      r, g, b,
-      dr: Math.max(0, r - 40),
-      dg: Math.max(0, g - 40),
-      db: Math.max(0, b - 40),
-    };
+    return { r, g, b, dr: Math.max(0, r - 45), dg: Math.max(0, g - 45), db: Math.max(0, b - 45) };
   });
 
-  function setPixel(x, y, r, g, b, alpha) {
+  function setPixel(x, y, r, g, b, a) {
     const px = Math.round(x), py = Math.round(y);
     if (px < 0 || px >= W || py < 0 || py >= H) return;
     const idx = (py * W + px) * 4;
-    const a = alpha / 255;
-    buf[idx]     = Math.round(buf[idx]     * (1 - a) + r * a);
-    buf[idx + 1] = Math.round(buf[idx + 1] * (1 - a) + g * a);
-    buf[idx + 2] = Math.round(buf[idx + 2] * (1 - a) + b * a);
+    const alpha = a / 255;
+    buf[idx]     = Math.round(buf[idx]     * (1 - alpha) + r * alpha);
+    buf[idx + 1] = Math.round(buf[idx + 1] * (1 - alpha) + g * alpha);
+    buf[idx + 2] = Math.round(buf[idx + 2] * (1 - alpha) + b * alpha);
     buf[idx + 3] = 255;
   }
 
-  function drawLine(x0, y0, x1, y1, r, g, b, thickness) {
+  function drawLine(x0, y0, x1, y1, r, g, b, thickness, alphaBase) {
     const dx = x1 - x0, dy = y1 - y0;
     const dist = Math.hypot(dx, dy);
-    if (dist < 0.5) { setPixel(x0, y0, r, g, b, 220); return; }
-    const steps = Math.ceil(dist * 2);
+    if (dist < 0.3) {
+      for(let ty = -1; ty <= 1; ty++) {
+        for(let tx = -1; tx <= 1; tx++) {
+          setPixel(x0 + tx, y0 + ty, r, g, b, alphaBase * 0.7);
+        }
+      }
+      return;
+    }
+
+    const steps = Math.ceil(dist * 2.5);
+    const nx = dist > 0 ? -dy / dist : 0;
+    const ny = dist > 0 ? dx / dist : 0;
+
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
-      const x = x0 + dx * t, y = y0 + dy * t;
-      setPixel(x, y, r, g, b, 230);
+      const x = x0 + dx * t;
+      const y = y0 + dy * t;
+
+      setPixel(x, y, r, g, b, alphaBase);
+
       if (thickness >= 2) {
-        if (Math.abs(dx) > Math.abs(dy)) { setPixel(x, y + 1, r, g, b, 180); setPixel(x, y - 1, r, g, b, 80); }
-        else { setPixel(x + 1, y, r, g, b, 180); setPixel(x - 1, y, r, g, b, 80); }
+        setPixel(x + nx * 0.8, y + ny * 0.8, r, g, b, alphaBase * 0.85);
+        setPixel(x - nx * 0.8, y - ny * 0.8, r, g, b, alphaBase * 0.85);
+      }
+      if (thickness >= 3) {
+        setPixel(x + nx * 1.5, y + ny * 1.5, r, g, b, alphaBase * 0.55);
+        setPixel(x - nx * 1.5, y - ny * 1.5, r, g, b, alphaBase * 0.55);
+      }
+      if (thickness >= 4) {
+        setPixel(x + nx * 2.2, y + ny * 2.2, r, g, b, alphaBase * 0.3);
+        setPixel(x - nx * 2.2, y - ny * 2.2, r, g, b, alphaBase * 0.3);
+        // Vertical overlap to close row gaps
+        setPixel(x, y + 1.0, r, g, b, alphaBase * 0.45);
+        setPixel(x, y - 1.0, r, g, b, alphaBase * 0.45);
+        setPixel(x + 0.5, y + 1.2, r, g, b, alphaBase * 0.3);
+        setPixel(x - 0.5, y - 1.2, r, g, b, alphaBase * 0.3);
       }
     }
   }
@@ -585,22 +685,14 @@ async function renderPreview(pixMap, colors, stitches, params) {
 
     for (let i = 1; i < underlays.length; i++) {
       const a = underlays[i - 1], b = underlays[i];
-      const dy = Math.abs(b.y - a.y);
-      if (Math.hypot(b.x - a.x, dy) > 80) continue;
-      drawLine(a.x, a.y, b.x, b.y, tc.r, tc.g, tc.b, 1);
+      if (Math.hypot(b.x - a.x, Math.abs(b.y - a.y)) > 80) continue;
+      drawLine(a.x, a.y, b.x, b.y, tc.r, tc.g, tc.b, 1, 60);
     }
 
-    const rowMap = new Map();
-    for (const s of covers) {
-      const ry = Math.round(s.y);
-      if (!rowMap.has(ry)) rowMap.set(ry, []);
-      rowMap.get(ry).push(s);
-    }
-
-    let prevStitch = null;
+    let prev = null;
     for (let i = 0; i < covers.length; i++) {
       const s = covers[i];
-      const nextStitch = covers[i + 1] || null;
+      const next = covers[i + 1] || null;
 
       const isSatin = s.type === "satin";
       const isFill  = s.type === "fill";
@@ -614,38 +706,15 @@ async function renderPreview(pixMap, colors, stitches, params) {
         setPixel(s.x, s.y + 1, tc.dr, tc.dg, tc.db, 120);
       }
 
-      if (nextStitch && nextStitch.color === s.color) {
-        const jump = Math.hypot(nextStitch.x - s.x, nextStitch.y - s.y);
+      if (next && next.color === s.color) {
+        const jump = Math.hypot(next.x - s.x, next.y - s.y);
         if (jump < 50) {
-          const thick = isSatin ? 3 : isFill ? 2 : 1;
-          drawLine(s.x, s.y, nextStitch.x, nextStitch.y, tc.r, tc.g, tc.b, thick);
+          const thick = isSatin ? 3 : isFill ? 4 : 1;
+          const alpha = isRun ? 180 : 230;
+          drawLine(s.x, s.y, next.x, next.y, tc.r, tc.g, tc.b, thick, alpha);
         }
       }
-
-      prevStitch = s;
-    }
-
-    const pRow = (params && params.tatamiRow) ? params.tatamiRow : TATAMI_ROW;
-    for (const [ry, rowStitches] of rowMap) {
-      if (rowStitches.length < 2) continue;
-      const hasFill = rowStitches.some(s => s.type === "fill");
-      if (!hasFill) continue;
-
-      rowStitches.sort((a, b) => a.x - b.x);
-      for (let i = 1; i < rowStitches.length; i++) {
-        const a = rowStitches[i - 1], b = rowStitches[i];
-        const gap = b.x - a.x;
-        if (gap > 8 && gap < 60) {
-          const mx = (a.x + b.x) / 2;
-          const my = (a.y + b.y) / 2;
-          if (my + 1 < H) {
-            const idx = (Math.round(my + 1) * W + Math.round(mx)) * 4;
-            buf[idx]     = Math.max(0, buf[idx] - 15);
-            buf[idx + 1] = Math.max(0, buf[idx + 1] - 15);
-            buf[idx + 2] = Math.max(0, buf[idx + 2] - 15);
-          }
-        }
-      }
+      prev = s;
     }
   }
 
@@ -681,6 +750,7 @@ async function renderPreview(pixMap, colors, stitches, params) {
     .png({ compressionLevel: 6 }).toBuffer();
 }
 
+/* ─── DST ENCODER ─────────────────────────────────────────*/
 function stitchRecord(dx,dy){
   const cx=Math.max(-121,Math.min(121,Math.round(dx)));
   const cy=Math.max(-121,Math.min(121,Math.round(dy)));
@@ -722,15 +792,23 @@ function encodeDST(stitches){
   return Buffer.concat([hdr,...recs]);
 }
 
-const detections = new Map();
+/* ─── JOBS & DETECTIONS ───────────────────────────────────*/
+const jobs         = new Map();
+const previewCache = new Map();
+const detections   = new Map();
+
 setInterval(()=>{
   const now = Date.now();
   for(const [id,d] of detections){ if(now-d.timestamp>300000) detections.delete(id); }
+  for(const [id,j] of jobs){ if(now-j.ts>600000) jobs.delete(id); }
+  for(const [id,c] of previewCache){ if(now-c.ts>300000) previewCache.delete(id); }
 }, 60000);
 
+/* ─── ROUTES ─────────────────────────────────────────────*/
 app.use(express.static(path.join(__dirname,"public")));
 app.get("/",(_, res)=>res.sendFile(path.join(__dirname,"public","index.html")));
 
+/* ─── DETECT SHAPES ──────────────────────────────────────*/
 app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask",maxCount:1}]), async(req,res)=>{
   res.setTimeout(120000);
   const rid=Math.random().toString(36).slice(2,6);
@@ -738,46 +816,27 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
     const imgFile=req.files?.image?.[0];
     const maskFile=req.files?.mask?.[0];
     if(!imgFile) return res.status(400).json({error:"No image uploaded"});
-    console.log(`[${rid}] DETECT: image=${imgFile.size}B mask=${maskFile?maskFile.size+'B':'none'}`);
 
-    console.time(`pre-${rid}`);
     let pre=await preprocessImage(imgFile.buffer);
-    console.timeEnd(`pre-${rid}`);
+    if(maskFile) pre=await applyUserMask(pre,maskFile.buffer);
 
-    if(maskFile){
-      console.time(`mask-${rid}`);
-      pre=await applyUserMask(pre,maskFile.buffer);
-      console.timeEnd(`mask-${rid}`);
-      console.log(`[${rid}] Mask applied`);
-    }
-
-    console.time(`gem-${rid}`);
     const gem=await analyzeWithGemini(imgFile.buffer,imgFile.mimetype||"image/png");
-    console.timeEnd(`gem-${rid}`);
 
-    let colors,colorMeta={};
+    let colors;
     if(gem&&gem.colors&&gem.colors.length>=1){
-      colors=gem.colors; colorMeta=gem.meta||{};
-      console.log(`[${rid}] Gemini: [${colors.join(",")}] | ${gem.notes}`);
+      colors=gem.colors;
     }else{
-      console.log(`[${rid}] Gemini failed — fallback`);
       colors=cleanFallbackColors(pre.fallbackColors);
-      console.log(`[${rid}] Fallback: [${colors.join(",")}]`);
     }
     if(!colors.length) colors=["#000000"];
 
-    console.time(`pixmap-${rid}`);
     const pixMap=await buildPixelMap(pre.buffer,colors);
-    console.timeEnd(`pixmap-${rid}`);
-
-    console.time(`regions-${rid}`);
-    const regions=extractRegions(pixMap,colors);
-    console.timeEnd(`regions-${rid}`);
+    const rawRegions=extractRegions(pixMap,colors);
+    const regions=mergeAdjacentRegions(rawRegions);
 
     if(!regions.length){
       return res.status(500).json({error:"No stitchable regions found"});
     }
-    console.log(`[${rid}] Regions: ${regions.length}`);
 
     const shapes=[];
     for(const r of regions){
@@ -794,8 +853,6 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
     const colorInfo = {};
     colors.forEach(c => { colorInfo[c] = {label: '', coverage_pct: 0}; });
 
-    console.log(`[${rid}] DETECT DONE: ${shapes.length} shapes, ${colors.length} colors`);
-
     return res.json({
       success:true,
       detectionId,
@@ -810,6 +867,7 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
   }
 });
 
+/* ─── GENERATE EMBROIDERY ────────────────────────────────*/
 app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:"mask",maxCount:1}]), async(req,res)=>{
   res.setTimeout(120000);
   const rid=Math.random().toString(36).slice(2,6);
@@ -819,8 +877,6 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
     if(!imgFile) return res.status(400).json({error:"No image uploaded"});
 
     const body = req.body || {};
-    console.log(`[${rid}] GENERATE: image=${imgFile.size}B detectionId=${body.detectionId || 'none'}`);
-
     const specs = {
       fabric: body.fabric || "cotton",
       machine: body.machine || "generic",
@@ -831,34 +887,20 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       instructions: body.instructions || ""
     };
     const params = getStitchParams(specs);
-    console.log(`[${rid}] Specs:`, JSON.stringify(specs));
-    console.log(`[${rid}] Tuned: row=${params.tatamiRow} len=${params.tatamiLen} pull=${params.pull} ul=${params.tatamiUl}`);
 
     const detectionId = body.detectionId;
     const det = detectionId ? detections.get(detectionId) : null;
     let pixMap, regions, colors;
 
     if(det){
-      console.log(`[${rid}] Using cached detection ${detectionId}`);
       pixMap = det.pixMap;
       regions = det.regions;
       colors = det.colors;
     }else{
-      console.log(`[${rid}] No cache — full re-analysis`);
-      console.time(`pre-${rid}`);
       let pre=await preprocessImage(imgFile.buffer);
-      console.timeEnd(`pre-${rid}`);
+      if(maskFile) pre=await applyUserMask(pre,maskFile.buffer);
 
-      if(maskFile){
-        console.time(`mask-${rid}`);
-        pre=await applyUserMask(pre,maskFile.buffer);
-        console.timeEnd(`mask-${rid}`);
-      }
-
-      console.time(`gem-${rid}`);
       const gem=await analyzeWithGemini(imgFile.buffer,imgFile.mimetype||"image/png");
-      console.timeEnd(`gem-${rid}`);
-
       let colorMeta={};
       if(gem&&gem.colors&&gem.colors.length>=1){
         colors=gem.colors;colorMeta=gem.meta||{};
@@ -867,13 +909,9 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       }
       if(!colors.length) colors=["#000000"];
 
-      console.time(`pixmap-${rid}`);
       pixMap=await buildPixelMap(pre.buffer,colors);
-      console.timeEnd(`pixmap-${rid}`);
-
-      console.time(`regions-${rid}`);
-      regions=extractRegions(pixMap,colors);
-      console.timeEnd(`regions-${rid}`);
+      const rawRegions=extractRegions(pixMap,colors);
+      regions=mergeAdjacentRegions(rawRegions);
     }
 
     if(!regions || !regions.length){
@@ -884,12 +922,9 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
     try{
       if(body.selectedColors){
         const parsed = JSON.parse(body.selectedColors);
-        if(Array.isArray(parsed) && parsed.length>0){
-          selectedColors = parsed.map(c => normHex(c));
-          console.log(`[${rid}] Selected colors: [${selectedColors.join(",")}]`);
-        }
+        if(Array.isArray(parsed) && parsed.length>0) selectedColors = parsed.map(c => normHex(c));
       }
-    }catch(e){ console.log(`[${rid}] No color filter`); }
+    }catch(e){}
 
     let filteredRegions = regions;
     try{
@@ -897,41 +932,31 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
         const parsed = JSON.parse(body.selectedShapes);
         if(Array.isArray(parsed) && parsed.length>0 && parsed.length < regions.length){
           filteredRegions = parsed.map(idx => regions[idx]).filter(Boolean);
-          console.log(`[${rid}] Selected shapes: ${parsed.length}/${regions.length}`);
         }
       }
-    }catch(e){ console.log(`[${rid}] No shape filter`); }
+    }catch(e){}
 
     if(selectedColors.length < colors.length){
       const excludedCis = new Set();
       colors.forEach((c,ci) => { if(!selectedColors.includes(normHex(c))) excludedCis.add(ci); });
       for(let i=0;i<pixMap.length;i++){ if(excludedCis.has(pixMap[i])) pixMap[i]=-1; }
-      filteredRegions = filteredRegions.filter(r => {
-        const ci = colors.findIndex(c => normHex(c) === normHex(r.color));
-        return selectedColors.includes(normHex(r.color));
-      });
-      console.log(`[${rid}] After color filter: ${filteredRegions.length} regions`);
+      filteredRegions = filteredRegions.filter(r => selectedColors.includes(normHex(r.color)));
     }
 
     if(!filteredRegions.length){
       return res.status(400).json({error:"No regions left after selection — select more colors/shapes"});
     }
 
-    console.time(`stitch-${rid}`);
     const{stitches,colorCounts}=generateStitchesFromRegions(pixMap,filteredRegions,selectedColors,params);
-    console.timeEnd(`stitch-${rid}`);
-
     const coverCount=stitches.filter(s=>s.type!=="trim"&&s.type!=="underlay").length;
     if(coverCount<5){
       return res.status(500).json({error:"Not enough stitches — select more shapes or check contrast"});
     }
 
     const id=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
-    jobs.set(id,{stitches,pixMap,colors:selectedColors,params,designW:CANVAS,designH:CANVAS});
+    jobs.set(id,{stitches,pixMap,colors:selectedColors,params,designW:CANVAS,designH:CANVAS,ts:Date.now()});
 
     const qa=validateQuality(stitches);
-    console.log(`[${rid}] DONE: ${qa.stitchCount} stitches, ${filteredRegions.length} regions, ${selectedColors.length} colors`);
-    for(const w of qa.warnings)console.warn(`  ⚠ ${w}`);
 
     const shapes=[];
     for(const r of filteredRegions){
@@ -992,9 +1017,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"41.2",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"41.3",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v41.2 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
+const server=app.listen(PORT,()=>console.log(`Stichai v41.3 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
