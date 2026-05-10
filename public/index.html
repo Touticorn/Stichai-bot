@@ -19,13 +19,15 @@ header p{color:#888;margin-top:8px}
 .panel h2{font-size:1.1em;margin-bottom:15px;color:#f7c600;display:flex;align-items:center;gap:8px}
 
 /* Upload */
-.upload-zone{border:2px dashed #444;border-radius:10px;padding:40px;text-align:center;cursor:pointer;transition:all .2s;margin-bottom:15px;position:relative}
+.upload-zone{border:2px dashed #444;border-radius:10px;padding:40px;text-align:center;transition:all .2s;margin-bottom:15px;position:relative;overflow:hidden}
 .upload-zone:hover{border-color:#f7c600;background:#1f1f1a}
 .upload-zone.has-image{border-style:solid;border-color:#f7c600;background:#1f1f1a}
-.upload-zone input{display:none}
-.upload-zone .icon{font-size:3em;margin-bottom:10px}
-.upload-zone h3{font-size:1.1em;color:#ccc}
-.upload-zone p{color:#666;font-size:.85em;margin-top:5px}
+/* File input covers entire zone but is invisible - this is the KEY fix for mobile */
+.upload-zone input[type=file]{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:10}
+.upload-zone .icon{font-size:3em;margin-bottom:10px;pointer-events:none}
+.upload-zone h3{font-size:1.1em;color:#ccc;pointer-events:none}
+.upload-zone p{color:#666;font-size:.85em;margin-top:5px;pointer-events:none}
+.upload-zone img{pointer-events:none}
 #preview-img{max-width:100%;max-height:400px;border-radius:8px;display:none;margin-top:10px}
 
 /* Canvas */
@@ -105,10 +107,10 @@ header p{color:#888;margin-top:8px}
       <!-- Upload -->
       <div class="panel">
         <h2>1. Upload Your Design</h2>
-        <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-          <input type="file" id="fileInput" accept="image/*" onchange="handleImage(event)">
+        <div class="upload-zone" id="dropZone">
+          <input type="file" id="fileInput" accept="image/png,image/jpeg,image/jpg,image/webp" onchange="handleImage(event)">
           <div class="icon" id="uploadIcon">📁</div>
-          <h3 id="uploadText">Drop image here or click to browse</h3>
+          <h3 id="uploadText">Tap to select photo</h3>
           <p>PNG, JPG, WEBP — Max 10MB</p>
           <img id="preview-img" alt="Preview">
         </div>
@@ -234,9 +236,25 @@ let hasMaskPainted = false;
 
 // Image Upload
 function handleImage(e) {
-  const f = e.target.files[0];
-  if (!f) return;
-  log('Selected file: ' + f.name + ' (' + (f.size / 1024).toFixed(1) + ' KB)');
+  const files = e.target ? e.target.files : (e.dataTransfer ? e.dataTransfer.files : null);
+  if (!files || !files.length) { log('No files selected'); return; }
+  const f = files[0];
+
+  // Lenient file check: accept by extension OR mime type
+  const name = f.name.toLowerCase();
+  const isImage = /\.(png|jpe?g|webp|gif|bmp)$/i.test(name) || (f.type && f.type.startsWith('image/'));
+  if (!isImage) {
+    log('ERROR: File is not an image: ' + f.name + ' type=' + (f.type || 'unknown'));
+    updateStatus('❌ Please select an image file (PNG, JPG, WEBP)', 'error');
+    return;
+  }
+  if (f.size > 10 * 1024 * 1024) {
+    log('ERROR: File too large: ' + (f.size / 1024 / 1024).toFixed(1) + 'MB');
+    updateStatus('❌ File too large. Max 10MB.', 'error');
+    return;
+  }
+
+  log('Selected: ' + f.name + ' (' + (f.size / 1024).toFixed(1) + ' KB, type=' + (f.type || 'unknown') + ')');
   imageFile = f;
   const reader = new FileReader();
   reader.onload = (ev) => {
@@ -250,24 +268,24 @@ function handleImage(e) {
       setupCanvas(img);
       document.getElementById('maskTools').style.display = 'block';
       updateStatus('🟢 Image loaded. Paint areas to remove, then click Generate.');
-      log('Image loaded: ' + img.width + 'x' + img.height);
+      log('Image ready: ' + img.width + 'x' + img.height);
     };
-    img.onerror = () => { log('ERROR: Failed to load image'); updateStatus('❌ Failed to load image', 'error'); };
+    img.onerror = () => { log('ERROR: Failed to decode image'); updateStatus('❌ Failed to load image', 'error'); };
     img.src = ev.target.result;
   };
+  reader.onerror = () => { log('ERROR: FileReader failed'); updateStatus('❌ Failed to read file', 'error'); };
   reader.readAsDataURL(f);
 }
 
 // Drag & drop
-document.getElementById('dropZone').addEventListener('dragover', e => { e.preventDefault(); e.currentTarget.style.borderColor = '#f7c600'; });
-document.getElementById('dropZone').addEventListener('dragleave', e => { e.currentTarget.style.borderColor = ''; });
+document.getElementById('dropZone').addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); e.currentTarget.style.borderColor = '#f7c600'; });
+document.getElementById('dropZone').addEventListener('dragleave', e => { e.preventDefault(); e.stopPropagation(); e.currentTarget.style.borderColor = ''; });
 document.getElementById('dropZone').addEventListener('drop', e => {
   e.preventDefault();
+  e.stopPropagation();
   const f = e.dataTransfer.files[0];
-  if (f && f.type.startsWith('image/')) {
-    document.getElementById('fileInput').files = e.dataTransfer.files;
-    handleImage({ target: { files: [f] } });
-  } else { log('ERROR: Dropped file is not an image'); }
+  if (f) handleImage({ dataTransfer: e.dataTransfer });
+  else log('Drop: no file');
 });
 
 // Canvas Setup
@@ -323,41 +341,4 @@ function draw(e) {
   const p = getPos(e);
   maskCtx.lineCap = 'round';
   maskCtx.lineJoin = 'round';
-  maskCtx.lineWidth = brushSize;
-
-  if (currentTool === 'brush') {
-    // RED paint = areas to REMOVE (very visible)
-    maskCtx.strokeStyle = 'rgba(255, 60, 60, 0.9)';
-    maskCtx.globalCompositeOperation = 'source-over';
-    maskCtx.shadowColor = 'rgba(255,0,0,0.5)';
-    maskCtx.shadowBlur = 4;
-  } else {
-    // Eraser: make transparent again
-    maskCtx.globalCompositeOperation = 'destination-out';
-    maskCtx.shadowColor = 'transparent';
-    maskCtx.shadowBlur = 0;
-  }
-
-  maskCtx.beginPath();
-  maskCtx.moveTo(lastX, lastY);
-  maskCtx.lineTo(p.x, p.y);
-  maskCtx.stroke();
-
-  lastX = p.x; lastY = p.y;
-
-  if (currentTool === 'brush') {
-    hasMaskPainted = true;
-    updateMaskStatus();
-  }
-}
-
-function updateMaskStatus() {
-  const el = document.getElementById('maskStatus');
-  el.classList.add('has-mask');
-  el.innerHTML = '🟢 Remove Mode: ' + (hasMaskPainted ? 'You have painted areas to remove' : 'Paint over areas to EXCLUDE from stitching');
-}
-
-function setTool(tool) {
-  currentTool = tool;
-  document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
-  docu
+  maskCtx.lineWidth = b
