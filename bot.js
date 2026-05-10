@@ -1,5 +1,5 @@
 /**
- * Stichai v35
+ * Stichai v36
  * ═══════════════════════════════════════════════════════
  *  3 SURGICAL FIXES from Railway log (v33 → v34)
  * ═══════════════════════════════════════════════════════
@@ -192,13 +192,14 @@ RULES:
 
   const res = await geminiPost({
     contents:[{role:"user",parts:[{text:prompt},{inlineData:{mimeType:mime||"image/png",data:b64}}]}],
-    generationConfig:{temperature:0.0,maxOutputTokens:1024}
+    generationConfig:{temperature:0.0,maxOutputTokens:4096}
   });
   if(!res) return null;
 
   try {
-    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text||"";
-    let js = text.replace(/```json|```/g,"").trim();
+    const raw = res.data?.candidates?.[0]?.content?.parts?.[0]?.text||"";
+    console.log("Gemini raw response:",raw.slice(0,300));  // log first 300 chars for debugging
+    let js = raw.replace(/```json|```/g,"").trim();
     const fa=js.indexOf("{"),lb=js.lastIndexOf("}");
     if(fa!==-1&&lb>fa)js=js.slice(fa,lb+1);
     const p=JSON.parse(js);
@@ -347,13 +348,9 @@ function generateStitchesFromPixels(pixMap, colors, colorMeta) {
         const runW=x2-x1+1;
         const jx  =rev?x2:x1;
 
-        // Trim between disconnected runs — always, no threshold
-        if(lastX!==-1){
-          const d=Math.hypot(jx-lastX,y-lastY);
-          if(d>TATAMI_ROW+1){emitTrim(lastX,lastY,jx,y,color);}
-        } else {
-          stitches.push({x:jx,y,color,type:"trim"});
-        }
+        // ALWAYS trim between runs — zero threshold, no raw connecting lines
+        if(lastX!==-1){emitTrim(lastX,lastY,jx,y,color);}
+        else{stitches.push({x:jx,y,color,type:"trim"});}
 
         // Classify this run
         let rType=gemType;
@@ -666,8 +663,8 @@ app.get("/download/:id/:format",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"35.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"36.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v35 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
+const server=app.listen(PORT,()=>console.log(`Stichai v36 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
 server.timeout=180000;
