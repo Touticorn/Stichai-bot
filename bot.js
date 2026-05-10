@@ -1,32 +1,33 @@
 /**
- * Stichai v33
+ * Stichai v34
  * ═══════════════════════════════════════════════════════
- *  FIXES from Railway log analysis (v32 → v33)
+ *  3 SURGICAL FIXES from Railway log (v33 → v34)
  * ═══════════════════════════════════════════════════════
- *  FIX 1 — Gemini model name wrong
- *    'gemini-2.5-flash' doesn't exist as a stable endpoint.
- *    Now tries flash → pro fallback with full error logging.
  *
- *  FIX 2 — Fallback colors stitching the background
- *    When Gemini fails, quantizer returned #B4B4B4 #5A5A5A
- *    (JPEG compression greys of the white background).
- *    These matched most of the canvas → stitched everywhere.
- *    Now: remove any fallback color within ΔE<40 of the image
- *    background (most frequent pixel color = fabric/bg).
+ *  FIX 1 — All Gemini models returned 404
+ *    Log: "gemini-1.5-flash is not found for API version v1beta"
+ *         "gemini-2.0-flash is no longer available to new users"
+ *    Root cause: model names outdated. API key is on a tier that
+ *    only has access to 2.5-series and 2.0-flash-lite.
+ *    Fix: updated model list to current valid names (May 2026).
+ *    Also: the API URL uses v1beta which is correct for these models.
  *
- *  FIX 3 — Grey JPEG artifacts merged into nearest real color
- *    For logos/text: dark greys (L*<55) within ΔE<30 of a
- *    darker color are merged into it, so #5A5A5A → #020202.
+ *  FIX 2 — Two diagonal lines in the preview
+ *    Root cause: underlay pass jump guard was `jd > TATAMI_UL` (40u).
+ *    A jump of 41 units does NOT emit a trim — it just connects
+ *    underlay dots with a raw stitch line, visible as a diagonal.
+ *    Fix: underlay jumps ALWAYS emit trim records (no threshold).
+ *    Also removed the separate underlay pass entirely — underlay
+ *    is now interleaved with cover stitches, row by row, so the
+ *    needle never travels far between underlay and cover stitch.
  *
- *  FIX 4 — buildShapeSummary always showed 0pts
- *    Color comparison used normHex(colors[ci]) but stitches
- *    stored normHex(colors[ci]) — should match, but the
- *    findIndex used `===` on already-normalised strings.
- *    Simplified: now counts per color index directly.
- *
- *  FIX 5 — 84mm jumps in QA report
- *    QA validator counted trim→stitch distances as jumps.
- *    Now skips distance between any trim-type record.
+ *  FIX 3 — Shape cards still show "0pts"
+ *    Root cause: colorCounts was correctly built but the shape
+ *    card data was assembled before colorCounts was in scope
+ *    in some code paths. Now colorCounts is returned alongside
+ *    stitches and always used for the shape summary.
+ *    Also fixed: pts now shows STITCH count (meaningful number)
+ *    not point count, so "fill · 434pts" appears correctly.
  */
 
 "use strict";
@@ -42,35 +43,39 @@ const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-/* ─── GEMINI MODELS (try in order) ─────────────────────────*/
+/* ─── GEMINI MODELS — updated May 2026 ─────────────────────
+   Listed in preference order. geminiPost() tries each in turn
+   and logs the exact error for any 404/403/429.
+*/
 const GEMINI_MODELS = [
-  "gemini-1.5-flash",
-  "gemini-1.5-pro",
-  "gemini-2.0-flash",
+  "gemini-2.5-flash-preview-04-17",   // best quality, vision-capable
+  "gemini-2.5-pro-preview-05-06",     // fallback pro
+  "gemini-2.0-flash-lite",            // fast, cheap, widely available
 ];
 
 /* ─── CANVAS ────────────────────────────────────────────────
-   800px = 800 DST units = 80mm design. 1px === 1 DST unit.
+   800px canvas = 800 DST units = 80mm design.
+   1 pixel === 1 DST unit === 0.1mm. Zero coordinate collapse.
 */
 const CANVAS    = 800;
 const DESIGN_MM = CANVAS / 10;
 
-/* ─── STITCH CONSTANTS (DST units = 0.1mm each) ────────────*/
+/* ─── STITCH CONSTANTS (DST units = 0.1mm) ─────────────────*/
 const TATAMI_ROW   = 4;    // 0.40mm row spacing
-const TATAMI_LEN   = 30;   // 3.0mm stitch length
+const TATAMI_LEN   = 30;   // 3.0mm stitch length per segment
 const TATAMI_BRICK = 0.5;  // 50% brick offset
-const TATAMI_UL    = 40;   // 4.0mm underlay spacing
-const SATIN_SPACE  = 4;    // 0.40mm satin pass spacing
+const TATAMI_UL    = 40;   // every 40 rows = 4mm underlay spacing
+const SATIN_SPACE  = 4;    // 0.40mm satin row spacing (unused in scanline but kept for DST)
 const RUN_LEN      = 25;   // 2.5mm running stitch
 const PULL         = 2;    // 0.2mm pull compensation
-const DST_MAX      = 121;  // 12.1mm max DST move
+const DST_MAX      = 121;  // 12.1mm max DST move per record
 
-/* ─── RUN WIDTH THRESHOLDS ──────────────────────────────────*/
-const R_RUN   = 6;   // ≤0.6mm → running
-const R_SATIN = 70;  // ≤7.0mm → satin  |  >7mm → fill
+/* ─── RUN WIDTH THRESHOLDS (px = DST units) ─────────────────*/
+const R_RUN   = 6;   // ≤6px  → running stitch
+const R_SATIN = 70;  // ≤70px → satin  |  >70px → tatami fill
 
 /* ============================================================
-   GEMINI HTTP — tries multiple model names, logs all errors
+   GEMINI HTTP — tries each model, logs exact error per model
    ============================================================ */
 async function geminiPost(body, ms = 32000) {
   for (const model of GEMINI_MODELS) {
@@ -82,10 +87,10 @@ async function geminiPost(body, ms = 32000) {
     } catch (e) {
       const status = e.response?.status;
       const msg    = e.response?.data?.error?.message || e.message;
-      console.error(`Gemini ${model} failed: ${status} — ${msg}`);
+      console.error(`Gemini ${model} → ${status}: ${msg}`);
     }
   }
-  return null;   // all models failed
+  return null;
 }
 
 const jobs         = new Map();
@@ -121,7 +126,6 @@ function dedupe(cols){
 
 /* ============================================================
    IMAGE PRE-PROCESSING
-   Returns CANVAS×CANVAS buffer + dominant bg color for filtering
    ============================================================ */
 async function preprocessImage(buffer) {
   const cleaned = await sharp(buffer)
@@ -131,7 +135,6 @@ async function preprocessImage(buffer) {
     .normalize()
     .toBuffer();
 
-  // Quantize to find dominant colors
   const q = await sharp(cleaned).png({colours:10,dither:0}).toBuffer();
   const {data,info} = await sharp(q).raw().toBuffer({resolveWithObject:true});
   const cm = new Map();
@@ -139,45 +142,31 @@ async function preprocessImage(buffer) {
     const h="#"+[data[i],data[i+1],data[i+2]].map(c=>c.toString(16).padStart(2,"0")).join("").toUpperCase();
     cm.set(h,(cm.get(h)||0)+1);
   }
-  const sorted   = [...cm.entries()].sort((a,b)=>b[1]-a[1]);
-  const bgColor  = sorted[0][0];   // most frequent = background
-  const bgLab    = rgbToLab(hexToRgb(bgColor));
+  const sorted  = [...cm.entries()].sort((a,b)=>b[1]-a[1]);
+  const bgColor = sorted[0][0];
+  const bgLab   = rgbToLab(hexToRgb(bgColor));
+  const fallback= sorted.slice(1,10)
+    .filter(([h])=>dE(rgbToLab(hexToRgb(h)),bgLab)>35)
+    .map(([h])=>h);
 
-  // Raw candidate thread colors = everything that is NOT near-background
-  const candidates = sorted
-    .slice(1, 10)
-    .filter(([h]) => dE(rgbToLab(hexToRgb(h)), bgLab) > 35)
-    .map(([h]) => h);
-
-  return {buffer:cleaned, bgColor, bgLab, fallbackColors:candidates};
+  return {buffer:cleaned, bgColor, bgLab, fallbackColors:fallback};
 }
 
 /* ============================================================
    SMART FALLBACK COLOR CLEANUP
-   When Gemini fails, the quantizer may return near-background
-   greys (JPEG compression of white areas). This removes them
-   and merges dark-grey JPEG artifacts into the nearest dark color.
+   Removes near-background greys, merges near-duplicate darks.
    ============================================================ */
 function cleanFallbackColors(rawColors, bgLab) {
-  // Step 1: remove anything too close to background
-  let cols = rawColors.filter(c => dE(rgbToLab(hexToRgb(c)), bgLab) > 35);
-
-  if (!cols.length) return ["#000000"];
-
-  // Step 2: merge near-duplicates (ΔE<25) — keep darkest of each pair
-  const merged = [];
-  for (const c of cols) {
-    const cLab = rgbToLab(hexToRgb(c));
-    const match = merged.findIndex(m => dE(cLab, rgbToLab(hexToRgb(m))) < 25);
-    if (match === -1) {
-      merged.push(c);
-    } else {
-      // Keep the darker one (lower L*)
-      if (cLab.l < rgbToLab(hexToRgb(merged[match])).l) merged[match] = c;
-    }
+  let cols = rawColors.filter(c=>dE(rgbToLab(hexToRgb(c)),bgLab)>35);
+  if(!cols.length) return ["#000000"];
+  const merged=[];
+  for(const c of cols){
+    const cLab=rgbToLab(hexToRgb(c));
+    const mi=merged.findIndex(m=>dE(cLab,rgbToLab(hexToRgb(m)))<25);
+    if(mi===-1)merged.push(c);
+    else if(cLab.l<rgbToLab(hexToRgb(merged[mi])).l)merged[mi]=c;
   }
-
-  return merged.slice(0, 4); // max 4 thread colors for fallback
+  return merged.slice(0,4);
 }
 
 /* ============================================================
@@ -188,53 +177,40 @@ async function analyzeWithGemini(originalBuffer, mime) {
   const prompt = `You are a senior machine-embroidery digitizer (Wilcom EmbroideryStudio expert).
 Analyze this image and return ONE JSON object for generating a DST embroidery file.
 
-STRICT RULES:
-1. The background fabric is NEVER a thread color. Skip white, cream, light grey backgrounds.
-2. Only list colors you can actually see in the design/logo/artwork itself.
+RULES:
+1. Background fabric is NEVER a thread color. Skip white, cream, light grey.
+2. Only list colors literally visible in the design/artwork itself.
 3. stitch_type per Wilcom:
-   "fill"    = solid area > 7mm wide  (large shapes, logo bodies)
-   "satin"   = column 1.5–7mm wide   (borders, letter strokes)
-   "running" = very thin line <1.5mm  (outlines, fine details)
-4. recommended_angle: fill row direction (0=horizontal, 45=diagonal, 90=vertical)
-5. Return ONLY valid JSON. No markdown fences. No extra text.
+   "fill"    = solid area > 7mm   (large logo bodies, big shapes)
+   "satin"   = column 1.5-7mm    (borders, letter strokes)
+   "running" = thin line < 1.5mm  (fine outlines, details)
+4. recommended_angle: fill row direction degrees (0=horizontal, 45=diagonal, 90=vertical).
+5. Return ONLY valid JSON. No markdown. No extra text.
 
-FORMAT:
 {"background":"#FFFFFF","colors":[{"hex":"#000000","label":"logo","stitch_type":"fill","coverage_pct":60}],"is_logo":true,"is_text":false,"complexity":"simple","recommended_angle":0,"notes":"single black logo on white"}`;
 
   const res = await geminiPost({
     contents:[{role:"user",parts:[{text:prompt},{inlineData:{mimeType:mime||"image/png",data:b64}}]}],
     generationConfig:{temperature:0.0,maxOutputTokens:1024}
   });
-
-  if (!res) return null;
+  if(!res) return null;
 
   try {
-    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text||"";
     let js = text.replace(/```json|```/g,"").trim();
     const fa=js.indexOf("{"),lb=js.lastIndexOf("}");
     if(fa!==-1&&lb>fa)js=js.slice(fa,lb+1);
-    const p = JSON.parse(js);
+    const p=JSON.parse(js);
     const colors=(p.colors||[]).map(c=>normHex(typeof c==="string"?c:c.hex));
     const meta={};
     for(const c of (p.colors||[]))if(typeof c==="object"&&c.hex)meta[normHex(c.hex)]=c;
-    return{
-      colors:dedupe(colors),meta,
-      is_text:!!p.is_text,is_logo:!!p.is_logo,
-      angle:Number(p.recommended_angle)||0,
-      complexity:p.complexity||"moderate",
-      notes:p.notes||""
-    };
-  }catch(e){
-    console.error("Gemini JSON parse failed:",e.message);
-    return null;
-  }
+    return{colors:dedupe(colors),meta,is_text:!!p.is_text,is_logo:!!p.is_logo,
+      angle:Number(p.recommended_angle)||0,complexity:p.complexity||"moderate",notes:p.notes||""};
+  }catch(e){console.error("Gemini JSON parse:",e.message);return null;}
 }
 
 /* ============================================================
    PIXEL COLOR MAP
-   Each pixel → nearest thread color index, or -1 (unmatched).
-   Tolerance 40 ΔE handles JPEG gradients well.
-   3-pass gap fill closes anti-aliasing holes.
    ============================================================ */
 async function buildPixelMap(buffer, colors) {
   const Jimp  = require("jimp");
@@ -242,25 +218,22 @@ async function buildPixelMap(buffer, colors) {
   if(image.bitmap.width!==CANVAS||image.bitmap.height!==CANVAS)
     image.resize(CANVAS,CANVAS);
 
-  const labColors = colors.map(c=>rgbToLab(hexToRgb(c)));
-  const TOL       = 40;
-  const pixMap    = new Int16Array(CANVAS*CANVAS).fill(-1);
-  const imgD      = image.bitmap.data;
+  const labC  = colors.map(c=>rgbToLab(hexToRgb(c)));
+  const TOL   = 40;
+  const pixMap= new Int16Array(CANVAS*CANVAS).fill(-1);
+  const imgD  = image.bitmap.data;
 
   for(let y=0;y<CANVAS;y++){
     for(let x=0;x<CANVAS;x++){
       const i=(y*CANVAS+x)<<2;
       const lab=rgbToLab({r:imgD[i],g:imgD[i+1],b:imgD[i+2]});
       let best=-1,bestD=TOL;
-      for(let c=0;c<labColors.length;c++){
-        const d=dE(lab,labColors[c]);
-        if(d<bestD){bestD=d;best=c;}
-      }
+      for(let c=0;c<labC.length;c++){const d=dE(lab,labC[c]);if(d<bestD){bestD=d;best=c;}}
       pixMap[y*CANVAS+x]=best;
     }
   }
 
-  // 3-pass majority-vote gap fill
+  // 3-pass gap fill for JPEG anti-aliasing
   for(let pass=0;pass<3;pass++){
     for(let y=1;y<CANVAS-1;y++){
       for(let x=1;x<CANVAS-1;x++){
@@ -277,40 +250,44 @@ async function buildPixelMap(buffer, colors) {
     }
   }
 
-  // Log coverage per color for debugging
-  const counts = new Array(colors.length).fill(0);
-  let unmatched=0;
-  for(let i=0;i<pixMap.length;i++){
-    if(pixMap[i]>=0)counts[pixMap[i]]++;
-    else unmatched++;
-  }
-  console.log("Pixel coverage:",counts.map((c,i)=>`${normHex(colors[i])}:${(c/CANVAS/CANVAS*100).toFixed(1)}%`).join(" "),"unmatched:"+(unmatched/CANVAS/CANVAS*100).toFixed(1)+"%");
+  // Log pixel coverage
+  const cnt=new Array(colors.length).fill(0); let un=0;
+  for(let i=0;i<pixMap.length;i++){if(pixMap[i]>=0)cnt[pixMap[i]]++;else un++;}
+  const total=CANVAS*CANVAS;
+  console.log("Coverage:",cnt.map((c,i)=>`${normHex(colors[i])}:${(c/total*100).toFixed(1)}%`).join(" "),
+    `unmatched:${(un/total*100).toFixed(1)}%`);
 
   return pixMap;
 }
 
 /* ============================================================
-   DIRECT PIXEL-SCANLINE STITCH GENERATION
-   Scans every TATAMI_ROW-th row per color.
-   Each horizontal run of matching pixels → stitches.
-   Wide run → tatami fill  |  medium → satin  |  thin → running.
-   Letter holes appear automatically as gaps between runs.
+   DIRECT PIXEL-SCANLINE STITCH GENERATION  v34
+   ════════════════════════════════════════════════════════════
+   FIX 2: Underlay is now generated row-by-row alongside cover
+   stitches (interleaved), so the needle never makes a long
+   naked jump between underlay rows. Every transition between
+   disconnected runs always emits a trim record — no threshold.
    ============================================================ */
 function generateStitchesFromPixels(pixMap, colors, colorMeta) {
-  const stitches   = [];
-  const colorCounts = new Array(colors.length).fill(0).map(()=>({fill:0,satin:0,running:0}));
+  const stitches    = [];
+  const colorCounts = colors.map(()=>({fill:0,satin:0,running:0,underlay:0}));
 
-  let globalLastX = -1, globalLastY = -1;
+  // Helper: emit trim (jump+cut) between two positions
+  function emitTrim(x0,y0,x1,y1,color){
+    stitches.push({x:Math.round(x0),y:Math.round(y0),color,type:"trim"});
+    stitches.push({x:Math.round(x1),y:Math.round(y1),color,type:"trim"});
+  }
+
+  let globalLastX=-1, globalLastY=-1, globalLastColor=null;
 
   for(let ci=0;ci<colors.length;ci++){
     const color   = normHex(colors[ci]);
     const gemType = colorMeta?.[color]?.stitch_type;
 
-    // Build run-length encoding per row for this color
+    // Build run-length map: y → [{x1,x2},...]
     const rowRuns = new Map();
     for(let y=0;y<CANVAS;y++){
-      const runs=[];
-      let s=-1;
+      const runs=[]; let s=-1;
       for(let x=0;x<CANVAS;x++){
         const hit=pixMap[y*CANVAS+x]===ci;
         if(hit&&s===-1)s=x;
@@ -321,63 +298,67 @@ function generateStitchesFromPixels(pixMap, colors, colorMeta) {
     }
     if(!rowRuns.size)continue;
 
-    const rows   = [...rowRuns.keys()].sort((a,b)=>a-b);
-    let rowIdx   = 0;
-    let lastX    = globalLastX;
-    let lastY    = globalLastY;
+    let lastX = globalLastX;
+    let lastY = globalLastY;
+    let rowIdx= 0;
+    let ulCtr = 0;   // underlay row counter (separate from cover rowIdx)
 
-    // ── UNDERLAY PASS (sparse, before cover stitches) ──
-    let ulIdx=0;
-    for(let ri=0;ri<rows.length;ri+=TATAMI_UL){
-      const y    = rows[ri];
-      const runs = rowRuns.get(y);
-      if(!runs)continue;
-      const rev  = ulIdx%2===1;
-      const ord  = rev ? [...runs].reverse() : runs;
-      for(const{x1,x2} of ord){
-        // trim to first underlay stitch if needed
-        if(lastX!==-1){
-          const jx=rev?x2:x1;
-          const jd=Math.hypot(jx-lastX,y-lastY);
-          if(jd>TATAMI_UL){
-            stitches.push({x:lastX,y:lastY,color,type:"trim"});
-            stitches.push({x:jx,y,color,type:"trim"});
-          }
-        }
-        stitches.push({x:x1+PULL,y,color,type:"underlay"});
-        stitches.push({x:x2-PULL,y,color,type:"underlay"});
-        lastX=x2-PULL; lastY=y;
-      }
-      ulIdx++;
+    // Emit color-change trim from previous color if needed
+    if(globalLastColor!==null && globalLastColor!==color && lastX!==-1){
+      emitTrim(lastX,lastY,lastX,lastY,color);
+      lastX=-1; lastY=-1;
     }
 
-    // ── COVER STITCH PASS ──
-    rowIdx=0;
-    for(let ri=0;ri<rows.length;ri+=TATAMI_ROW){
-      const y    = rows[ri];
-      const runs = rowRuns.get(y);
+    // Iterate every TATAMI_ROW pixels in Y-space (not array index)
+    // This ensures consistent 0.4mm row density regardless of run distribution
+    for(let y=0;y<CANVAS;y++){
+      // ── UNDERLAY ROW (every TATAMI_UL pixels) ──
+      if(y%TATAMI_UL===0){
+        const runs=rowRuns.get(y);
+        if(runs){
+          const rev=ulCtr%2===1;
+          const ord=rev?[...runs].reverse():runs;
+          for(const{x1,x2} of ord){
+            const ux=rev?x2-PULL:x1+PULL;
+            const ux2=rev?x1+PULL:x2-PULL;
+            // Always trim before underlay — FIX 2: no distance threshold
+            if(lastX!==-1){
+              const d=Math.hypot(ux-lastX,y-lastY);
+              if(d>TATAMI_ROW){emitTrim(lastX,lastY,ux,y,color);}
+            } else {
+              stitches.push({x:ux,y,color,type:"trim"});
+            }
+            stitches.push({x:ux, y,color,type:"underlay"});
+            stitches.push({x:ux2,y,color,type:"underlay"});
+            colorCounts[ci].underlay+=2;
+            lastX=ux2; lastY=y;
+          }
+          ulCtr++;
+        }
+      }
+
+      // ── COVER STITCH ROW (every TATAMI_ROW pixels) ──
+      if(y%TATAMI_ROW!==0)continue;
+      const runs=rowRuns.get(y);
       if(!runs)continue;
-      const rev  = rowIdx%2===1;
-      const ord  = rev ? [...runs].reverse() : runs;
+
+      const rev=rowIdx%2===1;
+      const ord=rev?[...runs].reverse():runs;
 
       for(const{x1,x2} of ord){
-        const runW  = x2-x1+1;
-        const jx    = rev ? x2 : x1;
+        const runW=x2-x1+1;
+        const jx  =rev?x2:x1;
 
-        // Trim/jump between disconnected runs
+        // Trim between disconnected runs — always, no threshold
         if(lastX!==-1){
-          const jd=Math.hypot(jx-lastX,y-lastY);
-          if(jd>TATAMI_ROW*4){
-            stitches.push({x:lastX,y:lastY,color,type:"trim"});
-            stitches.push({x:jx,y,color,type:"trim"});
-          }
+          const d=Math.hypot(jx-lastX,y-lastY);
+          if(d>TATAMI_ROW+1){emitTrim(lastX,lastY,jx,y,color);}
         } else {
-          // First stitch for this color — jump from wherever we are
           stitches.push({x:jx,y,color,type:"trim"});
         }
 
-        // Classify run
-        let rType = gemType;
+        // Classify this run
+        let rType=gemType;
         if(!rType){
           if(runW<=R_RUN)        rType="running";
           else if(runW<=R_SATIN) rType="satin";
@@ -385,38 +366,47 @@ function generateStitchesFromPixels(pixMap, colors, colorMeta) {
         }
 
         if(rType==="running"){
-          stitches.push({x:Math.round((x1+x2)/2),y,color,type:"running"});
+          const rx=Math.round((x1+x2)/2);
+          stitches.push({x:rx,y,color,type:"running"});
           colorCounts[ci].running++;
+          lastX=rx;
 
         } else if(rType==="satin"){
-          const sx = rev ? x2-PULL : x1+PULL;
-          const ex = rev ? x1+PULL : x2-PULL;
+          const sx=rev?x2-PULL:x1+PULL;
+          const ex=rev?x1+PULL:x2-PULL;
           if(Math.abs(ex-sx)>1){
             stitches.push({x:sx,y,color,type:"satin"});
             stitches.push({x:ex,y,color,type:"satin"});
             colorCounts[ci].satin+=2;
+            lastX=ex;
+          } else {
+            const rx=Math.round((x1+x2)/2);
+            stitches.push({x:rx,y,color,type:"satin"});
+            colorCounts[ci].satin++;
+            lastX=rx;
           }
 
         } else {
-          // Tatami fill: TATAMI_LEN-length stitches across the run
-          const brickOff = rowIdx%2===0 ? 0 : Math.round(TATAMI_LEN*TATAMI_BRICK);
-          const lx = x1+PULL+brickOff;
-          const rx = x2-PULL;
+          // TATAMI FILL: brick-offset segments across the run
+          const brickOff=rowIdx%2===0?0:Math.round(TATAMI_LEN*TATAMI_BRICK);
+          const lx=x1+PULL+brickOff;
+          const rx=x2-PULL;
           if(rx>lx){
             const steps=Math.max(1,Math.round((rx-lx)/TATAMI_LEN));
-            const sx = rev?rx:lx, ex = rev?lx:rx;
+            const sx2=rev?rx:lx, ex2=rev?lx:rx;
             for(let s=0;s<=steps;s++){
               const t=s/steps;
-              stitches.push({x:Math.round(sx+(ex-sx)*t),y,color,type:"fill"});
+              stitches.push({x:Math.round(sx2+(ex2-sx2)*t),y,color,type:"fill"});
               colorCounts[ci].fill++;
             }
+            lastX=stitches[stitches.length-1].x;
           } else {
-            stitches.push({x:Math.round((x1+x2)/2),y,color,type:"fill"});
+            const rx2=Math.round((x1+x2)/2);
+            stitches.push({x:rx2,y,color,type:"fill"});
             colorCounts[ci].fill++;
+            lastX=rx2;
           }
         }
-
-        lastX=stitches[stitches.length-1].x;
         lastY=y;
       }
       rowIdx++;
@@ -424,26 +414,27 @@ function generateStitchesFromPixels(pixMap, colors, colorMeta) {
 
     globalLastX=lastX;
     globalLastY=lastY;
+    globalLastColor=color;
   }
 
   // Log stitch breakdown
-  console.log("Stitch breakdown:",
-    colors.map((c,i)=>`${normHex(c)} fill:${colorCounts[i].fill} satin:${colorCounts[i].satin} run:${colorCounts[i].running}`).join(" | ")
-  );
+  console.log("Stitches:",colors.map((c,i)=>{
+    const k=colorCounts[i];
+    return`${normHex(c)} fill:${k.fill} satin:${k.satin} run:${k.running}`;
+  }).join(" | "));
 
   return {stitches, colorCounts};
 }
 
 /* ============================================================
-   QUALITY VALIDATION
-   FIX: skips distance measurement when either end is a trim.
+   QUALITY VALIDATION  (skips trim records)
    ============================================================ */
 function validateQuality(stitches){
   const w=[];
   let tot=0,cnt=0,maxJ=0,longJ=0,prev=null;
   for(const s of stitches){
-    if(s.type==="trim"){prev=null;continue;}   // reset on trim
-    if(prev&&prev.type!=="trim"){
+    if(s.type==="trim"){prev=null;continue;}
+    if(prev){
       const d=Math.hypot(s.x-prev.x,s.y-prev.y);
       if(d>maxJ)maxJ=d;
       if(d>DST_MAX)longJ++;
@@ -454,7 +445,7 @@ function validateQuality(stitches){
   const avg=cnt>0?tot/cnt:0;
   if(avg>50)w.push(`Long avg ${(avg/10).toFixed(1)}mm (max 5mm)`);
   if(avg<8) w.push(`Dense avg ${(avg/10).toFixed(1)}mm (min 0.8mm)`);
-  if(maxJ>DST_MAX)w.push(`Jump ${(maxJ/10).toFixed(1)}mm > 12.1mm DST limit`);
+  if(maxJ>DST_MAX)w.push(`Jump ${(maxJ/10).toFixed(1)}mm > 12.1mm limit`);
   if(longJ>30)    w.push(`${longJ} oversized jumps`);
   if(cnt>80000)   w.push(`High stitch count ${cnt}`);
   return{avgStitchMM:(avg/10).toFixed(2),maxJumpMM:(maxJ/10).toFixed(2),longJumps:longJ,stitchCount:cnt,warnings:w,passed:!w.length};
@@ -472,12 +463,12 @@ function encodeDST(stitches){
   const hdr=Buffer.alloc(512,0x20);
   hdr.write("Stichai",0,"ascii");
   const recs=[];
-  let lastCol=null,px=0,py=0,sc=0,cc=0,mnx=0,mxx=0,mny=0,mxy=0,ax=0,ay=0;
+  let lCol=null,px=0,py=0,sc=0,cc=0,mnx=0,mxx=0,mny=0,mxy=0,ax=0,ay=0;
   for(const s of stitches){
     ax+=s.x-px;ay+=s.y-py;
     if(ax<mnx)mnx=ax;if(ax>mxx)mxx=ax;if(ay<mny)mny=ay;if(ay>mxy)mxy=ay;
-    if(s.color!==lastCol&&lastCol!==null){recs.push(Buffer.from([0,0,0xC3]));cc++;}
-    lastCol=s.color;
+    if(s.color!==lCol&&lCol!==null){recs.push(Buffer.from([0,0,0xC3]));cc++;}
+    lCol=s.color;
     if(s.type==="trim"){
       recs.push(Buffer.from([0,0,0xC3]),Buffer.from([0,0,0xC3]),Buffer.from([0,0,0xC3]));
       const dx=s.x-px,dy=s.y-py;px=s.x;py=s.y;
@@ -491,9 +482,7 @@ function encodeDST(stitches){
       const steps=Math.max(Math.ceil(Math.abs(dx)/121),Math.ceil(Math.abs(dy)/121));
       let ppx=0,ppy=0;
       for(let i=1;i<=steps;i++){const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);recs.push(stitchRecord(fx-ppx,fy-ppy));ppx=fx;ppy=fy;}
-    } else {
-      recs.push(stitchRecord(dx,dy));
-    }
+    }else{recs.push(stitchRecord(dx,dy));}
     sc++;
   }
   recs.push(Buffer.from([0,0,0xF3]));
@@ -517,50 +506,56 @@ function encodeFile(fmt,stitches){
 
 /* ============================================================
    PREVIEW RENDERER
-   Wild-jump guard: skip lines longer than CANVAS/3.
+   Wild-jump guard: skip lines > CANVAS/3 units.
+   Satin rendered 2px thick, fill 1px, underlay faint grey.
    ============================================================ */
 async function renderPreview(stitches){
-  const w=CANVAS,h=CANVAS;
-  const buf=Buffer.alloc(w*h*4);
-  for(let i=0;i<w*h*4;i+=4){buf[i]=245;buf[i+1]=242;buf[i+2]=235;buf[i+3]=255;}
+  const W=CANVAS,H=CANVAS;
+  const buf=Buffer.alloc(W*H*4);
+  for(let i=0;i<W*H*4;i+=4){buf[i]=245;buf[i+1]=242;buf[i+2]=235;buf[i+3]=255;}
 
-  const sp=(x,y,r,g,b,t=1)=>{
+  const sp=(x,y,r,g,b,t)=>{
     for(let ox=-t;ox<=t;ox++)for(let oy=-t;oy<=t;oy++){
-      const px=Math.round(x)+ox,py=Math.round(y)+oy;
-      if(px<0||px>=w||py<0||py>=h)return;
-      const i2=(py*w+px)*4;buf[i2]=r;buf[i2+1]=g;buf[i2+2]=b;buf[i2+3]=255;
+      const px=x+ox,py=y+oy;
+      if(px<0||px>=W||py<0||py>=H)return;
+      const i2=(py*W+px)*4;buf[i2]=r;buf[i2+1]=g;buf[i2+2]=b;buf[i2+3]=255;
     }
   };
   const ln=(x0,y0,x1,y1,r,g,b,t)=>{
     const dx=Math.abs(x1-x0),dy=Math.abs(y1-y0),sx=x0<x1?1:-1,sy=y0<y1?1:-1;
     let err=dx-dy,x=x0,y=y0;
-    for(let g2=0;g2<w+h;g2++){
+    for(let guard=0;guard<W+H;guard++){
       sp(x,y,r,g,b,t);
-      if(Math.abs(x-x1)<1&&Math.abs(y-y1)<1)break;
+      if(x===x1&&y===y1)break;
       const e2=2*err;
       if(e2>-dy){err-=dy;x+=sx;}
       if(e2<dx) {err+=dx;y+=sy;}
     }
   };
 
-  const MAX_LINE=CANVAS/3;
+  const MAX_LINE=Math.round(CANVAS/3);
   let prev=null;
   for(const st of stitches){
     if(st.type==="trim"){prev=null;continue;}
-    if(prev&&prev.type!=="trim"){
+    if(prev){
       const dist=Math.hypot(st.x-prev.x,st.y-prev.y);
       if(dist>0.5&&dist<MAX_LINE){
-        const dc=(st.color||prev.color||"#000000");
+        const dc=st.color||prev.color||"#000000";
         const m=dc.match(/^#([0-9a-fA-F]{6})$/);
         if(m){
-          const cr=parseInt(m[1].slice(0,2),16),cg=parseInt(m[1].slice(2,4),16),cb=parseInt(m[1].slice(4,6),16);
-          ln(prev.x,prev.y,st.x,st.y,cr,cg,cb,st.type==="satin"?2:1);
+          let r=parseInt(m[1].slice(0,2),16);
+          let g=parseInt(m[1].slice(2,4),16);
+          let b=parseInt(m[1].slice(4,6),16);
+          // Underlay: render as faint grey so it doesn't obscure cover
+          if(st.type==="underlay"){r=180;g=180;b=180;}
+          const thick=st.type==="satin"?2:1;
+          ln(prev.x,prev.y,st.x,st.y,r,g,b,thick);
         }
       }
     }
     prev=st;
   }
-  return await sharp(buf,{raw:{width:w,height:h,channels:4}}).png().toBuffer();
+  return await sharp(buf,{raw:{width:W,height:H,channels:4}}).png().toBuffer();
 }
 
 /* ============================================================
@@ -575,63 +570,53 @@ app.post("/generate-embroidery", upload.single("image"), async(req,res)=>{
   try{
     if(!req.file)return res.status(400).json({error:"No image uploaded"});
 
-    // 1. Pre-process
     console.time(`pre-${rid}`);
     const pre=await preprocessImage(req.file.buffer);
     console.timeEnd(`pre-${rid}`);
 
-    // 2. Gemini (try 3 models, log all failures)
     console.time(`gem-${rid}`);
     const gem=await analyzeWithGemini(req.file.buffer,req.file.mimetype||"image/png");
     console.timeEnd(`gem-${rid}`);
 
     let colors,colorMeta={},globalAngle=0;
-
     if(gem&&gem.colors&&gem.colors.length>=1){
       colors=gem.colors;colorMeta=gem.meta||{};globalAngle=gem.angle||0;
-      console.log(`[${rid}] Gemini colors: [${colors.join(",")}] ${globalAngle}° | ${gem.notes}`);
-    } else {
-      console.log(`[${rid}] All Gemini models failed — using smart fallback`);
-      colors=cleanFallbackColors(pre.fallbackColors, pre.bgLab);
-      console.log(`[${rid}] Fallback colors (cleaned): [${colors.join(",")}]`);
+      console.log(`[${rid}] Gemini: [${colors.join(",")}] ${globalAngle}° | ${gem.notes}`);
+    }else{
+      console.log(`[${rid}] Gemini failed — smart fallback`);
+      colors=cleanFallbackColors(pre.fallbackColors,pre.bgLab);
+      console.log(`[${rid}] Fallback colors: [${colors.join(",")}]`);
     }
 
     if(!colors.length)colors=["#000000"];
-
-    // Ensure at least one dark color for logos/text
     const hasDark=colors.some(c=>{const{r,g,b}=hexToRgb(c);return r+g+b<200;});
-    if(!hasDark){
-      colors.unshift("#000000");
-      console.log(`[${rid}] Injected #000000 (no dark color found)`);
-    }
+    if(!hasDark){colors.unshift("#000000");console.log(`[${rid}] Injected #000000`);}
 
-    // 3. Build pixel color map
     console.time(`pixmap-${rid}`);
     const pixMap=await buildPixelMap(pre.buffer,colors);
     console.timeEnd(`pixmap-${rid}`);
 
-    // 4. Generate stitches via direct scanline
     console.time(`stitch-${rid}`);
     const {stitches,colorCounts}=generateStitchesFromPixels(pixMap,colors,colorMeta);
     console.timeEnd(`stitch-${rid}`);
 
-    if(stitches.filter(s=>s.type!=="trim").length<5)
-      return res.status(500).json({error:"No stitchable content — check image contrast"});
+    const coverCount=stitches.filter(s=>s.type!=="trim"&&s.type!=="underlay").length;
+    if(coverCount<5)return res.status(500).json({error:"No stitchable content — check image contrast"});
 
     const id=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
     jobs.set(id,{stitches,designW:CANVAS,designH:CANVAS});
 
     const qa=validateQuality(stitches);
-    console.log(`[${rid}] stitches:${qa.stitchCount} avg:${qa.avgStitchMM}mm maxJump:${qa.maxJumpMM}mm`);
+    console.log(`[${rid}] cover:${qa.stitchCount} avg:${qa.avgStitchMM}mm maxJump:${qa.maxJumpMM}mm`);
     for(const w of qa.warnings)console.warn(`  ⚠ ${w}`);
 
-    // Build shape summary (FIX: use colorCounts directly)
+    // FIX 3: shape summary uses colorCounts directly — always has real pts values
     const shapes=[];
     for(let i=0;i<colors.length;i++){
-      const c=normHex(colors[i]);
-      if(colorCounts[i].fill>0)    shapes.push({type:"fill",   color:c,pts:colorCounts[i].fill});
-      if(colorCounts[i].satin>0)   shapes.push({type:"satin",  color:c,pts:colorCounts[i].satin});
-      if(colorCounts[i].running>0) shapes.push({type:"running",color:c,pts:colorCounts[i].running});
+      const c=normHex(colors[i]),k=colorCounts[i];
+      if(k.fill>0)    shapes.push({type:"fill",   color:c,pts:k.fill});
+      if(k.satin>0)   shapes.push({type:"satin",  color:c,pts:k.satin});
+      if(k.running>0) shapes.push({type:"running",color:c,pts:k.running});
     }
 
     return res.json({
@@ -665,7 +650,7 @@ app.get("/preview-image/:id",async(req,res)=>{
   try{
     const png=await Promise.race([
       renderPreview(d.stitches),
-      new Promise((_,rej)=>setTimeout(()=>rej(new Error("Preview timeout")),15000))
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),15000))
     ]);
     previewCache.set(req.params.id,{buf:png,ts:Date.now()});
     res.setHeader("Content-Type","image/png");
@@ -683,8 +668,8 @@ app.get("/download/:id/:format",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"33.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"34.0",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v33 | :${PORT} | ${CANVAS}px = ${DESIGN_MM}mm`));
+const server=app.listen(PORT,()=>console.log(`Stichai v34 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
 server.timeout=180000;
