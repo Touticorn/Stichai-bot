@@ -13,7 +13,6 @@ header h1{margin:0;font-size:22px}
 .card{background:#fff;border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:0 4px 20px rgba(0,0,0,0.06)}
 .stage-label{font-size:11px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
 
-/* Upload */
 .dropzone{border:2px dashed #c7c7c7;border-radius:12px;padding:40px 20px;text-align:center;cursor:pointer;transition:border-color .2s;display:block}
 .dropzone:hover{border-color:#e94560}
 .dropzone.dragover{border-color:#e94560;background:#fff5f7}
@@ -23,19 +22,26 @@ header h1{margin:0;font-size:22px}
 .btn:disabled{background:#aaa;cursor:not-allowed}
 .btn-secondary{background:#16213e}
 .btn-sm{padding:10px 16px;font-size:13px}
+.btn-outline{background:#fff;color:#333;border:2px solid #ccc}
+.btn-outline.on{border-color:#e94560;background:#fff0f2;color:#e94560}
 .photo-wrap{position:relative;width:100%;max-width:800px;margin:0 auto;border:1px solid #d4cfc5;border-radius:12px;overflow:hidden;background:#fff;margin-top:12px;display:none}
 .photo-wrap img{display:block;width:100%;height:auto}
 
-/* Mask — Mobile Optimized */
+/* Mode & Size selectors */
+.mode-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}
+.size-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0}
+.mode-btn,.size-btn{padding:16px 8px;border:2px solid #e0ddd5;background:#fff;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;text-align:center;transition:all .15s}
+.mode-btn.on,.size-btn.on{border-color:#e94560;background:#fff0f2;color:#e94560}
+.warning{font-size:12px;color:#c0392b;background:#fdecea;padding:10px;border-radius:6px;margin-top:8px}
+
+/* Mask */
 .mask-wrap{position:relative;width:100%;max-width:800px;margin:0 auto;border:1px solid #d4cfc5;border-radius:12px;overflow:hidden;background:#000;margin-top:12px;display:none;aspect-ratio:1/1}
 .mask-wrap.on{display:block}
 #c1,#c2{position:absolute;top:0;left:0;width:100%;height:100%;display:block;touch-action:none}
 #c2{pointer-events:none;opacity:.75;z-index:2}
 #c1{z-index:1}
-
-/* Tools — Grid for thumbs */
 .tools{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0;padding:12px;background:#f8f6f1;border-radius:8px}
-.tools button{padding:10px 4px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;min-height:44px;-webkit-touch-callout:none}
+.tools button{padding:10px 4px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;min-height:44px}
 .tools button.on{background:#e94560;color:#fff;border-color:#e94560}
 
 /* Selection */
@@ -57,15 +63,14 @@ header h1{margin:0;font-size:22px}
 .btns{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap}
 select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;background:#fff;width:100%}
 .meta{font-size:13px;color:#666;margin-top:8px}
+.sew-time{font-size:14px;color:#333;margin-top:6px;font-weight:600}
 .error{color:#c0392b;background:#fdecea;padding:10px;border-radius:6px;margin-top:8px;font-size:13px}
 .ok{color:#27ae60}
 
-/* Mobile tweaks */
 @media (max-width:480px){
   .container{padding:12px}
   .card{padding:16px}
-  .tools{grid-template-columns:repeat(4,1fr)}
-  .tools button{font-size:12px;padding:8px 2px}
+  .mode-grid{grid-template-columns:1fr}
   .color-grid{grid-template-columns:1fr}
   .shape-grid{grid-template-columns:1fr}
 }
@@ -88,10 +93,51 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
     <div id="st"></div>
   </div>
 
+  <!-- MODE & SIZE -->
+  <div class="card" id="modeCard" style="display:none">
+    <div class="stage-label">Design Settings</div>
+    
+    <strong style="font-size:13px">Type</strong>
+    <div class="mode-grid">
+      <button class="mode-btn on" id="btnLogo" onclick="setMode('logo')">
+        <div style="font-size:20px">🎨</div>
+        <div>Logo / Graphic</div>
+        <div style="font-size:11px;color:#999;font-weight:400">Best for text, cartoons</div>
+      </button>
+      <button class="mode-btn" id="btnPhoto" onclick="setMode('photo')">
+        <div style="font-size:20px">📷</div>
+        <div>Photo → Stylized</div>
+        <div style="font-size:11px;color:#999;font-weight:400">Converts to illustration</div>
+      </button>
+    </div>
+    <div class="warning" id="photoWarning" style="display:none">
+      ⚠️ Photos become graphic illustrations — not photorealistic. Face details (eyes, eyebrows) will be simplified.
+    </div>
+
+    <strong style="font-size:13px;display:block;margin-top:12px">Size</strong>
+    <div class="size-grid">
+      <button class="size-btn on" onclick="setSize('800',this)">
+        <div style="font-size:13px">Small</div>
+        <div style="font-size:11px;color:#999">80mm</div>
+      </button>
+      <button class="size-btn" onclick="setSize('1600',this)">
+        <div style="font-size:13px">Large</div>
+        <div style="font-size:11px;color:#999">160mm</div>
+      </button>
+      <button class="size-btn" onclick="setSize('2400',this)">
+        <div style="font-size:13px">X-Large</div>
+        <div style="font-size:11px;color:#999">240mm</div>
+      </button>
+    </div>
+    <div class="warning" id="sizeWarning" style="display:none;background:#fff3cd;color:#856404">
+      ⚠️ X-Large designs take 1–3 hours to sew and may take 30–60 seconds to generate.
+    </div>
+  </div>
+
   <!-- MASK -->
   <div class="card" id="mc" style="display:none">
     <div class="stage-label">Step 2: Remove areas (optional)</div>
-    <p style="font-size:12px;color:#666;margin:0 0 8px">Paint <strong style="color:#e94560">RED</strong> over what you don't want stitched. Pinch to zoom page if needed.</p>
+    <p style="font-size:12px;color:#666;margin:0 0 8px">Paint <strong style="color:#e94560">RED</strong> over what you don't want stitched</p>
     <div class="mask-wrap" id="mw">
       <canvas id="c1"></canvas>
       <canvas id="c2"></canvas>
@@ -100,10 +146,10 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
       <button class="on" id="bB" onclick="setTool('brush',this)">🖌️ Remove</button>
       <button id="bE" onclick="setTool('eraser',this)">❌ Undo</button>
       <button onclick="clearMask()">🗑️ Clear</button>
-      <button onclick="setSize(15,this)">S</button>
-      <button class="on" onclick="setSize(35,this)">M</button>
-      <button onclick="setSize(70,this)">L</button>
-      <button onclick="setSize(120,this)">XL</button>
+      <button onclick="setBrushSize(15,this)">S</button>
+      <button class="on" onclick="setBrushSize(35,this)">M</button>
+      <button onclick="setBrushSize(70,this)">L</button>
+      <button onclick="setBrushSize(120,this)">XL</button>
     </div>
     <button class="btn" id="aB" onclick="analyze()" style="padding:14px;font-size:16px">🔍 Analyze</button>
   </div>
@@ -122,7 +168,7 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
     <div class="shape-grid" id="sg"></div>
 
     <div style="margin-top:12px;padding:12px;background:#f8f6f1;border-radius:8px">
-      <strong style="font-size:13px">Specs</strong>
+      <strong style="font-size:13px">Machine Specs</strong>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:8px">
         <select id="fb"><option value="cotton">Cotton</option><option value="denim">Denim</option><option value="fleece">Fleece</option><option value="twill">Twill</option><option value="satin">Satin</option><option value="leather">Leather</option><option value="towel">Towel</option></select>
         <select id="mb"><option value="tajima">Tajima</option><option value="brother">Brother</option><option value="barudan">Barudan</option><option value="generic">Generic</option></select>
@@ -138,6 +184,7 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
     <div class="stage-label">Step 4: Preview & Download</div>
     <div class="photo-wrap" id="rpw" style="display:block;max-width:800px"><img id="ri" alt="Preview" style="display:block;width:100%"></div>
     <div class="meta" id="rm"></div>
+    <div class="sew-time" id="sew"></div>
     <div class="btns" style="margin-top:12px">
       <select id="fs">
         <option value="dst">DST (Tajima — Universal)</option>
@@ -154,7 +201,8 @@ var CN={"#000000":"Black","#FFFFFF":"White","#FF0000":"Red","#00FF00":"Green","#
 function gN(h){var u=h.toUpperCase();if(CN[u])return CN[u];var r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16),bn=null,bd=999;for(var k in CN){var r2=parseInt(k.slice(1,3),16),g2=parseInt(k.slice(3,5),16),b2=parseInt(k.slice(5,7),16);var d=Math.abs(r-r2)+Math.abs(g-g2)+Math.abs(b-b2);if(d<bd){bd=d;bn=CN[k]}}return bn||h}
 
 var cf=null,cdu=null,dd=null,ci=null,jid=null;
-var mC,mX,c1,c2,dr=false,tl='brush',sz=35,lx,ly,hm=false;
+var mC,mX,c1,c2,dr=false,tl='brush',sz=35,hm=false;
+var designMode='logo',designSize='800';
 
 document.getElementById('fi').addEventListener('change', function(){
   if(this.files && this.files[0]) handleFile(this.files[0]);
@@ -185,9 +233,25 @@ function handleFile(f){
     cdu=e.target.result;
     document.getElementById('oi').src=cdu;
     document.getElementById('pw').style.display='block';
+    document.getElementById('modeCard').style.display='block';
     initMask(cdu);
   };
   r.readAsDataURL(f);
+}
+
+function setMode(m){
+  designMode=m;
+  document.getElementById('btnLogo').classList.toggle('on',m==='logo');
+  document.getElementById('btnPhoto').classList.toggle('on',m==='photo');
+  document.getElementById('photoWarning').style.display=m==='photo'?'block':'none';
+}
+
+function setSize(s,btn){
+  designSize=s;
+  var btns=btn.parentNode.querySelectorAll('button');
+  for(var i=0;i<btns.length;i++)btns[i].className='size-btn';
+  btn.className='size-btn on';
+  document.getElementById('sizeWarning').style.display=s==='2400'?'block':'none';
 }
 
 function initMask(u){
@@ -197,27 +261,19 @@ function initMask(u){
     c2=document.getElementById('c2');
     mC=c1.getContext('2d');
     mX=c2.getContext('2d');
-
     c1.width=800; c1.height=800;
     c2.width=800; c2.height=800;
-
     mC.drawImage(i,0,0,800,800);
     mX.clearRect(0,0,800,800);
-
     document.getElementById('mw').className='mask-wrap on';
     document.getElementById('mc').style.display='block';
-
-    // Mouse
     c1.onmousedown=function(e){e.preventDefault();dr=true;var p=gp(e);lx=p.x;ly=p.y;dm(e)};
     c1.onmousemove=function(e){if(!dr)return;e.preventDefault();dm(e)};
     c1.onmouseup=function(){dr=false};
     c1.onmouseleave=function(){dr=false};
-
-    // Touch — passive:false prevents scroll while drawing
     c1.addEventListener('touchstart',function(e){e.preventDefault();dr=true;var p=gp(e.touches[0]);lx=p.x;ly=p.y;dm(e.touches[0])},{passive:false});
     c1.addEventListener('touchmove',function(e){if(!dr)return;e.preventDefault();dm(e.touches[0])},{passive:false});
     c1.addEventListener('touchend',function(){dr=false},{passive:false});
-    c1.addEventListener('touchcancel',function(){dr=false},{passive:false});
   };
   i.src=u;
 }
@@ -244,7 +300,7 @@ function dm(e){
   lx=p.x;ly=p.y;
 }
 function setTool(t,btn){tl=t;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<btns.length;i++)btns[i].className='';btn.className='on'}
-function setSize(s,btn){sz=s;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<btns.length;i++)btns[i].className='';btn.className='on'}
+function setBrushSize(s,btn){sz=s;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<btns.length;i++)btns[i].className='';btn.className='on'}
 function clearMask(){if(!mX)return;mX.clearRect(0,0,800,800);hm=false}
 
 function analyze(){
@@ -254,6 +310,8 @@ function analyze(){
   document.getElementById('st').innerHTML='<p>Analyzing...</p>';
   var fd=new FormData();
   fd.append('image',cf);
+  fd.append('mode',designMode);
+  fd.append('canvasSize',designSize);
   if(hm){
     c2.toBlob(function(b){
       if(b)fd.append('mask',b,'mask.png');
@@ -272,7 +330,6 @@ function doAnalyze(fd){
     var d;
     try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">Invalid response</div>';return}
     if(!d.success){document.getElementById('st').innerHTML='<div class="error">'+(d.error||'Unknown error')+'</div>';return}
-
     dd=d;ci=d.detectionId;
 
     var cg=document.getElementById('cg');
@@ -299,7 +356,7 @@ function doAnalyze(fd){
 
     document.getElementById('sc').style.display='block';
     document.getElementById('sc').scrollIntoView({behavior:'smooth'});
-    document.getElementById('st').innerHTML='<p class="ok">Found '+d.shapes.length+' shape'+(d.shapes.length!==1?'s':'')+'!</p>';
+    document.getElementById('st').innerHTML='<p class="ok">Found '+d.shapes.length+' shape'+(d.shapes.length!==1?'s':'')+'! Design size: '+d.designMm+'mm</p>';
   };
   xhr.onerror=function(){document.getElementById('aB').disabled=false;document.getElementById('st').innerHTML='<div class="error">Network error</div>'};
   xhr.send(fd);
@@ -331,6 +388,15 @@ function generate(){
 
   var fd=new FormData();
   fd.append('image',cf);
+  fd.append('mode',designMode);
+  fd.append('canvasSize',designSize);
+  fd.append('detectionId',ci);
+  fd.append('selectedColors',JSON.stringify(sc));
+  fd.append('selectedShapes',JSON.stringify(ss));
+  fd.append('fabric',document.getElementById('fb').value);
+  fd.append('machine',document.getElementById('mb').value);
+  fd.append('hoop',document.getElementById('hp').value);
+  fd.append('density',document.getElementById('ds').value);
   if(hm){
     c2.toBlob(function(b){
       if(b)fd.append('mask',b,'mask.png');
@@ -341,13 +407,6 @@ function generate(){
   }
 }
 function doGen(fd,sc,ss,btn){
-  fd.append('detectionId',ci);
-  fd.append('selectedColors',JSON.stringify(sc));
-  fd.append('selectedShapes',JSON.stringify(ss));
-  fd.append('fabric',document.getElementById('fb').value);
-  fd.append('machine',document.getElementById('mb').value);
-  fd.append('hoop',document.getElementById('hp').value);
-  fd.append('density',document.getElementById('ds').value);
   var xhr=new XMLHttpRequest();
   xhr.open('POST','/generate-embroidery',true);
   xhr.onload=function(){
@@ -360,12 +419,12 @@ function doGen(fd,sc,ss,btn){
     jid=d.id;
     document.getElementById('ri').src=d.previewImageUrl+'?t='+Date.now();
 
-    var meta=d.stitchCount.toLocaleString()+' stitches';
-    if(d.shapes&&d.shapes.length)  meta+=' \u00b7 '+d.shapes.length+' region'+(d.shapes.length!==1?'s':'');
-    if(d.colors&&d.colors.length)  meta+=' \u00b7 '+d.colors.length+' color'+(d.colors.length!==1?'s':'');
-    if(d.designSize&&d.designSize.mm) meta+=' \u00b7 '+d.designSize.mm+'mm design';
-    if(d.qa&&d.qa.avgStitchMM)    meta+=' \u00b7 avg stitch '+d.qa.avgStitchMM+'mm';
+    var meta=d.stitchCount.toLocaleString()+' stitches · '+d.shapes.length+' regions · '+d.colors.length+' colors · '+d.designSize.mm+'mm design';
+    if(d.qa&&d.qa.avgStitchMM) meta+=' · avg stitch '+d.qa.avgStitchMM+'mm';
     document.getElementById('rm').textContent=meta;
+
+    var sewText = d.sewTime ? '\u23F1 Estimated sew time: ' + d.sewTime + ' on ' + (d.specs?.machine || 'generic') : '';
+    document.getElementById('sew').textContent=sewText;
 
     document.getElementById('rc').style.display='block';
     document.getElementById('rc').scrollIntoView({behavior:'smooth'});
