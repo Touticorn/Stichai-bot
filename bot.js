@@ -1,5 +1,5 @@
 /**
- * Stichai v51 — Fix color index crash + mask aspect ratio
+ * Stichai v52 — Fix color index crash + mask aspect ratio
  * ═══════════════════════════════════════════════════════════════════
  *  FIXES FROM v47
  *  ──────────────────────────────────────────────────────────────
@@ -858,11 +858,18 @@ function encodeDST(stitches){
     if(s.color!==lCol&&lCol!==null){recs.push(Buffer.from([0,0,0xC3]));cc++;}
     lCol=s.color;
     if(s.type==="trim"){
-      // FIX v51: Use 0x83 (jump/trim) instead of 0xC3 (color change)
+      // FIX v52: Use 0x83 (jump/trim) with proper ±121 clamping per step
       const dx=s.x-px,dy=s.y-py;px=s.x;py=s.y;
       const steps=Math.max(1,Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))/121));
       let ppx=0,ppy=0;
-      for(let i=1;i<=steps;i++){const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);recs.push(Buffer.from([fy>=0?fy:0x100+fy,fx>=0?fx:0x100+fx,0x83]));ppx=fx;ppy=fy;}
+      for(let i=1;i<=steps;i++){
+        const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);
+        const sx=fx-ppx,sy=fy-ppy;
+        const cx=Math.max(-121,Math.min(121,Math.round(sx)));
+        const cy=Math.max(-121,Math.min(121,Math.round(sy)));
+        recs.push(Buffer.from([cy>=0?cy:0x100+cy,cx>=0?cx:0x100+cx,0x83]));
+        ppx=fx;ppy=fy;
+      }
       continue;
     }
     const dx=Math.round(s.x-px),dy=Math.round(s.y-py);px=s.x;py=s.y;
@@ -1150,9 +1157,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"51.0",features:"fixed-trim-encoding,dst-header-bounds,pixmap-remap"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"52.0",features:"fixed-trim-clamping,dst-header-bounds,pixmap-remap"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v51 | :${PORT} | fixed ci index`));
+const server=app.listen(PORT,()=>console.log(`Stichai v52 | :${PORT} | fixed ci index`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
