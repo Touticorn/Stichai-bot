@@ -67,6 +67,7 @@ header h1{margin:0;font-size:22px}
 .tag-f{background:#d4edda;color:#155724}
 .tag-s{background:#cce5ff;color:#004085}
 .tag-r{background:#fff3cd;color:#856404}
+.s-item input[type=checkbox]:disabled{opacity:0.3;cursor:not-allowed}
 .btns{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap}
 select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;background:#fff;width:100%}
 .meta{font-size:13px;color:#666;margin-top:8px}
@@ -274,6 +275,7 @@ function setSize(s,btn){
   document.getElementById('sizeWarning').style.display=s==='2400'?'block':'none';
 }
 
+// FIX v48: contain-fit with white background — matches server preprocessing exactly
 function initMask(u){
   var i=new Image();
   i.onload=function(){
@@ -283,7 +285,14 @@ function initMask(u){
     mX=c2.getContext('2d');
     c1.width=800; c1.height=800;
     c2.width=800; c2.height=800;
-    mC.drawImage(i,0,0,800,800);
+    
+    mC.fillStyle='#FFFFFF';
+    mC.fillRect(0,0,800,800);
+    var scale=Math.min(800/i.width,800/i.height);
+    var dw=i.width*scale,dh=i.height*scale;
+    var dx=(800-dw)/2,dy=(800-dh)/2;
+    mC.drawImage(i,dx,dy,dw,dh);
+    
     mX.clearRect(0,0,800,800);
     document.getElementById('mw').className='mask-wrap on';
     document.getElementById('mc').style.display='block';
@@ -382,6 +391,8 @@ function doAnalyze(fd){
   xhr.onerror=function(){document.getElementById('aB').disabled=false;document.getElementById('st').innerHTML='<div class="error">Network error</div>'};
   xhr.send(fd);
 }
+
+// FIX v48: disable shape checkboxes when their color is deselected
 function tC(i){
   var el=document.getElementById('ci-'+i);
   el.classList.toggle('on');
@@ -389,15 +400,60 @@ function tC(i){
   var hc=dd.colors[i];
   var rows=document.querySelectorAll('.s-item');
   for(var j=0;j<rows.length;j++){
-    if(rows[j].dataset.c==hc){rows[j].querySelector('input[type=checkbox]').checked=on;rows[j].classList.toggle('off',!on)}
+    if(rows[j].dataset.c==hc){
+      var cb=rows[j].querySelector('input[type=checkbox]');
+      cb.checked=on;
+      rows[j].classList.toggle('off',!on);
+      cb.disabled=!on; // prevent manual re-check of orphaned shape
+    }
   }
 }
+
 function tS(i){var cb=document.getElementById('cb-'+i);document.getElementById('si-'+i).classList.toggle('off',!cb.checked)}
-function allC(on){for(var i=0;i<dd.colors.length;i++){var el=document.getElementById('ci-'+i);var sel=el.classList.contains('on');if(on&&!sel)tC(i);if(!on&&sel)tC(i)}}
+
+// FIX v48: prevent deselecting the last remaining color
+function allC(on){
+  if(!on){
+    var anyOtherOn=false;
+    for(var i=0;i<dd.colors.length;i++){
+      if(document.getElementById('ci-'+i).classList.contains('on')) anyOtherOn=true;
+    }
+    if(!anyOtherOn){
+      alert('Keep at least one color selected');
+      return;
+    }
+  }
+  for(var i=0;i<dd.colors.length;i++){
+    var el=document.getElementById('ci-'+i);
+    var sel=el.classList.contains('on');
+    if(on&&!sel)tC(i);
+    if(!on&&sel)tC(i);
+  }
+}
+
 function allS(on){var rows=document.querySelectorAll('.s-item');for(var i=0;i<rows.length;i++){rows[i].querySelector('input[type=checkbox]').checked=on;rows[i].classList.toggle('off',!on)}}
 
+// FIX v48: validate that every checked shape has its color selected
 function generate(){
   if(!ci||!dd)return;
+  
+  // Validation: every checked shape must have its color on
+  for(var i=0;i<dd.shapes.length;i++){
+    if(document.getElementById('cb-'+i).checked){
+      var shapeColor=dd.shapes[i].color;
+      var colorOn=false;
+      for(var j=0;j<dd.colors.length;j++){
+        if(document.getElementById('ci-'+j).classList.contains('on') && dd.colors[j]===shapeColor){
+          colorOn=true;break;
+        }
+      }
+      if(!colorOn){
+        alert('Shape #'+(i+1)+' is selected but its color is deselected. Please re-enable the color or uncheck the shape.');
+        return;
+      }
+    }
+  }
+  
   var sc=[],ss=[];
   for(var i=0;i<dd.colors.length;i++){if(document.getElementById('ci-'+i).classList.contains('on'))sc.push(dd.colors[i])}
   if(!sc.length){alert('Select at least one color');return}
