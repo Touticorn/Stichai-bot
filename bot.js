@@ -1,15 +1,12 @@
 /**
- * Stichai v47 — Diversity-Aware Color Extraction
+ * Stichai v48 — Fix color index crash + mask aspect ratio
  * ═══════════════════════════════════════════════════════════════════
- *  FIX FROM v46
+ *  FIXES FROM v47
  *  ──────────────────────────────────────────────────────────────
- *  1. Bucket size reduced from 24 to 16 → captures finer color
- *     distinctions (eyes vs skin vs fur vs shadows).
- *  2. Two-pass selection:
- *     Pass 1: Pick top frequent buckets.
- *     Pass 2: Fill remaining slots with most LAB-distinct colors
- *     from the remaining buckets — guarantees N distinct colors.
- *  3. No dedupe needed — selection itself enforces dE > 15.
+ *  1. When selectedColors < full palette, regions' ci is re-indexed
+ *     to match the new shortened palette before stitch generation.
+ *  2. Frontend initMask uses contain-fit with white background,
+ *     matching server preprocessing exactly.
  */
 
 "use strict";
@@ -130,7 +127,7 @@ async function preprocessImage(buffer, canvasSize) {
 /* ─── MASK-AWARE DIVERSITY COLOR EXTRACTION ──────────────*/
 async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, maxColors) {
   const analysisSize = 200;
-  const BUCKET = 16; // was 24 — finer granularity
+  const BUCKET = 16;
   
   const imgRaw = await sharp(imageBuffer)
     .resize(analysisSize, analysisSize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
@@ -180,7 +177,6 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
   
   if (totalUnmasked === 0) return ["#000000"];
   
-  // Convert buckets to objects with hex, lab, freq
   const allBuckets = [];
   for (const [key, freq] of bucketFreq) {
     const s = bucketSums.get(key);
@@ -192,11 +188,8 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
     allBuckets.push({ hex: normHex(hex), lab, freq, pct: freq / totalUnmasked });
   }
   
-  // Sort by frequency descending
   allBuckets.sort((a, b) => b.freq - a.freq);
   
-  // Pass 1: Greedy diversity selection — pick most frequent, then next most frequent
-  // that is at least dE > 15 from all already selected
   const MIN_DIST = 15;
   const selected = [];
   
@@ -206,15 +199,12 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
     if (!tooClose) selected.push(bucket);
   }
   
-  // Pass 2: If we still have slots, find most distinct colors regardless of frequency
-  // This captures small details like eyes, eyebrows
   if (selected.length < maxColors) {
     const remaining = allBuckets.filter(b => !selected.some(s => s.hex === b.hex));
-    // Sort remaining by max distance to any selected color
     remaining.sort((a, b) => {
       const aMin = Math.min(...selected.map(s => dE(a.lab, s.lab)));
       const bMin = Math.min(...selected.map(s => dE(b.lab, s.lab)));
-      return bMin - aMin; // descending: most distinct first
+      return bMin - aMin;
     });
     
     for (const bucket of remaining) {
@@ -224,8 +214,6 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
     }
   }
   
-  // Pass 3: If STILL short, scan raw pixels for any color far from palette
-  // (catches tiny details that bucketing missed)
   if (selected.length < maxColors) {
     const paletteLabs = selected.map(s => s.lab);
     const outliers = [];
@@ -246,7 +234,6 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
       }
     }
     
-    // Group outliers by rounded RGB (bucket size 32 for grouping)
     const outlierGroups = new Map();
     for (const o of outliers) {
       const key = (Math.round(o.r/32)*32 << 16) | (Math.round(o.g/32)*32 << 8) | Math.round(o.b/32)*32;
@@ -272,7 +259,6 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
     }
   }
   
-  // Protect white/black
   let brightCount = 0, darkCount = 0;
   for (let i = 0; i < analysisSize * analysisSize; i++) {
     if (mData) {
@@ -549,7 +535,14 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
   ];
 
   for(const reg of ordered){
-    const {ci,color,type,mnx,mny,mxx,mxy}=reg;
+    // FIX v48: Look up ci in the CURRENT colors array, don't trust reg.ci from original palette
+    const ci = colors.findIndex(c => normHex(c) === normHex(reg.color));
+    if (ci === -1) {
+      console.warn(`Region color ${reg.color} not found in selected palette — skipping`);
+      continue;
+    }
+    
+    const {color,type,mnx,mny,mxx,mxy}=reg;
     let lastX=globalLastX,lastY=globalLastY;
 
     if(lastX!==-1){
@@ -1039,6 +1032,11 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       colors.forEach((c,ci) => { if(!selectedColors.includes(normHex(c))) excludedCis.add(ci); });
       for(let i=0;i<pixMap.length;i++){ if(excludedCis.has(pixMap[i])) pixMap[i]=-1; }
       filteredRegions = filteredRegions.filter(r => selectedColors.includes(normHex(r.color)));
+      // FIX v48: Re-index ci to match the shortened selectedColors array
+      filteredRegions = filteredRegions.map(r => ({
+        ...r,
+        ci: selectedColors.findIndex(c => normHex(c) === normHex(r.color))
+      }));
     }
 
     if(!filteredRegions.length){
@@ -1125,9 +1123,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"47.0",features:"diversity-colors,user-color-count,mask-holes"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"48.0",features:"fixed-ci-index,mask-contain,diversity-colors"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v47 | :${PORT} | diversity extraction`));
+const server=app.listen(PORT,()=>console.log(`Stichai v48 | :${PORT} | fixed ci index`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
