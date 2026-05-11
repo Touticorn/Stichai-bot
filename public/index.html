@@ -3,12 +3,22 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#1a1a2e">
+<link rel="manifest" href="/manifest.json">
 <title>Stichai Pro</title>
 <style>
 *{box-sizing:border-box;touch-action:manipulation}
 body{margin:0;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#f3f0ea;color:#2c2c2c;-webkit-tap-highlight-color:transparent}
+body[dir="rtl"]{direction:rtl}
+body[dir="rtl"] .c-item,body[dir="rtl"] .s-item{flex-direction:row-reverse;text-align:right}
+body[dir="rtl"] .btns{flex-direction:row-reverse}
+body[dir="rtl"] .tools{direction:ltr}
 header{background:#1a1a2e;color:#fff;padding:18px 24px}
 header h1{margin:0;font-size:22px}
+.lang-switch{position:absolute;top:18px;right:24px;display:flex;gap:6px}
+body[dir="rtl"] .lang-switch{right:auto;left:24px}
+.lang-switch button{background:rgba(255,255,255,0.15);border:none;color:#fff;padding:4px 10px;border-radius:6px;font-size:12px;cursor:pointer}
+.lang-switch button.on{background:#e94560}
 .container{max-width:1200px;margin:0 auto;padding:16px}
 .card{background:#fff;border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:0 4px 20px rgba(0,0,0,0.06)}
 .stage-label{font-size:11px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px}
@@ -75,6 +85,18 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
 .error{color:#c0392b;background:#fdecea;padding:10px;border-radius:6px;margin-top:8px;font-size:13px}
 .ok{color:#27ae60}
 
+/* Install Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;display:none;align-items:center;justify-content:center;padding:16px}
+.modal-overlay.on{display:flex}
+.modal{background:#fff;border-radius:16px;padding:24px;max-width:380px;width:100%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3)}
+.modal h3{margin:0 0 12px;font-size:18px}
+.modal p{margin:0 0 16px;font-size:14px;color:#666;line-height:1.5}
+.modal .btn{margin-bottom:8px}
+.modal .btn-ghost{background:#f3f0ea;color:#333}
+.ios-steps{text-align:left;font-size:13px;color:#555;background:#f8f6f1;padding:12px;border-radius:8px;margin-bottom:12px}
+.ios-steps ol{margin:0;padding-left:18px}
+.ios-steps li{margin-bottom:6px}
+
 @media (max-width:480px){
   .container{padding:12px}
   .card{padding:16px}
@@ -85,17 +107,24 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
 </style>
 </head>
 <body>
-<header><h1>STICHAI PRO</h1></header>
+<header style="position:relative">
+  <h1 id="appTitle">STICHAI PRO</h1>
+  <div class="lang-switch">
+    <button id="btnEn" onclick="setLang('en')">EN</button>
+    <button id="btnFr" onclick="setLang('fr')">FR</button>
+    <button id="btnAr" onclick="setLang('ar')">AR</button>
+  </div>
+</header>
 
 <div class="container">
 
   <!-- UPLOAD -->
   <div class="card">
-    <div class="stage-label">Step 1: Upload photo</div>
+    <div class="stage-label" data-t="step1">Step 1: Upload photo</div>
     <label class="dropzone" id="dz" for="fi">
       <input type="file" id="fi" accept="image/*">
-      <p><strong>📷 Click or drag photo here</strong></p>
-      <p style="font-size:12px;color:#999;margin:4px 0 0">JPG, PNG, WEBP — Max 10MB</p>
+      <p><strong data-t="uploadLabel">📷 Click or drag photo here</strong></p>
+      <p style="font-size:12px;color:#999;margin:4px 0 0" data-t="uploadHint">JPG, PNG, WEBP — Max 10MB</p>
     </label>
     <div class="photo-wrap" id="pw"><img id="oi" alt=""></div>
     <div id="st"></div>
@@ -103,100 +132,100 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
 
   <!-- MODE & SIZE & COLOR COUNT -->
   <div class="card" id="modeCard" style="display:none">
-    <div class="stage-label">Design Settings</div>
-    
-    <strong style="font-size:13px">Type</strong>
+    <div class="stage-label" data-t="designSettings">Design Settings</div>
+
+    <strong style="font-size:13px" data-t="typeLabel">Type</strong>
     <div class="mode-grid">
       <button class="mode-btn on" id="btnLogo" onclick="setMode('logo')">
         <div style="font-size:20px">🎨</div>
-        <div>Logo / Graphic</div>
-        <div style="font-size:11px;color:#999;font-weight:400">Best for text, cartoons</div>
+        <div data-t="modeLogo">Logo / Graphic</div>
+        <div style="font-size:11px;color:#999;font-weight:400" data-t="modeLogoDesc">Best for text, cartoons</div>
       </button>
       <button class="mode-btn" id="btnPhoto" onclick="setMode('photo')">
         <div style="font-size:20px">📷</div>
-        <div>Photo → Stylized</div>
-        <div style="font-size:11px;color:#999;font-weight:400">Converts to illustration</div>
+        <div data-t="modePhoto">Photo → Stylized</div>
+        <div style="font-size:11px;color:#999;font-weight:400" data-t="modePhotoDesc">Converts to illustration</div>
       </button>
     </div>
-    <div class="warning" id="photoWarning" style="display:none">
+    <div class="warning" id="photoWarning" style="display:none" data-t="photoWarn">
       ⚠️ Photos become graphic illustrations — not photorealistic. Face details (eyes, eyebrows) will be simplified.
     </div>
 
-    <strong style="font-size:13px;display:block;margin-top:16px">Colors to Extract</strong>
+    <strong style="font-size:13px;display:block;margin-top:16px" data-t="colorsExtract">Colors to Extract</strong>
     <div class="color-slider-wrap">
       <input type="range" id="cs" min="3" max="16" value="8" oninput="document.getElementById('csl').textContent=this.value">
       <span class="color-count-val" id="csl">8</span>
     </div>
-    <p style="font-size:11px;color:#999;margin:0 0 8px">More colors = more detail (eyes, eyebrows). Fewer = faster sew time.</p>
+    <p style="font-size:11px;color:#999;margin:0 0 8px" data-t="colorsHint">More colors = more detail (eyes, eyebrows). Fewer = faster sew time.</p>
 
-    <strong style="font-size:13px;display:block;margin-top:12px">Size</strong>
+    <strong style="font-size:13px;display:block;margin-top:12px" data-t="sizeLabel">Size</strong>
     <div class="size-grid">
       <button class="size-btn on" onclick="setSize('800',this)">
-        <div style="font-size:13px">Small</div>
+        <div style="font-size:13px" data-t="sizeSmall">Small</div>
         <div style="font-size:11px;color:#999">80mm</div>
       </button>
       <button class="size-btn" onclick="setSize('1600',this)">
-        <div style="font-size:13px">Large</div>
+        <div style="font-size:13px" data-t="sizeLarge">Large</div>
         <div style="font-size:11px;color:#999">160mm</div>
       </button>
       <button class="size-btn" onclick="setSize('2400',this)">
-        <div style="font-size:13px">X-Large</div>
+        <div style="font-size:13px" data-t="sizeXLarge">X-Large</div>
         <div style="font-size:11px;color:#999">240mm</div>
       </button>
     </div>
-    <div class="warning" id="sizeWarning" style="display:none;background:#fff3cd;color:#856404">
+    <div class="warning" id="sizeWarning" style="display:none;background:#fff3cd;color:#856404" data-t="sizeWarn">
       ⚠️ X-Large designs take 1–3 hours to sew and may take 30–60 seconds to generate.
     </div>
   </div>
 
   <!-- MASK -->
   <div class="card" id="mc" style="display:none">
-    <div class="stage-label">Step 2: Remove areas (optional)</div>
-    <p style="font-size:12px;color:#666;margin:0 0 8px">Paint <strong style="color:#e94560">RED</strong> over what you don't want stitched</p>
+    <div class="stage-label" data-t="step2">Step 2: Remove areas (optional)</div>
+    <p style="font-size:12px;color:#666;margin:0 0 8px" data-t="maskHint">Paint <strong style="color:#e94560">RED</strong> over what you don't want stitched</p>
     <div class="mask-wrap" id="mw">
       <canvas id="c1"></canvas>
       <canvas id="c2"></canvas>
     </div>
     <div class="tools">
-      <button class="on" id="bB" onclick="setTool('brush',this)">🖌️ Remove</button>
-      <button id="bE" onclick="setTool('eraser',this)">❌ Undo</button>
-      <button onclick="clearMask()">🗑️ Clear</button>
+      <button class="on" id="bB" onclick="setTool('brush',this)" data-t="toolRemove">🖌️ Remove</button>
+      <button id="bE" onclick="setTool('eraser',this)" data-t="toolUndo">❌ Undo</button>
+      <button onclick="clearMask()" data-t="toolClear">🗑️ Clear</button>
       <button onclick="setBrushSize(15,this)">S</button>
       <button class="on" onclick="setBrushSize(35,this)">M</button>
       <button onclick="setBrushSize(70,this)">L</button>
       <button onclick="setBrushSize(120,this)">XL</button>
     </div>
-    <button class="btn" id="aB" onclick="analyze()" style="padding:14px;font-size:16px">🔍 Analyze</button>
+    <button class="btn" id="aB" onclick="analyze()" style="padding:14px;font-size:16px">🔍 <span data-t="analyze">Analyze</span></button>
   </div>
 
   <!-- SELECT -->
   <div class="card" id="sc" style="display:none">
-    <div class="stage-label">Step 3: Select colors & shapes</div>
-    <p style="font-size:12px;color:#666;margin:0 0 8px">Uncheck what you don't want stitched</p>
+    <div class="stage-label" data-t="step3">Step 3: Select colors & shapes</div>
+    <p style="font-size:12px;color:#666;margin:0 0 8px" data-t="selectHint">Uncheck what you don't want stitched</p>
 
-    <strong style="font-size:13px">Colors</strong>
-    <div class="btns"><button class="btn btn-secondary btn-sm" onclick="allC(1)">All</button><button class="btn btn-secondary btn-sm" onclick="allC(0)">None</button></div>
+    <strong style="font-size:13px" data-t="colorsLabel">Colors</strong>
+    <div class="btns"><button class="btn btn-secondary btn-sm" onclick="allC(1)" data-t="all">All</button><button class="btn btn-secondary btn-sm" onclick="allC(0)" data-t="none">None</button></div>
     <div class="color-grid" id="cg"></div>
 
-    <strong style="font-size:13px;display:block;margin-top:12px">Shapes (<span id="sn">0</span>)</strong>
-    <div class="btns"><button class="btn btn-secondary btn-sm" onclick="allS(1)">All</button><button class="btn btn-secondary btn-sm" onclick="allS(0)">None</button></div>
+    <strong style="font-size:13px;display:block;margin-top:12px"><span data-t="shapesLabel">Shapes</span> (<span id="sn">0</span>)</strong>
+    <div class="btns"><button class="btn btn-secondary btn-sm" onclick="allS(1)" data-t="all">All</button><button class="btn btn-secondary btn-sm" onclick="allS(0)" data-t="none">None</button></div>
     <div class="shape-grid" id="sg"></div>
 
     <div style="margin-top:12px;padding:12px;background:#f8f6f1;border-radius:8px">
-      <strong style="font-size:13px">Machine Specs</strong>
+      <strong style="font-size:13px" data-t="machineSpecs">Machine Specs</strong>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:8px">
-        <select id="fb"><option value="cotton">Cotton</option><option value="denim">Denim</option><option value="fleece">Fleece</option><option value="twill">Twill</option><option value="satin">Satin</option><option value="leather">Leather</option><option value="towel">Towel</option></select>
+        <select id="fb"><option value="cotton" data-t="fabCotton">Cotton</option><option value="denim">Denim</option><option value="fleece">Fleece</option><option value="twill">Twill</option><option value="satin">Satin</option><option value="leather">Leather</option><option value="towel">Towel</option></select>
         <select id="mb"><option value="tajima">Tajima</option><option value="brother">Brother</option><option value="barudan">Barudan</option><option value="generic">Generic</option></select>
         <select id="hp"><option value="4x4">4x4</option><option value="5x7" selected>5x7</option><option value="6x10">6x10</option><option value="8x8">8x8</option><option value="8x12">8x12</option></select>
-        <select id="ds"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select>
+        <select id="ds"><option value="low" data-t="denLow">Low</option><option value="medium" selected data-t="denMedium">Medium</option><option value="high" data-t="denHigh">High</option></select>
       </div>
     </div>
-    <button class="btn" id="gB" onclick="generate()" style="margin-top:12px;padding:14px;font-size:16px">⚡ Generate</button>
+    <button class="btn" id="gB" onclick="generate()" style="margin-top:12px;padding:14px;font-size:16px">⚡ <span data-t="generate">Generate</span></button>
   </div>
 
   <!-- RESULTS -->
   <div class="card" id="rc" style="display:none">
-    <div class="stage-label">Step 4: Preview & Download</div>
+    <div class="stage-label" data-t="step4">Step 4: Preview & Download</div>
     <div class="photo-wrap" id="rpw" style="display:block;max-width:800px"><img id="ri" alt="Preview" style="display:block;width:100%"></div>
     <div class="meta" id="rm"></div>
     <div class="sew-time" id="sew"></div>
@@ -204,14 +233,384 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
       <select id="fs">
         <option value="dst">DST (Tajima — Universal)</option>
       </select>
-      <button class="btn btn-secondary" onclick="dl()">⬇ Download</button>
+      <button class="btn btn-secondary" onclick="dl()">⬇ <span data-t="download">Download</span></button>
     </div>
-    <p style="font-size:11px;color:#999;margin-top:8px">DST is the universal embroidery format. Convert to PES/JEF using your machine software if needed.</p>
+    <p style="font-size:11px;color:#999;margin-top:8px" data-t="dstNote">DST is the universal embroidery format. Convert to PES/JEF using your machine software if needed.</p>
   </div>
 
 </div>
 
+<!-- Install Prompt Modal -->
+<div class="modal-overlay" id="installModal">
+  <div class="modal">
+    <h3 id="imTitle">📲 Add to Home Screen</h3>
+    <p id="imBody">Get faster access to Stichai Pro by adding it to your home screen.</p>
+    <div class="ios-steps" id="iosSteps" style="display:none">
+      <ol>
+        <li id="ios1">Tap the Share button in Safari</li>
+        <li id="ios2">Scroll down and tap "Add to Home Screen"</li>
+        <li id="ios3">Tap "Add" in the top right</li>
+      </ol>
+    </div>
+    <button class="btn" id="imBtnAdd" onclick="installApp()">Add to Home Screen</button>
+    <button class="btn btn-ghost" id="imBtnLater" onclick="closeInstallModal()">Maybe later</button>
+  </div>
+</div>
+
 <script>
+/* ═══════════════════════════════════════════════════════════════
+   TRANSLATIONS
+   ═══════════════════════════════════════════════════════════════ */
+var T = {
+  en: {
+    appTitle:"STICHAI PRO",
+    step1:"Step 1: Upload photo",
+    uploadLabel:"📷 Click or drag photo here",
+    uploadHint:"JPG, PNG, WEBP — Max 10MB",
+    designSettings:"Design Settings",
+    typeLabel:"Type",
+    modeLogo:"Logo / Graphic",
+    modeLogoDesc:"Best for text, cartoons",
+    modePhoto:"Photo → Stylized",
+    modePhotoDesc:"Converts to illustration",
+    photoWarn:"⚠️ Photos become graphic illustrations — not photorealistic. Face details (eyes, eyebrows) will be simplified.",
+    colorsExtract:"Colors to Extract",
+    colorsHint:"More colors = more detail (eyes, eyebrows). Fewer = faster sew time.",
+    sizeLabel:"Size",
+    sizeSmall:"Small",
+    sizeLarge:"Large",
+    sizeXLarge:"X-Large",
+    sizeWarn:"⚠️ X-Large designs take 1–3 hours to sew and may take 30–60 seconds to generate.",
+    step2:"Step 2: Remove areas (optional)",
+    maskHint:"Paint RED over what you don't want stitched",
+    toolRemove:"🖌️ Remove",
+    toolUndo:"❌ Undo",
+    toolClear:"🗑️ Clear",
+    analyze:"Analyze",
+    step3:"Step 3: Select colors & shapes",
+    selectHint:"Uncheck what you don't want stitched",
+    colorsLabel:"Colors",
+    all:"All",
+    none:"None",
+    shapesLabel:"Shapes",
+    machineSpecs:"Machine Specs",
+    fabCotton:"Cotton",
+    denLow:"Low",
+    denMedium:"Medium",
+    denHigh:"High",
+    generate:"Generate",
+    step4:"Step 4: Preview & Download",
+    download:"Download",
+    dstNote:"DST is the universal embroidery format. Convert to PES/JEF using your machine software if needed.",
+    errFileType:"Please upload an image file (JPG, PNG, WEBP)",
+    errFileSize:"File too large — max 10MB",
+    ready:"Ready:",
+    analyzing:"Analyzing...",
+    generating:"Generating embroidery file...",
+    done:"✅ Done! Download your file below.",
+    errHttp:"HTTP",
+    errInvalid:"Invalid response",
+    errUnknown:"Unknown error",
+    errNetwork:"Network error",
+    errNoRegions:"No stitchable regions found",
+    errNoStitches:"Not enough stitches — select more shapes or check contrast",
+    errNoRegionsLeft:"No regions left after selection — select more colors/shapes",
+    selColor:"Select at least one color",
+    selShape:"Select at least one shape",
+    keepColor:"Keep at least one color selected",
+    shapeColorMismatch:"Shape #{n} is selected but its color is deselected. Please re-enable the color or uncheck the shape.",
+    foundShapes:"Found {n} shape{s}! Design size: {mm}mm",
+    stitchCount:"{n} stitches",
+    regionsCount:"{n} regions",
+    colorsCount:"{n} colors",
+    designSize:"{mm}mm design",
+    avgStitch:"avg stitch {n}mm",
+    sewTime:"⏱ Estimated sew time: {time} on {machine}",
+    installTitle:"📲 Add to Home Screen",
+    installBody:"Get faster access to Stichai Pro by adding it to your home screen.",
+    installBtn:"Add to Home Screen",
+    installLater:"Maybe later",
+    ios1:"Tap the Share button in Safari",
+    ios2:"Scroll down and tap "Add to Home Screen"",
+    ios3:"Tap "Add" in the top right"
+  },
+  fr: {
+    appTitle:"STICHAI PRO",
+    step1:"Étape 1 : Importer une photo",
+    uploadLabel:"📷 Cliquez ou glissez une photo ici",
+    uploadHint:"JPG, PNG, WEBP — Max 10 Mo",
+    designSettings:"Paramètres du design",
+    typeLabel:"Type",
+    modeLogo:"Logo / Graphique",
+    modeLogoDesc:"Idéal pour texte, dessins",
+    modePhoto:"Photo → Stylisée",
+    modePhotoDesc:"Convertit en illustration",
+    photoWarn:"⚠️ Les photos deviennent des illustrations graphiques — pas photoréalistes. Les détails du visage seront simplifiés.",
+    colorsExtract:"Couleurs à extraire",
+    colorsHint:"Plus de couleurs = plus de détails. Moins = couture plus rapide.",
+    sizeLabel:"Taille",
+    sizeSmall:"Petit",
+    sizeLarge:"Grand",
+    sizeXLarge:"Très grand",
+    sizeWarn:"⚠️ Les très grands designs prennent 1–3h à broder et 30–60s à générer.",
+    step2:"Étape 2 : Supprimer des zones (facultatif)",
+    maskHint:"Peignez en <strong style=\"color:#e94560\">ROUGE</strong> ce que vous ne voulez pas broder",
+    toolRemove:"🖌️ Supprimer",
+    toolUndo:"❌ Annuler",
+    toolClear:"🗑️ Effacer",
+    analyze:"🔍 Analyser",
+    step3:"Étape 3 : Sélectionner couleurs & formes",
+    selectHint:"Décochez ce que vous ne voulez pas broder",
+    colorsLabel:"Couleurs",
+    all:"Tout",
+    none:"Aucun",
+    shapesLabel:"Formes",
+    machineSpecs:"Spécifications machine",
+    fabCotton:"Coton",
+    denLow:"Faible",
+    denMedium:"Moyen",
+    denHigh:"Élevé",
+    generate:"⚡ Générer",
+    step4:"Étape 4 : Aperçu & Téléchargement",
+    download:"⬇ Télécharger",
+    dstNote:"DST est le format universel de broderie. Convertissez en PES/JEF avec le logiciel de votre machine si nécessaire.",
+    errFileType:"Veuillez importer une image (JPG, PNG, WEBP)",
+    errFileSize:"Fichier trop volumineux — max 10 Mo",
+    ready:"Prêt :",
+    analyzing:"Analyse en cours...",
+    generating:"Génération du fichier de broderie...",
+    done:"✅ Terminé ! Téléchargez votre fichier ci-dessous.",
+    errHttp:"HTTP",
+    errInvalid:"Réponse invalide",
+    errUnknown:"Erreur inconnue",
+    errNetwork:"Erreur réseau",
+    errNoRegions:"Aucune zone brodable trouvée",
+    errNoStitches:"Pas assez de points — sélectionnez plus de formes ou vérifiez le contraste",
+    errNoRegionsLeft:"Aucune zone restante après sélection — sélectionnez plus de couleurs/formes",
+    selColor:"Sélectionnez au moins une couleur",
+    selShape:"Sélectionnez au moins une forme",
+    keepColor:"Gardez au moins une couleur sélectionnée",
+    shapeColorMismatch:"La forme #{n} est sélectionnée mais sa couleur est désélectionnée. Veuillez réactiver la couleur ou décocher la forme.",
+    foundShapes:"{n} forme{s} trouvée{s}! Taille du design : {mm} mm",
+    stitchCount:"{n} points",
+    regionsCount:"{n} zones",
+    colorsCount:"{n} couleurs",
+    designSize:"Design de {mm} mm",
+    avgStitch:"point moyen {n} mm",
+    sewTime:"⏱ Temps de couture estimé : {time} sur {machine}",
+    installTitle:"📲 Ajouter à l'écran d'accueil",
+    installBody:"Accédez plus rapidement à Stichai Pro en l'ajoutant à votre écran d'accueil.",
+    installBtn:"Ajouter à l'écran d'accueil",
+    installLater:"Plus tard",
+    ios1:"Appuyez sur le bouton Partager dans Safari",
+    ios2:"Faites défiler vers le bas et appuyez sur "Ajouter à l'écran d'accueil"",
+    ios3:"Appuyez sur "Ajouter" en haut à droite"
+  },
+  ar: {
+    appTitle:"ستيشاي برو",
+    step1:"الخطوة ١: رفع صورة",
+    uploadLabel:"📷 انقر أو اسحب صورة هنا",
+    uploadHint:"JPG, PNG, WEBP — الحد الأقصى ١٠ ميجا",
+    designSettings:"إعدادات التصميم",
+    typeLabel:"النوع",
+    modeLogo:"شعار / رسومي",
+    modeLogoDesc:"الأفضل للنصوص والرسوم الكرتونية",
+    modePhoto:"صورة → ت stylized",
+    modePhotoDesc:"تحويل إلى رسم توضيحي",
+    photoWarn:"⚠️ الصور تصبح رسومات توضيحية — ليست واقعية. تفاصيل الوجه ستُبسَّط.",
+    colorsExtract:"الألوان المطلوب استخراجها",
+    colorsHint:"مزيد من الألوان = تفاصيل أكثر. أقل = وقت تطريز أسرع.",
+    sizeLabel:"الحجم",
+    sizeSmall:"صغير",
+    sizeLarge:"كبير",
+    sizeXLarge:"كبير جداً",
+    sizeWarn:"⚠️ التصاميم الكبيرة جداً تستغرق ١–٣ ساعات للتطريز و٣٠–٦٠ ثانية للإنشاء.",
+    step2:"الخطوة ٢: إزالة مناطق (اختياري)",
+    maskHint:"ارسم <strong style=\"color:#e94560\">بالأحمر</strong> فوق ما لا تريد تطريزه",
+    toolRemove:"🖌️ إزالة",
+    toolUndo:"❌ تراجع",
+    toolClear:"🗑️ مسح",
+    analyze:"🔍 تحليل",
+    step3:"الخطوة ٣: اختيار الألوان والأشكال",
+    selectHint:"ألغِ تحديد ما لا تريد تطريزه",
+    colorsLabel:"الألوان",
+    all:"الكل",
+    none:"لا شيء",
+    shapesLabel:"الأشكال",
+    machineSpecs:"مواصفات الماكينة",
+    fabCotton:"قطن",
+    denLow:"منخفض",
+    denMedium:"متوسط",
+    denHigh:"عالي",
+    generate:"⚡ إنشاء",
+    step4:"الخطوة ٤: معاينة وتنزيل",
+    download:"⬇ تنزيل",
+    dstNote:"DST هو تنسيق التطريز العالمي. حوّل إلى PES/JEF باستخدام برنامج الماكينة إذا لزم الأمر.",
+    errFileType:"يرجى رفع ملف صورة (JPG, PNG, WEBP)",
+    errFileSize:"الملف كبير جداً — الحد الأقصى ١٠ ميجا",
+    ready:"جاهز:",
+    analyzing:"جاري التحليل...",
+    generating:"جاري إنشاء ملف التطريز...",
+    done:"✅ تم! قم بتنزيل ملفك أدناه.",
+    errHttp:"HTTP",
+    errInvalid:"استجابة غير صالحة",
+    errUnknown:"خطأ غير معروف",
+    errNetwork:"خطأ في الشبكة",
+    errNoRegions:"لم يُعثر على مناطق قابلة للتطريز",
+    errNoStitches:"نقاط غير كافية — اختر المزيد من الأشكال أو تحقق من التباين",
+    errNoRegionsLeft:"لا توجد مناطق متبقية بعد التحديد — اختر المزيد من الألوان/الأشكال",
+    selColor:"اختر لوناً واحداً على الأقل",
+    selShape:"اختر شكلاً واحداً على الأقل",
+    keepColor:"احتفظ بلون واحد على الأقل محدداً",
+    shapeColorMismatch:"الشكل #{n} محدد لكن لونه غير محدد. يرجى إعادة تفعيل اللون أو إلغاء تحديد الشكل.",
+    foundShapes:"تم العثور على {n} شكل{s}! حجم التصميم: {mm} ملم",
+    stitchCount:"{n} غرزة",
+    regionsCount:"{n} منطقة",
+    colorsCount:"{n} ألوان",
+    designSize:"تصميم {mm} ملم",
+    avgStitch:"متوسط الغرزة {n} ملم",
+    sewTime:"⏱ وقت التطريز المُقدَّر: {time} على {machine}",
+    installTitle:"📲 إضافة إلى الشاشة الرئيسية",
+    installBody:"احصل على وصول أسرع إلى ستيشاي برو بإضافته إلى شاشتك الرئيسية.",
+    installBtn:"إضافة إلى الشاشة الرئيسية",
+    installLater:"لاحقاً",
+    ios1:"اضغط على زر المشاركة في Safari",
+    ios2:"مرر للأسفل واضغط على "إضافة إلى الشاشة الرئيسية"",
+    ios3:"اضغط على "إضافة" في الأعلى يمين"
+  }
+};
+
+var currentLang = 'en';
+var deferredPrompt = null;
+
+/* ─── IP LANGUAGE DETECTION ────────────────────────────── */
+function detectLanguage() {
+  // Arabic countries (priority)
+  var arabicCountries = ['SA','AE','EG','QA','KW','BH','OM','JO','IQ','LY','SD','SY','YE','PS','LB','MR','SO','DJ','KM','TD','NE','ML','MR','DZ','MA','TN'];
+  // Francophone countries
+  var frenchCountries = ['FR','BE','CH','LU','MC','CA','SN','CI','ML','BF','NE','TG','BJ','GN','CD','CG','GA','CM','TD','CF','GQ','RW','BI','MG','KM','MU','SC','HT','NC','PF','WF','PM','GF','RE','YT','BL','MF','GP','MQ'];
+
+  fetch('https://ipapi.co/json/')
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      var cc = (data.country_code || '').toUpperCase();
+      if(arabicCountries.indexOf(cc) !== -1){
+        setLang('ar');
+      } else if(frenchCountries.indexOf(cc) !== -1){
+        setLang('fr');
+      } else {
+        setLang('en');
+      }
+    })
+    .catch(function(){
+      // Fallback to browser language
+      var nav = navigator.language || navigator.userLanguage || 'en';
+      if(nav.indexOf('ar') === 0) setLang('ar');
+      else if(nav.indexOf('fr') === 0) setLang('fr');
+      else setLang('en');
+    });
+}
+
+/* ─── LANGUAGE SWITCHER ────────────────────────────────── */
+function setLang(lang) {
+  currentLang = lang;
+  document.documentElement.lang = lang;
+  document.body.setAttribute('dir', lang === 'ar' ? 'rtl' : 'ltr');
+
+  // Update buttons
+  document.getElementById('btnEn').className = lang === 'en' ? 'on' : '';
+  document.getElementById('btnFr').className = lang === 'fr' ? 'on' : '';
+  document.getElementById('btnAr').className = lang === 'ar' ? 'on' : '';
+
+  // Update all data-t elements
+  var els = document.querySelectorAll('[data-t]');
+  for(var i=0;i<els.length;i++){
+    var key = els[i].getAttribute('data-t');
+    if(T[lang] && T[lang][key]){
+      els[i].innerHTML = T[lang][key];
+    }
+  }
+
+  // Update dynamic texts if they exist
+  updateDynamicTexts();
+}
+
+function t(key, vars) {
+  var str = (T[currentLang] && T[currentLang][key]) || (T['en'] && T['en'][key]) || key;
+  if(vars){
+    for(var k in vars){
+      str = str.split('{'+k+'}').join(vars[k]);
+    }
+  }
+  return str;
+}
+
+function updateDynamicTexts() {
+  // Re-apply to buttons that may have been changed by JS
+  var ab = document.getElementById('aB');
+  if(ab) ab.innerHTML = '🔍 <span data-t="analyze">' + t('analyze') + '</span>';
+  var gb = document.getElementById('gB');
+  if(gb && !gb.disabled) gb.innerHTML = '⚡ <span data-t="generate">' + t('generate') + '</span>';
+}
+
+/* ─── PWA INSTALL PROMPT ───────────────────────────────── */
+window.addEventListener('beforeinstallprompt', function(e) {
+  e.preventDefault();
+  deferredPrompt = e;
+});
+
+function showInstallModal() {
+  var modal = document.getElementById('installModal');
+  var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+  document.getElementById('imTitle').textContent = t('installTitle');
+  document.getElementById('imBody').textContent = t('installBody');
+  document.getElementById('imBtnAdd').textContent = t('installBtn');
+  document.getElementById('imBtnLater').textContent = t('installLater');
+
+  if(isIOS){
+    document.getElementById('iosSteps').style.display = 'block';
+    document.getElementById('imBtnAdd').style.display = 'none';
+    document.getElementById('ios1').textContent = t('ios1');
+    document.getElementById('ios2').textContent = t('ios2');
+    document.getElementById('ios3').textContent = t('ios3');
+  } else {
+    document.getElementById('iosSteps').style.display = 'none';
+    document.getElementById('imBtnAdd').style.display = 'inline-block';
+    if(!deferredPrompt){
+      document.getElementById('imBtnAdd').style.display = 'none';
+      document.getElementById('imBody').textContent = (currentLang === 'ar' ? 'التطبيق مثبت بالفعل أو متصفحك لا يدعم التثبيت.' : currentLang === 'fr' ? 'L\'application est déjà installée ou votre navigateur ne prend pas en charge l\'installation.' : 'App is already installed or your browser does not support installation.');
+    }
+  }
+
+  modal.classList.add('on');
+}
+
+function closeInstallModal() {
+  document.getElementById('installModal').classList.remove('on');
+}
+
+function installApp() {
+  if(!deferredPrompt) return;
+  deferredPrompt.prompt();
+  deferredPrompt.userChoice.then(function(choice){
+    if(choice.outcome === 'accepted'){
+      deferredPrompt = null;
+    }
+    closeInstallModal();
+  });
+}
+
+/* ─── SERVICE WORKER REGISTRATION ──────────────────────── */
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('/sw.js').catch(function(err){
+    console.log('SW registration failed:', err);
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ORIGINAL APP CODE (with translation hooks added)
+   ═══════════════════════════════════════════════════════════════ */
 var CN={"#000000":"Black","#FFFFFF":"White","#FF0000":"Red","#00FF00":"Green","#0000FF":"Blue","#FFFF00":"Yellow","#FF00FF":"Magenta","#00FFFF":"Cyan","#FFA500":"Orange","#800080":"Purple","#FFC0CB":"Pink","#A52A2A":"Brown","#808080":"Gray","#C0C0C0":"Silver","#FFD700":"Gold","#F5F5DC":"Beige","#20B2AA":"Light Sea Green","#87CEEB":"Sky Blue","#DDA0DD":"Plum","#F0E68C":"Khaki","#D2B48C":"Tan","#FF69B4":"Hot Pink","#CD853F":"Peru","#4682B4":"Steel Blue","#9ACD32":"Yellow Green","#D2691E":"Chocolate","#DC143C":"Crimson","#4B0082":"Indigo","#FF1493":"Deep Pink","#00CED1":"Dark Turquoise","#FF4500":"Orange Red","#2E8B57":"Sea Green","#9370DB":"Medium Purple","#FF6347":"Tomato","#40E0D0":"Turquoise","#EE82EE":"Violet","#F4A460":"Sandy Brown","#8B4513":"Saddle Brown","#2F4F4F":"Dark Slate Gray","#E9967A":"Dark Salmon","#483D8B":"Dark Slate Blue","#B22222":"Fire Brick","#228B22":"Forest Green","#6B8E23":"Olive Drab","#BC8F8F":"Rosy Brown","#4169E1":"Royal Blue","#8B0000":"Dark Red","#556B2F":"Dark Olive Green","#8FBC8F":"Dark Sea Green","#B8860B":"Dark Goldenrod","#BDB76B":"Dark Khaki","#DEB887":"Burlywood","#5F9EA0":"Cadet Blue","#7FFF00":"Chartreuse","#FF7F50":"Coral","#6495ED":"Cornflower Blue","#00008B":"Dark Blue","#008B8B":"Dark Cyan","#A9A9A9":"Dark Gray","#006400":"Dark Green","#696969":"Dim Gray","#1E90FF":"Dodger Blue","#F0FFFF":"Azure","#F5F5F5":"White Smoke","#FFE4C4":"Bisque","#8A2BE2":"Blue Violet","#A0522D":"Sienna","#FAEBD7":"Antique White","#7FFFD4":"Aquamarine","#F0F8FF":"Alice Blue","#E0FFFF":"Light Cyan","#FAFAD2":"Light Goldenrod","#D3D3D3":"Light Gray","#FFB6C1":"Light Pink","#FFA07A":"Light Salmon","#87CEFA":"Light Sky Blue","#778899":"Light Slate Gray","#B0C4DE":"Light Steel Blue","#FFFFE0":"Light Yellow","#32CD32":"Lime Green","#66CDAA":"Medium Aquamarine","#0000CD":"Medium Blue","#BA55D3":"Medium Orchid","#3CB371":"Medium Sea Green","#7B68EE":"Medium Slate Blue","#00FA9A":"Medium Spring Green","#48D1CC":"Medium Turquoise","#C71585":"Medium Violet Red","#191970":"Midnight Blue","#F5FFFA":"Mint Cream","#FFE4E1":"Misty Rose","#FFE4B5":"Moccasin","#FFDEAD":"Navajo White","#000080":"Navy","#FFEFD5":"Papaya Whip","#FFDAB9":"Peach Puff","#B0E0E6":"Powder Blue","#800000":"Maroon","#E6E6FA":"Lavender","#F08080":"Light Coral","#ADD8E6":"Light Blue"};
 function gN(h){var u=h.toUpperCase();if(CN[u])return CN[u];var r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16),bn=null,bd=999;for(var k in CN){var r2=parseInt(k.slice(1,3),16),g2=parseInt(k.slice(3,5),16),b2=parseInt(k.slice(5,7),16);var d=Math.abs(r-r2)+Math.abs(g-g2)+Math.abs(b-b2);if(d<bd){bd=d;bn=CN[k]}}return bn||h}
 
@@ -234,15 +633,15 @@ dz.addEventListener('drop', function(e){
 
 function handleFile(f){
   if(!f.type.match(/^image\//)){
-    document.getElementById('st').innerHTML='<div class="error">Please upload an image file (JPG, PNG, WEBP)</div>';
+    document.getElementById('st').innerHTML='<div class="error">'+t('errFileType')+'</div>';
     return;
   }
   if(f.size > 10*1024*1024){
-    document.getElementById('st').innerHTML='<div class="error">File too large — max 10MB</div>';
+    document.getElementById('st').innerHTML='<div class="error">'+t('errFileSize')+'</div>';
     return;
   }
   cf=f;
-  document.getElementById('st').innerHTML='<p class="ok">Ready: <strong>'+f.name+'</strong> ('+(f.size/1024).toFixed(0)+'KB)</p>';
+  document.getElementById('st').innerHTML='<p class="ok">'+t('ready')+' <strong>'+f.name+'</strong> ('+(f.size/1024).toFixed(0)+'KB)</p>';
   var r=new FileReader();
   r.onload=function(e){
     cdu=e.target.result;
@@ -275,7 +674,6 @@ function setSize(s,btn){
   document.getElementById('sizeWarning').style.display=s==='2400'?'block':'none';
 }
 
-// FIX v48: contain-fit with white background — matches server preprocessing exactly
 function initMask(u){
   var i=new Image();
   i.onload=function(){
@@ -285,14 +683,14 @@ function initMask(u){
     mX=c2.getContext('2d');
     c1.width=800; c1.height=800;
     c2.width=800; c2.height=800;
-    
+
     mC.fillStyle='#FFFFFF';
     mC.fillRect(0,0,800,800);
     var scale=Math.min(800/i.width,800/i.height);
     var dw=i.width*scale,dh=i.height*scale;
     var dx=(800-dw)/2,dy=(800-dh)/2;
     mC.drawImage(i,dx,dy,dw,dh);
-    
+
     mX.clearRect(0,0,800,800);
     document.getElementById('mw').className='mask-wrap on';
     document.getElementById('mc').style.display='block';
@@ -336,7 +734,7 @@ function analyze(){
   if(!cf)return;
   var btn=document.getElementById('aB');
   btn.disabled=true;
-  document.getElementById('st').innerHTML='<p>Analyzing...</p>';
+  document.getElementById('st').innerHTML='<p>'+t('analyzing')+'</p>';
   var fd=new FormData();
   fd.append('image',cf);
   fd.append('mode',designMode);
@@ -356,10 +754,10 @@ function doAnalyze(fd){
   xhr.open('POST','/detect-shapes',true);
   xhr.onload=function(){
     document.getElementById('aB').disabled=false;
-    if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">HTTP '+xhr.status+'</div>';return}
+    if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">'+t('errHttp')+' '+xhr.status+'</div>';return}
     var d;
-    try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">Invalid response</div>';return}
-    if(!d.success){document.getElementById('st').innerHTML='<div class="error">'+(d.error||'Unknown error')+'</div>';return}
+    try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">'+t('errInvalid')+'</div>';return}
+    if(!d.success){document.getElementById('st').innerHTML='<div class="error">'+(d.error||t('errUnknown'))+'</div>';return}
     dd=d;ci=d.detectionId;
 
     var cg=document.getElementById('cg');
@@ -386,13 +784,13 @@ function doAnalyze(fd){
 
     document.getElementById('sc').style.display='block';
     document.getElementById('sc').scrollIntoView({behavior:'smooth'});
-    document.getElementById('st').innerHTML='<p class="ok">Found '+d.shapes.length+' shape'+(d.shapes.length!==1?'s':'')+'! Design size: '+d.designMm+'mm</p>';
+    var s = d.shapes.length !== 1 ? 's' : '';
+    document.getElementById('st').innerHTML='<p class="ok">'+t('foundShapes',{n:d.shapes.length,s:s,mm:d.designMm})+'</p>';
   };
-  xhr.onerror=function(){document.getElementById('aB').disabled=false;document.getElementById('st').innerHTML='<div class="error">Network error</div>'};
+  xhr.onerror=function(){document.getElementById('aB').disabled=false;document.getElementById('st').innerHTML='<div class="error">'+t('errNetwork')+'</div>'};
   xhr.send(fd);
 }
 
-// FIX v48: disable shape checkboxes when their color is deselected
 function tC(i){
   var el=document.getElementById('ci-'+i);
   el.classList.toggle('on');
@@ -404,14 +802,13 @@ function tC(i){
       var cb=rows[j].querySelector('input[type=checkbox]');
       cb.checked=on;
       rows[j].classList.toggle('off',!on);
-      cb.disabled=!on; // prevent manual re-check of orphaned shape
+      cb.disabled=!on;
     }
   }
 }
 
 function tS(i){var cb=document.getElementById('cb-'+i);document.getElementById('si-'+i).classList.toggle('off',!cb.checked)}
 
-// FIX v48: prevent deselecting the last remaining color
 function allC(on){
   if(!on){
     var anyOtherOn=false;
@@ -419,7 +816,7 @@ function allC(on){
       if(document.getElementById('ci-'+i).classList.contains('on')) anyOtherOn=true;
     }
     if(!anyOtherOn){
-      alert('Keep at least one color selected');
+      alert(t('keepColor'));
       return;
     }
   }
@@ -433,11 +830,9 @@ function allC(on){
 
 function allS(on){var rows=document.querySelectorAll('.s-item');for(var i=0;i<rows.length;i++){rows[i].querySelector('input[type=checkbox]').checked=on;rows[i].classList.toggle('off',!on)}}
 
-// FIX v48: validate that every checked shape has its color selected
 function generate(){
   if(!ci||!dd)return;
-  
-  // Validation: every checked shape must have its color on
+
   for(var i=0;i<dd.shapes.length;i++){
     if(document.getElementById('cb-'+i).checked){
       var shapeColor=dd.shapes[i].color;
@@ -448,20 +843,20 @@ function generate(){
         }
       }
       if(!colorOn){
-        alert('Shape #'+(i+1)+' is selected but its color is deselected. Please re-enable the color or uncheck the shape.');
+        alert(t('shapeColorMismatch',{n:(i+1)}));
         return;
       }
     }
   }
-  
+
   var sc=[],ss=[];
   for(var i=0;i<dd.colors.length;i++){if(document.getElementById('ci-'+i).classList.contains('on'))sc.push(dd.colors[i])}
-  if(!sc.length){alert('Select at least one color');return}
+  if(!sc.length){alert(t('selColor'));return}
   for(var i=0;i<dd.shapes.length;i++){if(document.getElementById('cb-'+i).checked)ss.push(i)}
-  if(!ss.length){alert('Select at least one shape');return}
+  if(!ss.length){alert(t('selShape'));return}
   var btn=document.getElementById('gB');
-  btn.disabled=true;btn.textContent='Generating...';
-  document.getElementById('st').innerHTML='<p>Generating embroidery file...</p>';
+  btn.disabled=true;btn.textContent='⚡ '+t('generate');
+  document.getElementById('st').innerHTML='<p>'+t('generating')+'</p>';
 
   var fd=new FormData();
   fd.append('image',cf);
@@ -488,32 +883,35 @@ function doGen(fd,sc,ss,btn){
   var xhr=new XMLHttpRequest();
   xhr.open('POST','/generate-embroidery',true);
   xhr.onload=function(){
-    btn.disabled=false;btn.textContent='\u26A1 Generate';
-    if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">HTTP '+xhr.status+'</div>';return}
+    btn.disabled=false;btn.textContent='⚡ '+t('generate');
+    if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">'+t('errHttp')+' '+xhr.status+'</div>';return}
     var d;
-    try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">Invalid response from server</div>';return}
-    if(!d.success){document.getElementById('st').innerHTML='<div class="error">'+(d.error||'Generation failed')+'</div>';return}
+    try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">'+t('errInvalid')+'</div>';return}
+    if(!d.success){document.getElementById('st').innerHTML='<div class="error">'+(d.error||t('errUnknown'))+'</div>';return}
 
     jid=d.id;
     document.getElementById('ri').src=d.previewImageUrl+'?t='+Date.now();
 
-    var meta=d.stitchCount.toLocaleString()+' stitches · '+d.shapes.length+' regions · '+d.colors.length+' colors · '+d.designSize.mm+'mm design';
-    if(d.qa&&d.qa.avgStitchMM) meta+=' · avg stitch '+d.qa.avgStitchMM+'mm';
+    var meta=t('stitchCount',{n:d.stitchCount.toLocaleString()})+' · '+t('regionsCount',{n:d.shapes.length})+' · '+t('colorsCount',{n:d.colors.length})+' · '+t('designSize',{mm:d.designSize.mm});
+    if(d.qa&&d.qa.avgStitchMM) meta+=' · '+t('avgStitch',{n:d.qa.avgStitchMM});
     document.getElementById('rm').textContent=meta;
 
-    var sewText = d.sewTime ? '\u23F1 Estimated sew time: ' + d.sewTime + ' on ' + (d.specs?.machine || 'generic') : '';
+    var sewText = d.sewTime ? t('sewTime',{time:d.sewTime,machine:(d.specs?.machine || 'generic')}) : '';
     document.getElementById('sew').textContent=sewText;
 
     document.getElementById('rc').style.display='block';
     document.getElementById('rc').scrollIntoView({behavior:'smooth'});
-    document.getElementById('st').innerHTML='<p class="ok">\u2705 Done! Download your file below.</p>';
+    document.getElementById('st').innerHTML='<p class="ok">'+t('done')+'</p>';
+
+    // Show install prompt after successful generation
+    setTimeout(showInstallModal, 800);
   };
-  xhr.onerror=function(){btn.disabled=false;btn.textContent='\u26A1 Generate';document.getElementById('st').innerHTML='<div class="error">Network error</div>'};
+  xhr.onerror=function(){btn.disabled=false;btn.textContent='⚡ '+t('generate');document.getElementById('st').innerHTML='<div class="error">'+t('errNetwork')+'</div>'};
   xhr.send(fd);
 }
 
 function dl(){
-  if(!jid){alert('Generate a design first before downloading.');return;}
+  if(!jid){alert(t('download'));return;}
   var a=document.createElement('a');
   a.href='/download/'+jid;
   a.download='design.dst';
@@ -521,6 +919,9 @@ function dl(){
   a.click();
   document.body.removeChild(a);
 }
+
+/* ─── INIT ─────────────────────────────────────────────── */
+detectLanguage();
 </script>
 </body>
 </html>
