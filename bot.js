@@ -1,14 +1,14 @@
 /**
- * Stichai v42 — Dynamic Canvas + Modes
- * ═══════════════════════════════════════════════════════
- *  FEATURES
- *  ──────────────────────────────────────────────────
- *  1. Dynamic canvas: 800px (80mm) / 1600px (160mm) / 2400px (240mm)
- *  2. Logo mode: 16-color solid fill
- *  3. Photo mode: 6-color posterize + edge-aware fill
- *  4. Pre-rendered preview (no timeout)
- *  5. Sew time calculator
- *  6. Native CORS, honest DST only
+ * Stichai v43 — Mask-Before-Quantize + Color Protection + Sharp-Only
+ * ═══════════════════════════════════════════════════════════════════
+ *  FIXES
+ *  ──────────────────────────────────────────────────────────────
+ *  1. Mask is composited onto the original image BEFORE color
+ *     quantization, so removed background can't steal palette slots.
+ *  2. Photo mode uses 10 colors instead of 6.
+ *  3. White & black are protected/injected if significant in image.
+ *  4. buildPixelMap uses Sharp instead of Jimp (no version crash).
+ *  5. Unmatched pixels are forced to nearest color — no holes.
  */
 
 "use strict";
@@ -41,10 +41,38 @@ const GEMINI_MODELS = [
 ];
 
 /* ─── CONSTANTS ───────────────────────────────────────────*/
-const DST_MAX      = 121;  // 12.1mm max jump
-const SMART_TRIM   = 30;   // 3.0mm
+const DST_MAX      = 121;
+const SMART_TRIM   = 30;
 const MIN_AREA     = 25;
-const PREVIEW_MAX  = 1200; // cap preview render size for speed
+const PREVIEW_MAX  = 1200;
+
+/* ─── COLOR UTILITIES ────────────────────────────────────*/
+function hexToRgb(hex) {
+  const m = (hex||"").match(/^#?([0-9a-fA-F]{6})$/);
+  if (!m) return {r:0,g:0,b:0};
+  return {r:parseInt(m[1].slice(0,2),16),g:parseInt(m[1].slice(2,4),16),b:parseInt(m[1].slice(4,6),16)};
+}
+function rgbToLab({r,g,b}) {
+  let R=r/255,G=g/255,B=b/255;
+  R=R>0.04045?((R+0.055)/1.055)**2.4:R/12.92;
+  G=G>0.04045?((G+0.055)/1.055)**2.4:G/12.92;
+  B=B>0.04045?((B+0.055)/1.055)**2.4:B/12.92;
+  const X=R*0.4124+G*0.3576+B*0.1805,Y=R*0.2126+G*0.7152+B*0.0722,Z=R*0.0193+G*0.1192+B*0.9505;
+  const f=t=>t>0.008856?Math.cbrt(t):7.787*t+16/116;
+  return{l:116*f(Y)-16,a:500*(f(X/0.95047)-f(Y)),b:200*(f(Y)-f(Z/1.08883))};
+}
+function dE(a,b){return Math.sqrt((a.l-b.l)**2+(a.a-b.a)**2+(a.b-b.b)**2);}
+function normHex(h){const m=(h||"").match(/^#?([0-9a-fA-F]{6})$/i);return m?`#${m[1].toUpperCase()}`:"#000000";}
+function dedupe(cols){
+  const out=[];
+  for(const c of cols){
+    const lab=rgbToLab(hexToRgb(c));
+    if(!out.some(u=>dE(lab,rgbToLab(hexToRgb(u)))<18))out.push(normHex(c));
+  }
+  return out;
+}
+function isNearWhite(hex){const {r,g,b}=hexToRgb(hex);return r>230&&g>230&&b>230;}
+function isNearBlack(hex){const {r,g,b}=hexToRgb(hex);return r<40&&g<40&&b<40;}
 
 /* ─── SPEC TUNING ─────────────────────────────────────────*/
 function getStitchParams(specs) {
@@ -96,36 +124,59 @@ function getStitchParams(specs) {
   return p;
 }
 
-/* ─── COLOR UTILITIES ────────────────────────────────────*/
-function hexToRgb(hex) {
-  const m = (hex||"").match(/^#?([0-9a-fA-F]{6})$/);
-  if (!m) return {r:0,g:0,b:0};
-  return {r:parseInt(m[1].slice(0,2),16),g:parseInt(m[1].slice(2,4),16),b:parseInt(m[1].slice(4,6),16)};
-}
-function rgbToLab({r,g,b}) {
-  let R=r/255,G=g/255,B=b/255;
-  R=R>0.04045?((R+0.055)/1.055)**2.4:R/12.92;
-  G=G>0.04045?((G+0.055)/1.055)**2.4:G/12.92;
-  B=B>0.04045?((B+0.055)/1.055)**2.4:B/12.92;
-  const X=R*0.4124+G*0.3576+B*0.1805,Y=R*0.2126+G*0.7152+B*0.0722,Z=R*0.0193+G*0.1192+B*0.9505;
-  const f=t=>t>0.008856?Math.cbrt(t):7.787*t+16/116;
-  return{l:116*f(Y)-16,a:500*(f(X/0.95047)-f(Y)),b:200*(f(Y)-f(Z/1.08883))};
-}
-function dE(a,b){return Math.sqrt((a.l-b.l)**2+(a.a-b.a)**2+(a.b-b.b)**2);}
-function normHex(h){const m=(h||"").match(/^#?([0-9a-fA-F]{6})$/i);return m?`#${m[1].toUpperCase()}`:"#000000";}
-function dedupe(cols){
-  const out=[];
-  for(const c of cols){
-    const lab=rgbToLab(hexToRgb(c));
-    if(!out.some(u=>dE(lab,rgbToLab(hexToRgb(u)))<18))out.push(normHex(c));
+/* ─── MASK COMPOSITE (apply BEFORE quantization) ─────────*/
+async function compositeMask(imageBuffer, maskBuffer, canvasSize) {
+  const maskRaw = await sharp(maskBuffer)
+    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const imgRaw = await sharp(imageBuffer)
+    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { data: mData, info: mInfo } = maskRaw;
+  const { data: iData, info: iInfo } = imgRaw;
+  const iCh = iInfo.channels;
+  const mCh = mInfo.channels;
+  const out = Buffer.from(iData);
+
+  let maskedPixels = 0;
+  for (let y = 0; y < canvasSize; y++) {
+    for (let x = 0; x < canvasSize; x++) {
+      const idx = y * canvasSize + x;
+      const iOff = idx * iCh;
+      const mOff = idx * mCh;
+
+      const mR = mData[mOff] || 0;
+      const mG = mData[mOff + 1] || 0;
+      const mB = mData[mOff + 2] || 0;
+      const mA = mCh >= 4 ? mData[mOff + 3] : 255;
+
+      const shouldRemove = mR > 140 && mG < 90 && mB < 90 && mA > 30;
+
+      if (shouldRemove) {
+        out[iOff] = 255;
+        out[iOff + 1] = 255;
+        out[iOff + 2] = 255;
+        if (iCh >= 4) out[iOff + 3] = 255;
+        maskedPixels++;
+      }
+    }
   }
-  return out;
+
+  console.log(`Mask composited: ${maskedPixels}px (${(maskedPixels / (canvasSize * canvasSize) * 100).toFixed(1)}%)`);
+
+  return await sharp(out, { raw: { width: canvasSize, height: canvasSize, channels: iCh } })
+    .png()
+    .toBuffer();
 }
 
 /* ─── IMAGE PRE-PROCESSING ───────────────────────────────*/
 async function preprocessImage(buffer, canvasSize, mode) {
-  const colorCount = mode === 'photo' ? 6 : 16;
-  
+  const colorCount = mode === 'photo' ? 10 : 16;
+
   const cleaned = await sharp(buffer)
     .resize(canvasSize, canvasSize, {fit:"contain",background:{r:255,g:255,b:255,alpha:1}})
     .median(2)
@@ -135,19 +186,37 @@ async function preprocessImage(buffer, canvasSize, mode) {
 
   const q = await sharp(cleaned).png({colours:colorCount,dither:0}).toBuffer();
   const {data,info} = await sharp(q).raw().toBuffer({resolveWithObject:true});
+
   const cm = new Map();
+  let brightPixels = 0;
+  let darkPixels = 0;
+
   for(let i=0;i<data.length;i+=info.channels){
-    const h="#"+[data[i],data[i+1],data[i+2]].map(c=>c.toString(16).padStart(2,"0")).join("").toUpperCase();
+    const r=data[i], g=data[i+1], b=data[i+2];
+    const h="#"+[r,g,b].map(c=>c.toString(16).padStart(2,"0")).join("").toUpperCase();
     cm.set(h,(cm.get(h)||0)+1);
+
+    if(r>240 && g>240 && b>240) brightPixels++;
+    if(r<25 && g<25 && b<25) darkPixels++;
   }
+
   const sorted  = [...cm.entries()].sort((a,b)=>b[1]-a[1]);
   const bgColor = sorted[0][0];
-  const fallback= sorted.slice(0,12).map(([h])=>h);
+  const totalPixels = canvasSize * canvasSize;
 
-  return {buffer:q, bgColor, bgLab:rgbToLab(hexToRgb(bgColor)), fallbackColors:fallback};
+  // Protect white & black: inject if significant but missing from palette
+  const fallback = sorted.map(([h]) => h);
+  if(brightPixels / totalPixels > 0.005 && !fallback.some(h => isNearWhite(h))) {
+    fallback.unshift('#FFFFFF');
+  }
+  if(darkPixels / totalPixels > 0.005 && !fallback.some(h => isNearBlack(h))) {
+    fallback.push('#000000');
+  }
+
+  return {buffer:q, bgColor, bgLab:rgbToLab(hexToRgb(bgColor)), fallbackColors:fallback.slice(0, colorCount)};
 }
 
-function cleanFallbackColors(rawColors) {
+function cleanFallbackColors(rawColors, maxColors = 12) {
   if(!rawColors.length) return ["#000000"];
   const merged=[];
   for(const c of rawColors){
@@ -155,66 +224,7 @@ function cleanFallbackColors(rawColors) {
     const mi=merged.findIndex(m=>dE(cLab,rgbToLab(hexToRgb(m)))<20);
     if(mi===-1) merged.push(normHex(c));
   }
-  return merged.slice(0,6);
-}
-
-/* ─── MASK APPLICATION ───────────────────────────────────*/
-async function applyUserMask(pre, maskBuffer, canvasSize) {
-  const maskRaw = await sharp(maskBuffer)
-    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const { data: mData, info: mInfo } = maskRaw;
-  const channels = mInfo.channels;
-  const bgRgb = hexToRgb(pre.bgColor);
-
-  const imgRaw = await sharp(pre.buffer)
-    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: bgRgb.r, g: bgRgb.g, b: bgRgb.b, alpha: 1 } })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const { data: iData, info: iInfo } = imgRaw;
-  const iCh = iInfo.channels;
-  const out = Buffer.alloc(canvasSize * canvasSize * iCh);
-
-  let maskedPixels = 0;
-  for (let y = 0; y < canvasSize; y++) {
-    for (let x = 0; x < canvasSize; x++) {
-      const idx = y * canvasSize + x;
-      const iOff = idx * iCh;
-      const mOff = idx * channels;
-
-      const mR = mData[mOff] || 0;
-      const mG = mData[mOff + 1] || 0;
-      const mB = mData[mOff + 2] || 0;
-      const mA = channels >= 4 ? mData[mOff + 3] : 255;
-
-      const shouldRemove = mR > 140 && mG < 90 && mB < 90 && mA > 30;
-
-      if (shouldRemove) {
-        out[iOff] = bgRgb.r;
-        out[iOff + 1] = bgRgb.g;
-        out[iOff + 2] = bgRgb.b;
-        if (iCh >= 4) out[iOff + 3] = 255;
-        maskedPixels++;
-      } else {
-        out[iOff] = iData[iOff];
-        out[iOff + 1] = iData[iOff + 1];
-        out[iOff + 2] = iData[iOff + 2];
-        if (iCh >= 4) out[iOff + 3] = iData[iOff + 3];
-      }
-    }
-  }
-
-  console.log(`Mask applied: ${maskedPixels}px (${(maskedPixels / (canvasSize * canvasSize) * 100).toFixed(1)}%)`);
-
-  const colorCount = pre.buffer === 'photo' ? 6 : 16;
-  const requant = await sharp(out, { raw: { width: canvasSize, height: canvasSize, channels: iCh } })
-    .png({ colours: colorCount, dither: 0 })
-    .toBuffer();
-
-  return { ...pre, buffer: requant };
+  return merged.slice(0, maxColors);
 }
 
 /* ─── GEMINI ─────────────────────────────────────────────*/
@@ -263,28 +273,36 @@ Return ONLY valid JSON, no markdown.
   }catch(e){console.error("Gemini JSON:",e.message);return null;}
 }
 
-/* ─── PIXEL MAP ──────────────────────────────────────────*/
+/* ─── PIXEL MAP (Sharp-based, no Jimp) ───────────────────*/
 async function buildPixelMap(buffer, colors, canvasSize) {
-  const Jimp  = require("jimp");
-  const image = await Jimp.read(buffer);
-  if(image.bitmap.width!==canvasSize||image.bitmap.height!==canvasSize)
-    image.resize(canvasSize,canvasSize);
+  const { data, info } = await sharp(buffer)
+    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
 
+  const channels = info.channels;
   const labC  = colors.map(c=>rgbToLab(hexToRgb(c)));
   const TOL   = 50;
   const pixMap= new Int16Array(canvasSize*canvasSize).fill(-1);
-  const imgD  = image.bitmap.data;
 
   for(let y=0;y<canvasSize;y++){
     for(let x=0;x<canvasSize;x++){
-      const i=(y*canvasSize+x)<<2;
-      const lab=rgbToLab({r:imgD[i],g:imgD[i+1],b:imgD[i+2]});
+      const i=(y*canvasSize+x)*channels;
+      const lab=rgbToLab({r:data[i],g:data[i+1],b:data[i+2]});
       let best=-1,bestD=TOL;
       for(let c=0;c<labC.length;c++){const d=dE(lab,labC[c]);if(d<bestD){bestD=d;best=c;}}
+
+      // FIX: force nearest color if nothing matched within TOL — prevents holes
+      if(best===-1 && labC.length>0){
+        bestD=Infinity;
+        for(let c=0;c<labC.length;c++){const d=dE(lab,labC[c]);if(d<bestD){bestD=d;best=c;}}
+      }
+
       pixMap[y*canvasSize+x]=best;
     }
   }
 
+  // Neighborhood fill for any remaining -1 (safety net)
   for(let y=1;y<canvasSize-1;y++){
     for(let x=1;x<canvasSize-1;x++){
       const idx=y*canvasSize+x;
@@ -296,6 +314,27 @@ async function buildPixelMap(buffer, colors, canvasSize) {
         const top=Object.entries(freq).sort((a,b)=>+b[1]-+a[1])[0];
         if(top&&+top[1]>=3)pixMap[idx]=+top[0];
       }
+    }
+  }
+
+  // Final sweep: spread nearest valid neighbor into any stubborn -1 pixels
+  for(let y=0;y<canvasSize;y++){
+    for(let x=0;x<canvasSize;x++){
+      const idx=y*canvasSize+x;
+      if(pixMap[idx]!==-1)continue;
+      let filled=false;
+      for(let r=1;r<20 && !filled;r++){
+        for(let dy=-r;dy<=r && !filled;dy++){
+          for(let dx=-r;dx<=r && !filled;dx++){
+            const ny=y+dy,nx=x+dx;
+            if(ny>=0&&ny<canvasSize&&nx>=0&&nx<canvasSize){
+              const ni=ny*canvasSize+nx;
+              if(pixMap[ni]!==-1){pixMap[idx]=pixMap[ni];filled=true;}
+            }
+          }
+        }
+      }
+      if(pixMap[idx]===-1)pixMap[idx]=0;
     }
   }
 
@@ -599,14 +638,12 @@ function calculateSewTime(stitchCount, trimCount, colorCount, machine) {
 
 /* ─── PREVIEW RENDERER ───────────────────────────────────*/
 async function renderPreview(pixMap, colors, stitches, params, canvasSize) {
-  // Render at capped size for speed, but DST is full resolution
   const renderSize = Math.min(canvasSize, PREVIEW_MAX);
   const scale = renderSize / canvasSize;
   
   const W = renderSize, H = renderSize;
   const buf = Buffer.alloc(W * H * 4);
 
-  // Fabric background
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const idx = (y * W + x) * 4;
@@ -678,7 +715,6 @@ async function renderPreview(pixMap, colors, stitches, params, canvasSize) {
     }
   }
 
-  // Scale stitches for preview
   const scaledStitches = stitches.map(s => ({
     ...s,
     x: s.x * scale,
@@ -728,7 +764,6 @@ async function renderPreview(pixMap, colors, stitches, params, canvasSize) {
     }
   }
 
-  // Crop using original pixMap bounds (scaled)
   let cminX = canvasSize, cmaxX = 0, cminY = canvasSize, cmaxY = 0;
   for (let y = 0; y < canvasSize; y++) {
     for (let x = 0; x < canvasSize; x++) {
@@ -837,22 +872,28 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
 
     console.log(`[${rid}] DETECT: mode=${mode} size=${canvasSize}px=${designMm}mm`);
 
-    let pre=await preprocessImage(imgFile.buffer, canvasSize, mode);
-    if(maskFile) pre=await applyUserMask(pre,maskFile.buffer, canvasSize);
+    // FIX: Apply mask BEFORE quantization so background can't steal palette slots
+    let workingBuffer = imgFile.buffer;
+    if(maskFile) workingBuffer = await compositeMask(imgFile.buffer, maskFile.buffer, canvasSize);
 
-    const gem=await analyzeWithGemini(imgFile.buffer,imgFile.mimetype||"image/png");
+    let pre = await preprocessImage(workingBuffer, canvasSize, mode);
+    const gem = await analyzeWithGemini(imgFile.buffer, imgFile.mimetype || "image/png");
 
     let colors;
-    if(gem&&gem.colors&&gem.colors.length>=1){
-      colors=gem.colors;
+    if(gem && gem.colors && gem.colors.length >= 1){
+      colors = gem.colors;
+      // Protect white/black in Gemini results too
+      if(!colors.some(c => isNearWhite(c))) colors.unshift('#FFFFFF');
+      if(!colors.some(c => isNearBlack(c))) colors.push('#000000');
+      colors = dedupe(colors);
     }else{
-      colors=cleanFallbackColors(pre.fallbackColors);
+      colors = cleanFallbackColors(pre.fallbackColors, mode === 'photo' ? 10 : 16);
     }
-    if(!colors.length) colors=["#000000"];
+    if(!colors.length) colors = ["#000000"];
 
-    const pixMap=await buildPixelMap(pre.buffer,colors,canvasSize);
-    const rawRegions=extractRegions(pixMap,colors,canvasSize);
-    const regions=mergeAdjacentRegions(rawRegions);
+    const pixMap = await buildPixelMap(pre.buffer, colors, canvasSize);
+    const rawRegions = extractRegions(pixMap, colors, canvasSize);
+    const regions = mergeAdjacentRegions(rawRegions);
 
     if(!regions.length){
       return res.status(500).json({error:"No stitchable regions found"});
@@ -865,9 +906,9 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
         bounds:{x:r.mnx,y:r.mny,w:r.mxx-r.mnx,h:r.mxy-r.mny},stitchCount:0});
     }
 
-    const detectionId=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
-    detections.set(detectionId,{
-      pixMap,regions,colors,pre,geminiNotes:gem?.notes||"",timestamp:Date.now(),mode,canvasSize
+    const detectionId = Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+    detections.set(detectionId, {
+      pixMap, regions, colors, pre, geminiNotes: gem?.notes || "", timestamp: Date.now(), mode, canvasSize
     });
 
     const colorInfo = {};
@@ -883,7 +924,7 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
       geminiNotes:gem?.notes||""
     });
   }catch(e){
-    console.error(`[${rid}] DETECT CRASH:`,e.message);
+    console.error(`[${rid}] DETECT CRASH:`,e.message, e.stack);
     return res.status(500).json({error:e.message||"Detection failed"});
   }
 });
@@ -923,21 +964,27 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       mode = body.mode || 'logo';
       canvasSize = parseInt(body.canvasSize) || 800;
       
-      let pre=await preprocessImage(imgFile.buffer, canvasSize, mode);
-      if(maskFile) pre=await applyUserMask(pre,maskFile.buffer, canvasSize);
+      // FIX: mask-before-quantize here too
+      let workingBuffer = imgFile.buffer;
+      if(maskFile) workingBuffer = await compositeMask(imgFile.buffer, maskFile.buffer, canvasSize);
 
-      const gem=await analyzeWithGemini(imgFile.buffer,imgFile.mimetype||"image/png");
+      let pre = await preprocessImage(workingBuffer, canvasSize, mode);
+      const gem = await analyzeWithGemini(imgFile.buffer, imgFile.mimetype || "image/png");
       let colorMeta={};
-      if(gem&&gem.colors&&gem.colors.length>=1){
-        colors=gem.colors;colorMeta=gem.meta||{};
+      if(gem && gem.colors && gem.colors.length >= 1){
+        colors = gem.colors;
+        if(!colors.some(c => isNearWhite(c))) colors.unshift('#FFFFFF');
+        if(!colors.some(c => isNearBlack(c))) colors.push('#000000');
+        colors = dedupe(colors);
+        colorMeta = gem.meta || {};
       }else{
-        colors=cleanFallbackColors(pre.fallbackColors);
+        colors = cleanFallbackColors(pre.fallbackColors, mode === 'photo' ? 10 : 16);
       }
-      if(!colors.length) colors=["#000000"];
+      if(!colors.length) colors = ["#000000"];
 
-      pixMap=await buildPixelMap(pre.buffer,colors,canvasSize);
-      const rawRegions=extractRegions(pixMap,colors,canvasSize);
-      regions=mergeAdjacentRegions(rawRegions);
+      pixMap = await buildPixelMap(pre.buffer, colors, canvasSize);
+      const rawRegions = extractRegions(pixMap, colors, canvasSize);
+      regions = mergeAdjacentRegions(rawRegions);
     }
 
     if(!regions || !regions.length){
@@ -979,7 +1026,6 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       return res.status(500).json({error:"Not enough stitches — select more shapes or check contrast"});
     }
 
-    // Pre-render preview while we have 120s
     let previewBuf = null;
     try {
       previewBuf = await renderPreview(pixMap, selectedColors, stitches, params, canvasSize);
@@ -1036,14 +1082,12 @@ app.get("/preview-image/:id",async(req,res)=>{
   const d=jobs.get(req.params.id);
   if(!d)return res.status(404).json({error:"Not found"});
   
-  // Serve pre-rendered preview instantly
   if(d.previewBuf){
     res.setHeader("Content-Type","image/png");
     res.setHeader("Cache-Control","public,max-age=300");
     return res.send(d.previewBuf);
   }
   
-  // Fallback (shouldn't happen)
   return res.status(500).json({error:"Preview not ready"});
 });
 
@@ -1056,9 +1100,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"42.0",features:"dynamic-canvas,modes,sew-time"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"43.0",features:"mask-first,10color-photo,sharp-only,color-protect"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v42 | :${PORT} | dynamic canvas`));
+const server=app.listen(PORT,()=>console.log(`Stichai v43 | :${PORT} | mask-first quantize`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
