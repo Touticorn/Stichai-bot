@@ -34,6 +34,13 @@ header h1{margin:0;font-size:22px}
 .mode-btn.on,.size-btn.on{border-color:#e94560;background:#fff0f2;color:#e94560}
 .warning{font-size:12px;color:#c0392b;background:#fdecea;padding:10px;border-radius:6px;margin-top:8px}
 
+/* Color count slider */
+.color-slider-wrap{display:flex;align-items:center;gap:12px;margin:8px 0}
+.color-slider-wrap input[type=range]{flex:1;height:6px;-webkit-appearance:none;appearance:none;background:#e0ddd5;border-radius:3px;outline:none}
+.color-slider-wrap input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:22px;height:22px;border-radius:50%;background:#e94560;cursor:pointer;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.2)}
+.color-slider-wrap input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#e94560;cursor:pointer;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.2)}
+.color-count-val{font-weight:700;min-width:28px;text-align:center;font-size:16px;color:#e94560}
+
 /* Mask */
 .mask-wrap{position:relative;width:100%;max-width:800px;margin:0 auto;border:1px solid #d4cfc5;border-radius:12px;overflow:hidden;background:#000;margin-top:12px;display:none;aspect-ratio:1/1}
 .mask-wrap.on{display:block}
@@ -93,7 +100,7 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
     <div id="st"></div>
   </div>
 
-  <!-- MODE & SIZE -->
+  <!-- MODE & SIZE & COLOR COUNT -->
   <div class="card" id="modeCard" style="display:none">
     <div class="stage-label">Design Settings</div>
     
@@ -113,6 +120,13 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
     <div class="warning" id="photoWarning" style="display:none">
       ⚠️ Photos become graphic illustrations — not photorealistic. Face details (eyes, eyebrows) will be simplified.
     </div>
+
+    <strong style="font-size:13px;display:block;margin-top:16px">Colors to Extract</strong>
+    <div class="color-slider-wrap">
+      <input type="range" id="cs" min="3" max="16" value="8" oninput="document.getElementById('csl').textContent=this.value">
+      <span class="color-count-val" id="csl">8</span>
+    </div>
+    <p style="font-size:11px;color:#999;margin:0 0 8px">More colors = more detail (eyes, eyebrows). Fewer = faster sew time.</p>
 
     <strong style="font-size:13px;display:block;margin-top:12px">Size</strong>
     <div class="size-grid">
@@ -202,7 +216,7 @@ function gN(h){var u=h.toUpperCase();if(CN[u])return CN[u];var r=parseInt(h.slic
 
 var cf=null,cdu=null,dd=null,ci=null,jid=null;
 var mC,mX,c1,c2,dr=false,tl='brush',sz=35,hm=false;
-var designMode='logo',designSize='800';
+var designMode='logo',designSize='800',colorCount=8;
 
 document.getElementById('fi').addEventListener('change', function(){
   if(this.files && this.files[0]) handleFile(this.files[0]);
@@ -244,7 +258,13 @@ function setMode(m){
   document.getElementById('btnLogo').classList.toggle('on',m==='logo');
   document.getElementById('btnPhoto').classList.toggle('on',m==='photo');
   document.getElementById('photoWarning').style.display=m==='photo'?'block':'none';
+  var s=document.getElementById('cs');
+  if(m==='logo'){s.value=12;colorCount=12;}
+  else{s.value=8;colorCount=8;}
+  document.getElementById('csl').textContent=s.value;
 }
+
+document.getElementById('cs').addEventListener('input',function(){colorCount=parseInt(this.value);});
 
 function setSize(s,btn){
   designSize=s;
@@ -312,6 +332,7 @@ function analyze(){
   fd.append('image',cf);
   fd.append('mode',designMode);
   fd.append('canvasSize',designSize);
+  fd.append('colorCount',colorCount);
   if(hm){
     c2.toBlob(function(b){
       if(b)fd.append('mask',b,'mask.png');
@@ -390,6 +411,7 @@ function generate(){
   fd.append('image',cf);
   fd.append('mode',designMode);
   fd.append('canvasSize',designSize);
+  fd.append('colorCount',colorCount);
   fd.append('detectionId',ci);
   fd.append('selectedColors',JSON.stringify(sc));
   fd.append('selectedShapes',JSON.stringify(ss));
