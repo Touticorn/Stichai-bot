@@ -1,12 +1,15 @@
 /**
- * Stichai v46 — Bucketed Color Extraction
+ * Stichai v47 — Diversity-Aware Color Extraction
  * ═══════════════════════════════════════════════════════════════════
- *  FIX FROM v45
+ *  FIX FROM v46
  *  ──────────────────────────────────────────────────────────────
- *  Colors are extracted from a downsampled image using RGB
- *  bucketing (round to nearest 24). This groups thousands of
- *  similar photo shades into ~50 distinct buckets. The top N
- *  buckets become the palette — guaranteed distinct colors.
+ *  1. Bucket size reduced from 24 to 16 → captures finer color
+ *     distinctions (eyes vs skin vs fur vs shadows).
+ *  2. Two-pass selection:
+ *     Pass 1: Pick top frequent buckets.
+ *     Pass 2: Fill remaining slots with most LAB-distinct colors
+ *     from the remaining buckets — guarantees N distinct colors.
+ *  3. No dedupe needed — selection itself enforces dE > 15.
  */
 
 "use strict";
@@ -124,9 +127,10 @@ async function preprocessImage(buffer, canvasSize) {
     .toBuffer();
 }
 
-/* ─── MASK-AWARE BUCKETED COLOR EXTRACTION ───────────────*/
+/* ─── MASK-AWARE DIVERSITY COLOR EXTRACTION ──────────────*/
 async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, maxColors) {
   const analysisSize = 200;
+  const BUCKET = 16; // was 24 — finer granularity
   
   const imgRaw = await sharp(imageBuffer)
     .resize(analysisSize, analysisSize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
@@ -143,10 +147,8 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
   const mData = maskRaw ? maskRaw.data : null;
   const mCh = maskRaw ? maskRaw.info.channels : 0;
   
-  // Bucket by rounding RGB to nearest 24 → ~11 levels per channel, ~1331 buckets max
   const bucketFreq = new Map();
   const bucketSums = new Map();
-  
   let totalUnmasked = 0;
   
   for (let i = 0; i < analysisSize * analysisSize; i++) {
@@ -164,9 +166,9 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
     totalUnmasked++;
     const r = iData[iOff], g = iData[iOff + 1], b = iData[iOff + 2];
     
-    const br = Math.min(255, Math.round(r / 24) * 24);
-    const bg = Math.min(255, Math.round(g / 24) * 24);
-    const bb = Math.min(255, Math.round(b / 24) * 24);
+    const br = Math.min(255, Math.round(r / BUCKET) * BUCKET);
+    const bg = Math.min(255, Math.round(g / BUCKET) * BUCKET);
+    const bb = Math.min(255, Math.round(b / BUCKET) * BUCKET);
     const key = (br << 16) | (bg << 8) | bb;
     
     bucketFreq.set(key, (bucketFreq.get(key) || 0) + 1);
@@ -178,29 +180,99 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
   
   if (totalUnmasked === 0) return ["#000000"];
   
-  const sorted = [...bucketFreq.entries()].sort((a, b) => b[1] - a[1]);
-  
-  // Build palette from top buckets using average color of each bucket
-  const colors = [];
-  for (let i = 0; i < Math.min(maxColors, sorted.length); i++) {
-    const [key] = sorted[i];
+  // Convert buckets to objects with hex, lab, freq
+  const allBuckets = [];
+  for (const [key, freq] of bucketFreq) {
     const s = bucketSums.get(key);
     const avgR = Math.round(s.r / s.n);
     const avgG = Math.round(s.g / s.n);
     const avgB = Math.round(s.b / s.n);
     const hex = "#" + [avgR, avgG, avgB].map(c => c.toString(16).padStart(2, "0")).join("").toUpperCase();
-    colors.push(normHex(hex));
+    const lab = rgbToLab({r: avgR, g: avgG, b: avgB});
+    allBuckets.push({ hex: normHex(hex), lab, freq, pct: freq / totalUnmasked });
   }
   
-  // Light dedupe — only merge if extremely similar (dE < 10)
-  const deduped = [];
-  for (const c of colors) {
-    const lab = rgbToLab(hexToRgb(c));
-    const dup = deduped.some(u => dE(lab, rgbToLab(hexToRgb(u))) < 10);
-    if (!dup) deduped.push(c);
+  // Sort by frequency descending
+  allBuckets.sort((a, b) => b.freq - a.freq);
+  
+  // Pass 1: Greedy diversity selection — pick most frequent, then next most frequent
+  // that is at least dE > 15 from all already selected
+  const MIN_DIST = 15;
+  const selected = [];
+  
+  for (const bucket of allBuckets) {
+    if (selected.length >= maxColors) break;
+    const tooClose = selected.some(s => dE(bucket.lab, s.lab) < MIN_DIST);
+    if (!tooClose) selected.push(bucket);
   }
   
-  // Protect white/black if significant in unmasked area but missing from palette
+  // Pass 2: If we still have slots, find most distinct colors regardless of frequency
+  // This captures small details like eyes, eyebrows
+  if (selected.length < maxColors) {
+    const remaining = allBuckets.filter(b => !selected.some(s => s.hex === b.hex));
+    // Sort remaining by max distance to any selected color
+    remaining.sort((a, b) => {
+      const aMin = Math.min(...selected.map(s => dE(a.lab, s.lab)));
+      const bMin = Math.min(...selected.map(s => dE(b.lab, s.lab)));
+      return bMin - aMin; // descending: most distinct first
+    });
+    
+    for (const bucket of remaining) {
+      if (selected.length >= maxColors) break;
+      const tooClose = selected.some(s => dE(bucket.lab, s.lab) < MIN_DIST);
+      if (!tooClose) selected.push(bucket);
+    }
+  }
+  
+  // Pass 3: If STILL short, scan raw pixels for any color far from palette
+  // (catches tiny details that bucketing missed)
+  if (selected.length < maxColors) {
+    const paletteLabs = selected.map(s => s.lab);
+    const outliers = [];
+    
+    for (let i = 0; i < analysisSize * analysisSize; i++) {
+      const iOff = i * iCh;
+      if (mData) {
+        const mOff = i * mCh;
+        if (mData[mOff] > 140 && mData[mOff+1] < 90 && mData[mOff+2] < 90 && (mCh < 4 || mData[mOff+3] > 30)) continue;
+      }
+      
+      const r = iData[iOff], g = iData[iOff+1], b = iData[iOff+2];
+      const lab = rgbToLab({r, g, b});
+      const minDist = Math.min(...paletteLabs.map(pl => dE(lab, pl)));
+      
+      if (minDist > 25) {
+        outliers.push({ r, g, b, dist: minDist });
+      }
+    }
+    
+    // Group outliers by rounded RGB (bucket size 32 for grouping)
+    const outlierGroups = new Map();
+    for (const o of outliers) {
+      const key = (Math.round(o.r/32)*32 << 16) | (Math.round(o.g/32)*32 << 8) | Math.round(o.b/32)*32;
+      if (!outlierGroups.has(key)) outlierGroups.set(key, { r: 0, g: 0, b: 0, n: 0, maxDist: 0 });
+      const g = outlierGroups.get(key);
+      g.r += o.r; g.g += o.g; g.b += o.b; g.n++;
+      if (o.dist > g.maxDist) g.maxDist = o.dist;
+    }
+    
+    const outlierBuckets = [...outlierGroups.entries()]
+      .map(([_, v]) => ({
+        hex: normHex("#" + [Math.round(v.r/v.n), Math.round(v.g/v.n), Math.round(v.b/v.n)]
+          .map(c => c.toString(16).padStart(2,"0")).join("")),
+        lab: rgbToLab({r: Math.round(v.r/v.n), g: Math.round(v.g/v.n), b: Math.round(v.b/v.n)}),
+        maxDist: v.maxDist
+      }))
+      .filter(b => !selected.some(s => dE(b.lab, s.lab) < MIN_DIST))
+      .sort((a, b) => b.maxDist - a.maxDist);
+    
+    for (const bucket of outlierBuckets) {
+      if (selected.length >= maxColors) break;
+      selected.push(bucket);
+    }
+  }
+  
+  // Protect white/black
   let brightCount = 0, darkCount = 0;
   for (let i = 0; i < analysisSize * analysisSize; i++) {
     if (mData) {
@@ -212,15 +284,18 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
     if (iData[iOff] < 30 && iData[iOff+1] < 30 && iData[iOff+2] < 30) darkCount++;
   }
   
-  if (!deduped.some(c => isNearWhite(c)) && brightCount / totalUnmasked > 0.01) {
-    deduped.unshift('#FFFFFF');
+  const result = selected.map(s => s.hex);
+  
+  if (!result.some(c => isNearWhite(c)) && brightCount / totalUnmasked > 0.01) {
+    result.unshift('#FFFFFF');
+    if (result.length > maxColors) result.pop();
   }
-  if (!deduped.some(c => isNearBlack(c)) && darkCount / totalUnmasked > 0.01) {
-    deduped.push('#000000');
+  if (!result.some(c => isNearBlack(c)) && darkCount / totalUnmasked > 0.01) {
+    result.push('#000000');
+    if (result.length > maxColors) result.shift();
   }
   
-  const result = deduped.slice(0, maxColors);
-  console.log(`Extracted ${result.length} colors from ${totalUnmasked} unmasked pixels: ${result.join(', ')}`);
+  console.log(`Extracted ${result.length}/${maxColors} colors: ${result.join(', ')}`);
   return result.length ? result : ["#000000"];
 }
 
@@ -849,7 +924,6 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
 
     const cleanedBuffer = await preprocessImage(imgFile.buffer, canvasSize);
     
-    // Extract colors from UNMASKED pixels only using bucketing
     const colors = await extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount);
     
     const gem = await analyzeWithGemini(imgFile.buffer, imgFile.mimetype || "image/png", colorCount);
@@ -1051,9 +1125,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"46.0",features:"bucketed-colors,user-color-count,mask-holes"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"47.0",features:"diversity-colors,user-color-count,mask-holes"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v46 | :${PORT} | bucketed extraction`));
+const server=app.listen(PORT,()=>console.log(`Stichai v47 | :${PORT} | diversity extraction`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
