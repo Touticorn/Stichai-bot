@@ -1,18 +1,14 @@
 /**
- * Stichai v41.3 — Solid
+ * Stichai v42 — Dynamic Canvas + Modes
  * ═══════════════════════════════════════════════════════
- *  ALL FIXES APPLIED
+ *  FEATURES
  *  ──────────────────────────────────────────────────
- *  1. Native CORS (no npm package needed)
- *  2. Quantized buffer for pixel mapping
- *  3. Red mask detection
- *  4. 8-connectivity + mergeAdjacentRegions (fixes fragments)
- *  5. Strict satin: only hairline columns (avgRunW ≤ 14)
- *  6. 16-color quantization for photos
- *  7. Smart trim (gap > 30px)
- *  8. Thick preview with vertical overlap (no fabric stripes)
- *  9. Honest DST only
- *  10. Railway timeouts 120s
+ *  1. Dynamic canvas: 800px (80mm) / 1600px (160mm) / 2400px (240mm)
+ *  2. Logo mode: 16-color solid fill
+ *  3. Photo mode: 6-color posterize + edge-aware fill
+ *  4. Pre-rendered preview (no timeout)
+ *  5. Sew time calculator
+ *  6. Native CORS, honest DST only
  */
 
 "use strict";
@@ -26,7 +22,6 @@ const sharp   = require("sharp");
 const app    = express();
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 
-// Native CORS
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -45,17 +40,11 @@ const GEMINI_MODELS = [
   "gemini-2.5-pro",
 ];
 
-const CANVAS    = 800;
-const DESIGN_MM = CANVAS / 10;
-
-let TATAMI_ROW   = 4;
-let TATAMI_LEN   = 30;
-const TATAMI_BRICK = 0.5;
-let TATAMI_UL    = 40;
-const RUN_LEN      = 25;
-let PULL         = 2;
-const DST_MAX      = 121;
-const SMART_TRIM   = 30;
+/* ─── CONSTANTS ───────────────────────────────────────────*/
+const DST_MAX      = 121;  // 12.1mm max jump
+const SMART_TRIM   = 30;   // 3.0mm
+const MIN_AREA     = 25;
+const PREVIEW_MAX  = 1200; // cap preview render size for speed
 
 /* ─── SPEC TUNING ─────────────────────────────────────────*/
 function getStitchParams(specs) {
@@ -107,68 +96,6 @@ function getStitchParams(specs) {
   return p;
 }
 
-/* ─── MASK APPLICATION ───────────────────────────────────*/
-async function applyUserMask(pre, maskBuffer) {
-  const maskRaw = await sharp(maskBuffer)
-    .resize(CANVAS, CANVAS, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const { data: mData, info: mInfo } = maskRaw;
-  const channels = mInfo.channels;
-  const bgRgb = hexToRgb(pre.bgColor);
-
-  const imgRaw = await sharp(pre.buffer)
-    .resize(CANVAS, CANVAS, { fit: "contain", background: { r: bgRgb.r, g: bgRgb.g, b: bgRgb.b, alpha: 1 } })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const { data: iData, info: iInfo } = imgRaw;
-  const iCh = iInfo.channels;
-  const out = Buffer.alloc(CANVAS * CANVAS * iCh);
-
-  let maskedPixels = 0;
-  for (let y = 0; y < CANVAS; y++) {
-    for (let x = 0; x < CANVAS; x++) {
-      const idx = y * CANVAS + x;
-      const iOff = idx * iCh;
-      const mOff = idx * channels;
-
-      const mR = mData[mOff] || 0;
-      const mG = mData[mOff + 1] || 0;
-      const mB = mData[mOff + 2] || 0;
-      const mA = channels >= 4 ? mData[mOff + 3] : 255;
-
-      const shouldRemove = mR > 140 && mG < 90 && mB < 90 && mA > 30;
-
-      if (shouldRemove) {
-        out[iOff] = bgRgb.r;
-        out[iOff + 1] = bgRgb.g;
-        out[iOff + 2] = bgRgb.b;
-        if (iCh >= 4) out[iOff + 3] = 255;
-        maskedPixels++;
-      } else {
-        out[iOff] = iData[iOff];
-        out[iOff + 1] = iData[iOff + 1];
-        out[iOff + 2] = iData[iOff + 2];
-        if (iCh >= 4) out[iOff + 3] = iData[iOff + 3];
-      }
-    }
-  }
-
-  console.log(`Mask applied: ${maskedPixels}px (${(maskedPixels / (CANVAS * CANVAS) * 100).toFixed(1)}%)`);
-
-  const maskedBuffer = await sharp(out, {
-    raw: { width: CANVAS, height: CANVAS, channels: iCh }
-  }).png().toBuffer();
-
-  return { ...pre, buffer: maskedBuffer };
-}
-
-/* ─── CONSTANTS ───────────────────────────────────────────*/
-const MIN_AREA    = 25;
-const SATIN_MAX_W = 150;
-
 /* ─── COLOR UTILITIES ────────────────────────────────────*/
 function hexToRgb(hex) {
   const m = (hex||"").match(/^#?([0-9a-fA-F]{6})$/);
@@ -195,16 +122,18 @@ function dedupe(cols){
   return out;
 }
 
-/* ─── IMAGE PRE-PROCESSING (16-color quantized) ──────────*/
-async function preprocessImage(buffer) {
+/* ─── IMAGE PRE-PROCESSING ───────────────────────────────*/
+async function preprocessImage(buffer, canvasSize, mode) {
+  const colorCount = mode === 'photo' ? 6 : 16;
+  
   const cleaned = await sharp(buffer)
-    .resize(CANVAS, CANVAS, {fit:"contain",background:{r:255,g:255,b:255,alpha:1}})
+    .resize(canvasSize, canvasSize, {fit:"contain",background:{r:255,g:255,b:255,alpha:1}})
     .median(2)
     .sharpen({sigma:1.0})
     .linear(1.2,-15)
     .toBuffer();
 
-  const q = await sharp(cleaned).png({colours:16,dither:0}).toBuffer();
+  const q = await sharp(cleaned).png({colours:colorCount,dither:0}).toBuffer();
   const {data,info} = await sharp(q).raw().toBuffer({resolveWithObject:true});
   const cm = new Map();
   for(let i=0;i<data.length;i+=info.channels){
@@ -229,8 +158,67 @@ function cleanFallbackColors(rawColors) {
   return merged.slice(0,6);
 }
 
+/* ─── MASK APPLICATION ───────────────────────────────────*/
+async function applyUserMask(pre, maskBuffer, canvasSize) {
+  const maskRaw = await sharp(maskBuffer)
+    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { data: mData, info: mInfo } = maskRaw;
+  const channels = mInfo.channels;
+  const bgRgb = hexToRgb(pre.bgColor);
+
+  const imgRaw = await sharp(pre.buffer)
+    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: bgRgb.r, g: bgRgb.g, b: bgRgb.b, alpha: 1 } })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { data: iData, info: iInfo } = imgRaw;
+  const iCh = iInfo.channels;
+  const out = Buffer.alloc(canvasSize * canvasSize * iCh);
+
+  let maskedPixels = 0;
+  for (let y = 0; y < canvasSize; y++) {
+    for (let x = 0; x < canvasSize; x++) {
+      const idx = y * canvasSize + x;
+      const iOff = idx * iCh;
+      const mOff = idx * channels;
+
+      const mR = mData[mOff] || 0;
+      const mG = mData[mOff + 1] || 0;
+      const mB = mData[mOff + 2] || 0;
+      const mA = channels >= 4 ? mData[mOff + 3] : 255;
+
+      const shouldRemove = mR > 140 && mG < 90 && mB < 90 && mA > 30;
+
+      if (shouldRemove) {
+        out[iOff] = bgRgb.r;
+        out[iOff + 1] = bgRgb.g;
+        out[iOff + 2] = bgRgb.b;
+        if (iCh >= 4) out[iOff + 3] = 255;
+        maskedPixels++;
+      } else {
+        out[iOff] = iData[iOff];
+        out[iOff + 1] = iData[iOff + 1];
+        out[iOff + 2] = iData[iOff + 2];
+        if (iCh >= 4) out[iOff + 3] = iData[iOff + 3];
+      }
+    }
+  }
+
+  console.log(`Mask applied: ${maskedPixels}px (${(maskedPixels / (canvasSize * canvasSize) * 100).toFixed(1)}%)`);
+
+  const colorCount = pre.buffer === 'photo' ? 6 : 16;
+  const requant = await sharp(out, { raw: { width: canvasSize, height: canvasSize, channels: iCh } })
+    .png({ colours: colorCount, dither: 0 })
+    .toBuffer();
+
+  return { ...pre, buffer: requant };
+}
+
 /* ─── GEMINI ─────────────────────────────────────────────*/
-async function geminiPost(body, ms = 32000) {
+async function geminiPost(body, ms = 45000) {
   for (const model of GEMINI_MODELS) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
     try {
@@ -276,32 +264,32 @@ Return ONLY valid JSON, no markdown.
 }
 
 /* ─── PIXEL MAP ──────────────────────────────────────────*/
-async function buildPixelMap(buffer, colors) {
+async function buildPixelMap(buffer, colors, canvasSize) {
   const Jimp  = require("jimp");
   const image = await Jimp.read(buffer);
-  if(image.bitmap.width!==CANVAS||image.bitmap.height!==CANVAS)
-    image.resize(CANVAS,CANVAS);
+  if(image.bitmap.width!==canvasSize||image.bitmap.height!==canvasSize)
+    image.resize(canvasSize,canvasSize);
 
   const labC  = colors.map(c=>rgbToLab(hexToRgb(c)));
   const TOL   = 50;
-  const pixMap= new Int16Array(CANVAS*CANVAS).fill(-1);
+  const pixMap= new Int16Array(canvasSize*canvasSize).fill(-1);
   const imgD  = image.bitmap.data;
 
-  for(let y=0;y<CANVAS;y++){
-    for(let x=0;x<CANVAS;x++){
-      const i=(y*CANVAS+x)<<2;
+  for(let y=0;y<canvasSize;y++){
+    for(let x=0;x<canvasSize;x++){
+      const i=(y*canvasSize+x)<<2;
       const lab=rgbToLab({r:imgD[i],g:imgD[i+1],b:imgD[i+2]});
       let best=-1,bestD=TOL;
       for(let c=0;c<labC.length;c++){const d=dE(lab,labC[c]);if(d<bestD){bestD=d;best=c;}}
-      pixMap[y*CANVAS+x]=best;
+      pixMap[y*canvasSize+x]=best;
     }
   }
 
-  for(let y=1;y<CANVAS-1;y++){
-    for(let x=1;x<CANVAS-1;x++){
-      const idx=y*CANVAS+x;
+  for(let y=1;y<canvasSize-1;y++){
+    for(let x=1;x<canvasSize-1;x++){
+      const idx=y*canvasSize+x;
       if(pixMap[idx]!==-1)continue;
-      const nbr=[pixMap[idx-1],pixMap[idx+1],pixMap[idx-CANVAS],pixMap[idx+CANVAS]].filter(n=>n!==-1);
+      const nbr=[pixMap[idx-1],pixMap[idx+1],pixMap[idx-canvasSize],pixMap[idx+canvasSize]].filter(n=>n!==-1);
       if(nbr.length>=3){
         const freq={};
         for(const n of nbr)freq[n]=(freq[n]||0)+1;
@@ -313,18 +301,18 @@ async function buildPixelMap(buffer, colors) {
 
   const cnt=new Array(colors.length).fill(0);let un=0;
   for(let i=0;i<pixMap.length;i++){if(pixMap[i]>=0)cnt[pixMap[i]]++;else un++;}
-  const total=CANVAS*CANVAS;
+  const total=canvasSize*canvasSize;
   console.log("Coverage:",cnt.map((c,i)=>`${normHex(colors[i])}:${(c/total*100).toFixed(1)}%`).join(" "),
     `unmatched:${(un/total*100).toFixed(1)}%`);
 
   return pixMap;
 }
 
-/* ─── RUN HELPER ─────────────────────────────────────────*/
-function getRunsInRow(pixMap,ci,y,x0,x1){
+/* ─── RUN HELPERS ────────────────────────────────────────*/
+function getRunsInRow(pixMap,ci,y,x0,x1,canvasSize){
   const runs=[];let s=-1;
   for(let x=x0;x<=x1;x++){
-    const hit=y>=0&&y<CANVAS&&pixMap[y*CANVAS+x]===ci;
+    const hit=y>=0&&y<canvasSize&&pixMap[y*canvasSize+x]===ci;
     if(hit&&s===-1)s=x;
     if(!hit&&s!==-1){runs.push({x1:s,x2:x-1});s=-1;}
   }
@@ -332,15 +320,15 @@ function getRunsInRow(pixMap,ci,y,x0,x1){
   return runs;
 }
 
-/* ─── REGION EXTRACTION (8-connectivity) ──────────────────*/
-function extractRegions(pixMap, colors) {
-  const visited  = new Uint8Array(CANVAS*CANVAS);
+/* ─── REGION EXTRACTION ──────────────────────────────────*/
+function extractRegions(pixMap, colors, canvasSize) {
+  const visited  = new Uint8Array(canvasSize*canvasSize);
   const regions  = [];
 
   for(let ci=0;ci<colors.length;ci++){
-    for(let sy=0;sy<CANVAS;sy++){
-      for(let sx=0;sx<CANVAS;sx++){
-        const si = sy*CANVAS+sx;
+    for(let sy=0;sy<canvasSize;sy++){
+      for(let sx=0;sx<canvasSize;sx++){
+        const si = sy*canvasSize+sx;
         if(pixMap[si]!==ci||visited[si])continue;
 
         const q=[si];let qp=0;
@@ -349,14 +337,14 @@ function extractRegions(pixMap, colors) {
 
         while(qp<q.length){
           const idx=q[qp++]; area++;
-          const x=idx%CANVAS, y=(idx/CANVAS)|0;
+          const x=idx%canvasSize, y=(idx/canvasSize)|0;
           if(x<mnx)mnx=x;if(x>mxx)mxx=x;
           if(y<mny)mny=y;if(y>mxy)mxy=y;
 
           for(const[dx,dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]]){
             const nx=x+dx,ny=y+dy;
-            if(nx>=0&&nx<CANVAS&&ny>=0&&ny<CANVAS){
-              const ni=ny*CANVAS+nx;
+            if(nx>=0&&nx<canvasSize&&ny>=0&&ny<canvasSize){
+              const ni=ny*canvasSize+nx;
               if(!visited[ni]&&pixMap[ni]===ci){visited[ni]=1;q.push(ni);}
             }
           }
@@ -370,12 +358,11 @@ function extractRegions(pixMap, colors) {
 
         let totalRunW=0, runCount=0;
         for(let ry=mny; ry<=mxy; ry++){
-          const runs=getRunsInRow(pixMap,ci,ry,mnx,mxx);
+          const runs=getRunsInRow(pixMap,ci,ry,mnx,mxx,canvasSize);
           for(const r of runs){ totalRunW+=(r.x2-r.x1+1); runCount++; }
         }
         const avgRunW=runCount>0?totalRunW/runCount:bw;
 
-        // STRICT: only hairlines get satin. Everything else = solid fill.
         let type;
         if(area < MIN_AREA * 3) type = "running";
         else if(aspectRatio > 2.5 && avgRunW <= 18 && solidity > 0.4) type = "satin";
@@ -391,7 +378,7 @@ function extractRegions(pixMap, colors) {
   return regions;
 }
 
-/* ─── MERGE ADJACENT FRAGMENTS ────────────────────────────*/
+/* ─── MERGE ADJACENT FRAGMENTS ───────────────────────────*/
 function mergeAdjacentRegions(regions) {
   if(!regions.length) return regions;
   const merged = [];
@@ -401,7 +388,7 @@ function mergeAdjacentRegions(regions) {
     if(used.has(i)) continue;
     const base = regions[i];
     let mnx=base.mnx, mny=base.mny, mxx=base.mxx, mxy=base.mxy, area=base.area;
-    let totalRunW = base.avgRunW * base.bh; // approximate
+    let totalRunW = base.avgRunW * base.bh;
     let runCount = base.bh;
     used.add(i);
 
@@ -410,7 +397,7 @@ function mergeAdjacentRegions(regions) {
       const other = regions[j];
       if(other.color !== base.color) continue;
 
-      const gap = 12; // merge if within 12px
+      const gap = 1;
       const overlapX = !(mxx + gap < other.mnx || other.mxx + gap < mnx);
       const overlapY = !(mxy + gap < other.mny || other.mxy + gap < mny);
 
@@ -431,7 +418,6 @@ function mergeAdjacentRegions(regions) {
     const newAspect = newBh / Math.max(newBw, 1);
     const newSolidity = area / (newBw * newBh);
 
-    // Re-classify after merge
     let newType;
     if(area < MIN_AREA * 3) newType = "running";
     else if(newAspect > 2.5 && newAvgRunW <= 18 && newSolidity > 0.4) newType = "satin";
@@ -451,15 +437,15 @@ function mergeAdjacentRegions(regions) {
 }
 
 /* ─── STITCH GENERATION ───────────────────────────────────*/
-function generateStitchesFromRegions(pixMap, regions, colors, params) {
+function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize) {
   const stitches    = [];
   const colorCounts = colors.map(()=>({fill:0,satin:0,running:0}));
 
   const P = params || {};
-  const pRow   = P.tatamiRow   !== undefined ? P.tatamiRow   : TATAMI_ROW;
-  const pLen   = P.tatamiLen   !== undefined ? P.tatamiLen   : TATAMI_LEN;
-  const pUl    = P.tatamiUl    !== undefined ? P.tatamiUl    : TATAMI_UL;
-  const pPull  = P.pull        !== undefined ? P.pull        : PULL;
+  const pRow   = P.tatamiRow   !== undefined ? P.tatamiRow   : 4;
+  const pLen   = P.tatamiLen   !== undefined ? P.tatamiLen   : 30;
+  const pUl    = P.tatamiUl    !== undefined ? P.tatamiUl    : 40;
+  const pPull  = P.pull        !== undefined ? P.pull        : 2;
 
   function emitTrim(x0,y0,x1,y1,color){
     stitches.push({x:Math.round(x0),y:Math.round(y0),color,type:"trim"});
@@ -486,7 +472,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params) {
     if(type==="fill"){
       let ulRow=0;
       for(let y=mny;y<=mxy;y+=pUl){
-        const runs=getRunsInRow(pixMap,ci,y,mnx,mxx);
+        const runs=getRunsInRow(pixMap,ci,y,mnx,mxx,canvasSize);
         if(!runs.length)continue;
         const rev=ulRow%2===1;
         for(const{x1,x2} of (rev?[...runs].reverse():runs)){
@@ -505,7 +491,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params) {
 
     let rowIdx=0;
     for(let y=mny;y<=mxy;y+=pRow){
-      const runs=getRunsInRow(pixMap,ci,y,mnx,mxx);
+      const runs=getRunsInRow(pixMap,ci,y,mnx,mxx,canvasSize);
       if(!runs.length)continue;
       const rev=rowIdx%2===1;
       const ord=rev?[...runs].reverse():runs;
@@ -540,7 +526,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params) {
           }
 
         }else{
-          const brickOff=rowIdx%2===0?0:Math.round(pLen*TATAMI_BRICK);
+          const brickOff=rowIdx%2===0?0:Math.round(pLen*0.5);
           const lx=x1+pPull+brickOff, rx=x2-pPull;
           if(rx>lx){
             const steps=Math.max(1,Math.round((rx-lx)/pLen));
@@ -574,9 +560,9 @@ function generateStitchesFromRegions(pixMap, regions, colors, params) {
 /* ─── QUALITY VALIDATION ─────────────────────────────────*/
 function validateQuality(stitches){
   const w=[];
-  let tot=0,cnt=0,maxJ=0,longJ=0,prev=null;
+  let tot=0,cnt=0,maxJ=0,longJ=0,trimCount=0,prev=null;
   for(const s of stitches){
-    if(s.type==="trim"){prev=null;continue;}
+    if(s.type==="trim"){trimCount++;prev=null;continue;}
     if(prev){
       const d=Math.hypot(s.x-prev.x,s.y-prev.y);
       if(d>maxJ)maxJ=d;
@@ -590,12 +576,34 @@ function validateQuality(stitches){
   if(maxJ>DST_MAX)w.push(`Jump ${(maxJ/10).toFixed(1)}mm > 12.1mm`);
   if(longJ>30)    w.push(`${longJ} oversized jumps`);
   if(cnt>80000)   w.push(`High stitch count ${cnt}`);
-  return{avgStitchMM:(avg/10).toFixed(2),maxJumpMM:(maxJ/10).toFixed(2),longJumps:longJ,stitchCount:cnt,warnings:w,passed:!w.length};
+  return{avgStitchMM:(avg/10).toFixed(2),maxJumpMM:(maxJ/10).toFixed(2),longJumps:longJ,stitchCount:cnt,trimCount,warnings:w,passed:!w.length};
 }
 
-/* ─── PREVIEW RENDERER (thick overlapping stitches) ───────*/
-async function renderPreview(pixMap, colors, stitches, params) {
-  const W = CANVAS, H = CANVAS;
+/* ─── SEW TIME CALCULATOR ────────────────────────────────*/
+function calculateSewTime(stitchCount, trimCount, colorCount, machine) {
+  const spm = { tajima: 800, brother: 650, barudan: 850, generic: 750 };
+  const rate = spm[machine] || 750;
+  
+  const stitchMinutes = stitchCount / rate;
+  const trimMinutes = (trimCount * 0.3) / 60;
+  const colorChangeMinutes = Math.max(0, (colorCount - 1) * 0.5);
+  
+  const totalMinutes = Math.ceil(stitchMinutes + trimMinutes + colorChangeMinutes);
+  
+  if (totalMinutes < 1) return "< 1 min";
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+/* ─── PREVIEW RENDERER ───────────────────────────────────*/
+async function renderPreview(pixMap, colors, stitches, params, canvasSize) {
+  // Render at capped size for speed, but DST is full resolution
+  const renderSize = Math.min(canvasSize, PREVIEW_MAX);
+  const scale = renderSize / canvasSize;
+  
+  const W = renderSize, H = renderSize;
   const buf = Buffer.alloc(W * H * 4);
 
   // Fabric background
@@ -658,19 +666,27 @@ async function renderPreview(pixMap, colors, stitches, params) {
         setPixel(x - nx * 1.5, y - ny * 1.5, r, g, b, alphaBase * 0.55);
       }
       if (thickness >= 4) {
-        setPixel(x + nx * 2.2, y + ny * 2.2, r, g, b, alphaBase * 0.3);
-        setPixel(x - nx * 2.2, y - ny * 2.2, r, g, b, alphaBase * 0.3);
-        // Vertical overlap to close row gaps
-        setPixel(x, y + 1.0, r, g, b, alphaBase * 0.45);
-        setPixel(x, y - 1.0, r, g, b, alphaBase * 0.45);
-        setPixel(x + 0.5, y + 1.2, r, g, b, alphaBase * 0.3);
-        setPixel(x - 0.5, y - 1.2, r, g, b, alphaBase * 0.3);
+        setPixel(x + nx * 2.5, y + ny * 2.5, r, g, b, alphaBase * 0.35);
+        setPixel(x - nx * 2.5, y - ny * 2.5, r, g, b, alphaBase * 0.35);
+        setPixel(x, y + 1.5, r, g, b, alphaBase * 0.55);
+        setPixel(x, y - 1.5, r, g, b, alphaBase * 0.55);
+        setPixel(x, y + 2.5, r, g, b, alphaBase * 0.4);
+        setPixel(x, y - 2.5, r, g, b, alphaBase * 0.4);
+        setPixel(x, y + 3.2, r, g, b, alphaBase * 0.2);
+        setPixel(x, y - 3.2, r, g, b, alphaBase * 0.2);
       }
     }
   }
 
+  // Scale stitches for preview
+  const scaledStitches = stitches.map(s => ({
+    ...s,
+    x: s.x * scale,
+    y: s.y * scale
+  }));
+
   const byColor = new Map();
-  for (const s of stitches) {
+  for (const s of scaledStitches) {
     if (s.type === "trim") continue;
     if (!byColor.has(s.color)) byColor.set(s.color, []);
     byColor.get(s.color).push(s);
@@ -685,52 +701,49 @@ async function renderPreview(pixMap, colors, stitches, params) {
 
     for (let i = 1; i < underlays.length; i++) {
       const a = underlays[i - 1], b = underlays[i];
-      if (Math.hypot(b.x - a.x, Math.abs(b.y - a.y)) > 80) continue;
+      if (Math.hypot(b.x - a.x, Math.abs(b.y - a.y)) > 80 * scale) continue;
       drawLine(a.x, a.y, b.x, b.y, tc.r, tc.g, tc.b, 1, 60);
     }
 
-    let prev = null;
     for (let i = 0; i < covers.length; i++) {
       const s = covers[i];
       const next = covers[i + 1] || null;
 
       const isSatin = s.type === "satin";
       const isFill  = s.type === "fill";
-      const isRun   = s.type === "running";
 
-      const dotAlpha = isRun ? 200 : 240;
-      const dotSize = isSatin ? 2 : isFill ? 1.5 : 1;
-      setPixel(s.x, s.y, tc.r, tc.g, tc.b, dotAlpha);
-      if (dotSize >= 2) {
-        setPixel(s.x + 1, s.y, tc.dr, tc.dg, tc.db, 160);
-        setPixel(s.x, s.y + 1, tc.dr, tc.dg, tc.db, 120);
-      }
+      setPixel(s.x, s.y, tc.r, tc.g, tc.b, 240);
+      setPixel(s.x + 1, s.y, tc.dr, tc.dg, tc.db, 160);
+      setPixel(s.x, s.y + 1, tc.dr, tc.dg, tc.db, 140);
+      setPixel(s.x - 1, s.y, tc.dr, tc.dg, tc.db, 140);
+      setPixel(s.x, s.y - 1, tc.dr, tc.dg, tc.db, 120);
 
       if (next && next.color === s.color) {
         const jump = Math.hypot(next.x - s.x, next.y - s.y);
-        if (jump < 50) {
+        if (jump < 50 * scale) {
           const thick = isSatin ? 3 : isFill ? 4 : 1;
-          const alpha = isRun ? 180 : 230;
-          drawLine(s.x, s.y, next.x, next.y, tc.r, tc.g, tc.b, thick, alpha);
+          drawLine(s.x, s.y, next.x, next.y, tc.r, tc.g, tc.b, thick, 230);
         }
       }
-      prev = s;
     }
   }
 
-  let cminX = W, cmaxX = 0, cminY = H, cmaxY = 0;
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      if (pixMap[y * W + x] >= 0) {
+  // Crop using original pixMap bounds (scaled)
+  let cminX = canvasSize, cmaxX = 0, cminY = canvasSize, cmaxY = 0;
+  for (let y = 0; y < canvasSize; y++) {
+    for (let x = 0; x < canvasSize; x++) {
+      if (pixMap[y * canvasSize + x] >= 0) {
         if (x < cminX) cminX = x; if (x > cmaxX) cmaxX = x;
         if (y < cminY) cminY = y; if (y > cmaxY) cmaxY = y;
       }
     }
   }
-  const pad = 30;
-  const cropX = Math.max(0, cminX - pad), cropY = Math.max(0, cminY - pad);
-  const cropW = Math.min(W, cmaxX + pad) - cropX;
-  const cropH = Math.min(H, cmaxY + pad) - cropY;
+  
+  const pad = Math.round(30 * scale);
+  const cropX = Math.max(0, Math.round(cminX * scale) - pad);
+  const cropY = Math.max(0, Math.round(cminY * scale) - pad);
+  const cropW = Math.min(W, Math.round(cmaxX * scale) + pad) - cropX;
+  const cropH = Math.min(H, Math.round(cmaxY * scale) + pad) - cropY;
 
   if (cropW > 50 && cropH > 50) {
     const cropped = Buffer.alloc(cropW * cropH * 4);
@@ -817,8 +830,15 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
     const maskFile=req.files?.mask?.[0];
     if(!imgFile) return res.status(400).json({error:"No image uploaded"});
 
-    let pre=await preprocessImage(imgFile.buffer);
-    if(maskFile) pre=await applyUserMask(pre,maskFile.buffer);
+    const body = req.body || {};
+    const mode = body.mode || 'logo';
+    const canvasSize = parseInt(body.canvasSize) || 800;
+    const designMm = canvasSize / 10;
+
+    console.log(`[${rid}] DETECT: mode=${mode} size=${canvasSize}px=${designMm}mm`);
+
+    let pre=await preprocessImage(imgFile.buffer, canvasSize, mode);
+    if(maskFile) pre=await applyUserMask(pre,maskFile.buffer, canvasSize);
 
     const gem=await analyzeWithGemini(imgFile.buffer,imgFile.mimetype||"image/png");
 
@@ -830,8 +850,8 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
     }
     if(!colors.length) colors=["#000000"];
 
-    const pixMap=await buildPixelMap(pre.buffer,colors);
-    const rawRegions=extractRegions(pixMap,colors);
+    const pixMap=await buildPixelMap(pre.buffer,colors,canvasSize);
+    const rawRegions=extractRegions(pixMap,colors,canvasSize);
     const regions=mergeAdjacentRegions(rawRegions);
 
     if(!regions.length){
@@ -847,7 +867,7 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
 
     const detectionId=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
     detections.set(detectionId,{
-      pixMap,regions,colors,pre,geminiNotes:gem?.notes||"",timestamp:Date.now()
+      pixMap,regions,colors,pre,geminiNotes:gem?.notes||"",timestamp:Date.now(),mode,canvasSize
     });
 
     const colorInfo = {};
@@ -859,6 +879,7 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
       colors,
       colorMeta:colorInfo,
       shapes,
+      designMm,
       geminiNotes:gem?.notes||""
     });
   }catch(e){
@@ -890,15 +911,20 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
 
     const detectionId = body.detectionId;
     const det = detectionId ? detections.get(detectionId) : null;
-    let pixMap, regions, colors;
+    let pixMap, regions, colors, canvasSize, mode;
 
     if(det){
       pixMap = det.pixMap;
       regions = det.regions;
       colors = det.colors;
+      canvasSize = det.canvasSize;
+      mode = det.mode;
     }else{
-      let pre=await preprocessImage(imgFile.buffer);
-      if(maskFile) pre=await applyUserMask(pre,maskFile.buffer);
+      mode = body.mode || 'logo';
+      canvasSize = parseInt(body.canvasSize) || 800;
+      
+      let pre=await preprocessImage(imgFile.buffer, canvasSize, mode);
+      if(maskFile) pre=await applyUserMask(pre,maskFile.buffer, canvasSize);
 
       const gem=await analyzeWithGemini(imgFile.buffer,imgFile.mimetype||"image/png");
       let colorMeta={};
@@ -909,8 +935,8 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       }
       if(!colors.length) colors=["#000000"];
 
-      pixMap=await buildPixelMap(pre.buffer,colors);
-      const rawRegions=extractRegions(pixMap,colors);
+      pixMap=await buildPixelMap(pre.buffer,colors,canvasSize);
+      const rawRegions=extractRegions(pixMap,colors,canvasSize);
       regions=mergeAdjacentRegions(rawRegions);
     }
 
@@ -947,16 +973,30 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       return res.status(400).json({error:"No regions left after selection — select more colors/shapes"});
     }
 
-    const{stitches,colorCounts}=generateStitchesFromRegions(pixMap,filteredRegions,selectedColors,params);
+    const{stitches,colorCounts}=generateStitchesFromRegions(pixMap,filteredRegions,selectedColors,params,canvasSize);
     const coverCount=stitches.filter(s=>s.type!=="trim"&&s.type!=="underlay").length;
     if(coverCount<5){
       return res.status(500).json({error:"Not enough stitches — select more shapes or check contrast"});
     }
 
-    const id=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
-    jobs.set(id,{stitches,pixMap,colors:selectedColors,params,designW:CANVAS,designH:CANVAS,ts:Date.now()});
+    // Pre-render preview while we have 120s
+    let previewBuf = null;
+    try {
+      previewBuf = await renderPreview(pixMap, selectedColors, stitches, params, canvasSize);
+    } catch(e) {
+      console.error("Preview pre-render failed:", e.message);
+    }
 
     const qa=validateQuality(stitches);
+    const sewTime = calculateSewTime(qa.stitchCount, qa.trimCount, selectedColors.length, specs.machine);
+    const designMm = canvasSize / 10;
+
+    const id=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+    jobs.set(id,{
+      stitches,pixMap,colors:selectedColors,params,
+      designW:canvasSize,designH:canvasSize,designMm,
+      ts:Date.now(),previewBuf,sewTime,mode,canvasSize
+    });
 
     const shapes=[];
     for(const r of filteredRegions){
@@ -972,12 +1012,13 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       previewImageUrl:`/preview-image/${id}`,
       downloadUrl:`/download/${id}`,
       stitchCount:qa.stitchCount,
-      designSize:{w:CANVAS,h:CANVAS,mm:DESIGN_MM},
+      designSize:{w:canvasSize,h:canvasSize,mm:designMm},
       colors:selectedColors,colorMeta:{},
       geminiNotes:det?.geminiNotes||"",
       specs,
       tunedParams:params,
-      qa,shapes,regions:filteredRegions.length
+      qa,shapes,regions:filteredRegions.length,
+      sewTime,mode
     });
   }catch(e){
     console.error(`[${rid}] CRASH:`,e.message,"\n",e.stack);
@@ -994,18 +1035,16 @@ app.get("/preview/:id",(req,res)=>{
 app.get("/preview-image/:id",async(req,res)=>{
   const d=jobs.get(req.params.id);
   if(!d)return res.status(404).json({error:"Not found"});
-  const c=previewCache.get(req.params.id);
-  if(c&&Date.now()-c.ts<120000){res.setHeader("Content-Type","image/png");return res.send(c.buf);}
-  try{
-    const png=await Promise.race([
-      renderPreview(d.pixMap,d.colors,d.stitches,d.params),
-      new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),15000))
-    ]);
-    previewCache.set(req.params.id,{buf:png,ts:Date.now()});
+  
+  // Serve pre-rendered preview instantly
+  if(d.previewBuf){
     res.setHeader("Content-Type","image/png");
     res.setHeader("Cache-Control","public,max-age=300");
-    return res.send(png);
-  }catch(e){return res.status(500).json({error:e.message});}
+    return res.send(d.previewBuf);
+  }
+  
+  // Fallback (shouldn't happen)
+  return res.status(500).json({error:"Preview not ready"});
 });
 
 app.get("/download/:id",(req,res)=>{
@@ -1017,9 +1056,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"41.3",canvas:`${CANVAS}px=${DESIGN_MM}mm`}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"42.0",features:"dynamic-canvas,modes,sew-time"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v41.3 | :${PORT} | ${CANVAS}px=${DESIGN_MM}mm`));
+const server=app.listen(PORT,()=>console.log(`Stichai v42 | :${PORT} | dynamic canvas`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
