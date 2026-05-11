@@ -1,5 +1,5 @@
 /**
- * Stichai v55 — Fix color index crash + mask aspect ratio
+ * Stichai v56 — Fix color index crash + mask aspect ratio
  * ═══════════════════════════════════════════════════════════════════
  *  FIXES FROM v47
  *  ──────────────────────────────────────────────────────────────
@@ -854,7 +854,10 @@ function encodeDST(stitches){
   hdr.write("Stichai",0,"ascii");
   const recs=[];
   let lCol=null,px=0,py=0,sc=0,cc=0,mnx=0,mxx=0,mny=0,mxy=0,ax=0,ay=0;
+  let first=true;
   for(const s of stitches){
+    // FIX v56: First stitch sets origin without jumping from (0,0)
+    if(first){px=s.x;py=s.y;first=false;continue;}
     ax+=s.x-px;ay+=s.y-py;
     if(ax<mnx)mnx=ax;if(ax>mxx)mxx=ax;if(ay<mny)mny=ay;if(ay>mxy)mxy=ay;
     if(s.color!==lCol&&lCol!==null){recs.push(Buffer.from([0,0,0xC3]));cc++;}
@@ -1160,9 +1163,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"55.0",features:"fixed-trim-jumps,dst-header-bounds,pixmap-remap"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"56.0",features:"fixed-origin-jump,dst-header-bounds,pixmap-remap"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v55 | :${PORT} | fixed ci index`));
+const server=app.listen(PORT,()=>console.log(`Stichai v56 | :${PORT} | fixed ci index`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
