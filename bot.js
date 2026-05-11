@@ -1,5 +1,5 @@
 /**
- * Stichai v49 — Fix color index crash + mask aspect ratio
+ * Stichai v50 — Fix color index crash + mask aspect ratio
  * ═══════════════════════════════════════════════════════════════════
  *  FIXES FROM v47
  *  ──────────────────────────────────────────────────────────────
@@ -874,11 +874,20 @@ function encodeDST(stitches){
     sc++;
   }
   recs.push(Buffer.from([0,0,0xF3]));
-  hdr.writeInt32LE(sc,20);hdr.writeInt32LE(cc,24);
-  hdr.writeInt16LE(Math.round((mxx-mnx)*10),28);hdr.writeInt16LE(Math.round((mxy-mny)*10),32);
-  hdr.writeInt16LE(Math.round(mnx*10),36);hdr.writeInt16LE(Math.round(mxx*10),40);
-  hdr.writeInt16LE(Math.round(mny*10),44);hdr.writeInt16LE(Math.round(mxy*10),48);
-  hdr.write("(c)Stichai",56,"ascii");hdr.writeInt16LE(cc+1,88);
+
+  // FIX v50: DST header bounds must be Int32LE and in 0.1mm units.
+  // Our pixel coords are already 0.1mm (800px = 80mm), so no *10 needed.
+  hdr.writeInt32LE(sc,20);
+  hdr.writeInt32LE(cc,24);
+  hdr.writeInt32LE(Math.round(mxx-mnx),28);   // extent X in 0.1mm
+  hdr.writeInt32LE(Math.round(mxy-mny),32);   // extent Y in 0.1mm
+  hdr.writeInt32LE(Math.round(mnx),36);       // min X
+  hdr.writeInt32LE(Math.round(mxx),40);       // max X
+  hdr.writeInt32LE(Math.round(mny),44);       // min Y
+  hdr.writeInt32LE(Math.round(mxy),48);       // max Y
+  hdr.write("(c)Stichai",56,"ascii");
+  hdr.writeInt16LE(cc+1,88);
+
   return Buffer.concat([hdr,...recs]);
 }
 
@@ -1141,9 +1150,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"49.0",features:"fixed-pixmap-remap,mask-contain,diversity-colors"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"50.0",features:"fixed-dst-header-bounds,pixmap-remap,mask-contain"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v49 | :${PORT} | fixed ci index`));
+const server=app.listen(PORT,()=>console.log(`Stichai v50 | :${PORT} | fixed ci index`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
