@@ -1,15 +1,12 @@
 /**
- * Stichai v45 — Mask-Aware Color Extraction + User Color Count
+ * Stichai v46 — Bucketed Color Extraction
  * ═══════════════════════════════════════════════════════════════════
- *  FIXES FROM v44
+ *  FIX FROM v45
  *  ──────────────────────────────────────────────────────────────
- *  1. Colors are extracted from UNMASKED PIXELS ONLY. Sand never
- *     enters the palette, so all slots go to the baby/details.
- *  2. User chooses color count (3-16) in HTML. Sent to server.
- *  3. No Sharp quantizer — we build the palette from raw pixel
- *     histogram of unmasked area, then map every pixel manually.
- *  4. Gemini is used for metadata only (notes, is_logo, etc.).
- *     Color extraction is 100% mask-aware and deterministic.
+ *  Colors are extracted from a downsampled image using RGB
+ *  bucketing (round to nearest 24). This groups thousands of
+ *  similar photo shades into ~50 distinct buckets. The top N
+ *  buckets become the palette — guaranteed distinct colors.
  */
 
 "use strict";
@@ -64,14 +61,6 @@ function rgbToLab({r,g,b}) {
 }
 function dE(a,b){return Math.sqrt((a.l-b.l)**2+(a.a-b.a)**2+(a.b-b.b)**2);}
 function normHex(h){const m=(h||"").match(/^#?([0-9a-fA-F]{6})$/i);return m?`#${m[1].toUpperCase()}`:"#000000";}
-function dedupe(cols){
-  const out=[];
-  for(const c of cols){
-    const lab=rgbToLab(hexToRgb(c));
-    if(!out.some(u=>dE(lab,rgbToLab(hexToRgb(u)))<18))out.push(normHex(c));
-  }
-  return out;
-}
 function isNearWhite(hex){const {r,g,b}=hexToRgb(hex);return r>230&&g>230&&b>230;}
 function isNearBlack(hex){const {r,g,b}=hexToRgb(hex);return r<40&&g<40&&b<40;}
 
@@ -135,15 +124,17 @@ async function preprocessImage(buffer, canvasSize) {
     .toBuffer();
 }
 
-/* ─── MASK-AWARE COLOR EXTRACTION ────────────────────────*/
+/* ─── MASK-AWARE BUCKETED COLOR EXTRACTION ───────────────*/
 async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, maxColors) {
+  const analysisSize = 200;
+  
   const imgRaw = await sharp(imageBuffer)
-    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
+    .resize(analysisSize, analysisSize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
     .raw()
     .toBuffer({ resolveWithObject: true });
   
   const maskRaw = maskBuffer ? await sharp(maskBuffer)
-    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .resize(analysisSize, analysisSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .raw()
     .toBuffer({ resolveWithObject: true }) : null;
   
@@ -152,55 +143,88 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
   const mData = maskRaw ? maskRaw.data : null;
   const mCh = maskRaw ? maskRaw.info.channels : 0;
   
-  const colorFreq = new Map();
+  // Bucket by rounding RGB to nearest 24 → ~11 levels per channel, ~1331 buckets max
+  const bucketFreq = new Map();
+  const bucketSums = new Map();
+  
   let totalUnmasked = 0;
   
-  for (let i = 0; i < canvasSize * canvasSize; i++) {
+  for (let i = 0; i < analysisSize * analysisSize; i++) {
     const iOff = i * iCh;
     
-    let isMasked = false;
     if (mData) {
       const mOff = i * mCh;
       const mR = mData[mOff] || 0;
       const mG = mData[mOff + 1] || 0;
       const mB = mData[mOff + 2] || 0;
       const mA = mCh >= 4 ? mData[mOff + 3] : 255;
-      isMasked = mR > 140 && mG < 90 && mB < 90 && mA > 30;
+      if (mR > 140 && mG < 90 && mB < 90 && mA > 30) continue;
     }
     
-    if (!isMasked) {
-      const r = iData[iOff], g = iData[iOff + 1], b = iData[iOff + 2];
-      const h = "#" + [r, g, b].map(c => c.toString(16).padStart(2, "0")).join("").toUpperCase();
-      colorFreq.set(h, (colorFreq.get(h) || 0) + 1);
-      totalUnmasked++;
-    }
+    totalUnmasked++;
+    const r = iData[iOff], g = iData[iOff + 1], b = iData[iOff + 2];
+    
+    const br = Math.min(255, Math.round(r / 24) * 24);
+    const bg = Math.min(255, Math.round(g / 24) * 24);
+    const bb = Math.min(255, Math.round(b / 24) * 24);
+    const key = (br << 16) | (bg << 8) | bb;
+    
+    bucketFreq.set(key, (bucketFreq.get(key) || 0) + 1);
+    
+    if (!bucketSums.has(key)) bucketSums.set(key, { r: 0, g: 0, b: 0, n: 0 });
+    const s = bucketSums.get(key);
+    s.r += r; s.g += g; s.b += b; s.n++;
   }
   
   if (totalUnmasked === 0) return ["#000000"];
   
-  const sorted = [...colorFreq.entries()].sort((a, b) => b[1] - a[1]);
+  const sorted = [...bucketFreq.entries()].sort((a, b) => b[1] - a[1]);
   
-  // Protect white/black if significant in unmasked area
-  const brightPixels = sorted.filter(([h]) => isNearWhite(h)).reduce((a, [_, c]) => a + c, 0);
-  const darkPixels = sorted.filter(([h]) => isNearBlack(h)).reduce((a, [_, c]) => a + c, 0);
-  
-  let colors = sorted.slice(0, maxColors).map(([h]) => normHex(h));
-  
-  if (brightPixels / totalUnmasked > 0.005 && !colors.some(h => isNearWhite(h))) {
-    colors.unshift('#FFFFFF');
+  // Build palette from top buckets using average color of each bucket
+  const colors = [];
+  for (let i = 0; i < Math.min(maxColors, sorted.length); i++) {
+    const [key] = sorted[i];
+    const s = bucketSums.get(key);
+    const avgR = Math.round(s.r / s.n);
+    const avgG = Math.round(s.g / s.n);
+    const avgB = Math.round(s.b / s.n);
+    const hex = "#" + [avgR, avgG, avgB].map(c => c.toString(16).padStart(2, "0")).join("").toUpperCase();
+    colors.push(normHex(hex));
   }
-  if (darkPixels / totalUnmasked > 0.005 && !colors.some(h => isNearBlack(h))) {
-    colors.push('#000000');
+  
+  // Light dedupe — only merge if extremely similar (dE < 10)
+  const deduped = [];
+  for (const c of colors) {
+    const lab = rgbToLab(hexToRgb(c));
+    const dup = deduped.some(u => dE(lab, rgbToLab(hexToRgb(u))) < 10);
+    if (!dup) deduped.push(c);
   }
   
-  colors = dedupe(colors).slice(0, maxColors);
-  if (!colors.length) colors = ["#000000"];
+  // Protect white/black if significant in unmasked area but missing from palette
+  let brightCount = 0, darkCount = 0;
+  for (let i = 0; i < analysisSize * analysisSize; i++) {
+    if (mData) {
+      const mOff = i * mCh;
+      if (mData[mOff] > 140 && mData[mOff+1] < 90 && mData[mOff+2] < 90 && (mCh < 4 || mData[mOff+3] > 30)) continue;
+    }
+    const iOff = i * iCh;
+    if (iData[iOff] > 240 && iData[iOff+1] > 240 && iData[iOff+2] > 240) brightCount++;
+    if (iData[iOff] < 30 && iData[iOff+1] < 30 && iData[iOff+2] < 30) darkCount++;
+  }
   
-  console.log(`Extracted ${colors.length} colors from ${totalUnmasked} unmasked pixels`);
-  return colors;
+  if (!deduped.some(c => isNearWhite(c)) && brightCount / totalUnmasked > 0.01) {
+    deduped.unshift('#FFFFFF');
+  }
+  if (!deduped.some(c => isNearBlack(c)) && darkCount / totalUnmasked > 0.01) {
+    deduped.push('#000000');
+  }
+  
+  const result = deduped.slice(0, maxColors);
+  console.log(`Extracted ${result.length} colors from ${totalUnmasked} unmasked pixels: ${result.join(', ')}`);
+  return result.length ? result : ["#000000"];
 }
 
-/* ─── PIXEL MAP (mask-aware, no quantizer) ───────────────*/
+/* ─── PIXEL MAP (mask-aware, full resolution) ────────────*/
 async function buildPixelMap(imageBuffer, maskBuffer, colors, canvasSize) {
   const imgRaw = await sharp(imageBuffer)
     .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
@@ -825,12 +849,11 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
 
     const cleanedBuffer = await preprocessImage(imgFile.buffer, canvasSize);
     
-    // Extract colors from UNMASKED pixels only — sand never enters palette
+    // Extract colors from UNMASKED pixels only using bucketing
     const colors = await extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount);
     
     const gem = await analyzeWithGemini(imgFile.buffer, imgFile.mimetype || "image/png", colorCount);
 
-    // Build pixel map: masked = -1 hole, unmasked = nearest color
     const pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
     const rawRegions = extractRegions(pixMap, colors, canvasSize);
     const regions = mergeAdjacentRegions(rawRegions);
@@ -1028,9 +1051,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"45.0",features:"unmasked-colors,user-color-count,mask-holes"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"46.0",features:"bucketed-colors,user-color-count,mask-holes"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v45 | :${PORT} | unmasked extraction`));
+const server=app.listen(PORT,()=>console.log(`Stichai v46 | :${PORT} | bucketed extraction`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
