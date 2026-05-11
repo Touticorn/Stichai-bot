@@ -1,5 +1,5 @@
 /**
- * Stichai v48 — Fix color index crash + mask aspect ratio
+ * Stichai v49 — Fix color index crash + mask aspect ratio
  * ═══════════════════════════════════════════════════════════════════
  *  FIXES FROM v47
  *  ──────────────────────────────────────────────────────────────
@@ -1028,11 +1028,29 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
     }catch(e){}
 
     if(selectedColors.length < colors.length){
+      // FIX v49: Clone pixMap so we don't corrupt the detection cache,
+      // AND remap remaining color indices to match the new selectedColors array.
+      pixMap = new Int16Array(pixMap);
+
+      const oldToNew = {};
       const excludedCis = new Set();
-      colors.forEach((c,ci) => { if(!selectedColors.includes(normHex(c))) excludedCis.add(ci); });
-      for(let i=0;i<pixMap.length;i++){ if(excludedCis.has(pixMap[i])) pixMap[i]=-1; }
+      colors.forEach((c,ci) => {
+        if(!selectedColors.includes(normHex(c))) {
+          excludedCis.add(ci);
+        } else {
+          oldToNew[ci] = selectedColors.findIndex(sc => normHex(sc) === normHex(c));
+        }
+      });
+
+      for(let i=0;i<pixMap.length;i++){
+        if(excludedCis.has(pixMap[i])) {
+          pixMap[i] = -1;
+        } else if (pixMap[i] >= 0) {
+          pixMap[i] = oldToNew[pixMap[i]];
+        }
+      }
+
       filteredRegions = filteredRegions.filter(r => selectedColors.includes(normHex(r.color)));
-      // FIX v48: Re-index ci to match the shortened selectedColors array
       filteredRegions = filteredRegions.map(r => ({
         ...r,
         ci: selectedColors.findIndex(c => normHex(c) === normHex(r.color))
@@ -1123,9 +1141,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"48.0",features:"fixed-ci-index,mask-contain,diversity-colors"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"49.0",features:"fixed-pixmap-remap,mask-contain,diversity-colors"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v48 | :${PORT} | fixed ci index`));
+const server=app.listen(PORT,()=>console.log(`Stichai v49 | :${PORT} | fixed ci index`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
