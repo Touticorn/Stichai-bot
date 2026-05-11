@@ -1,5 +1,5 @@
 /**
- * Stichai v53 — Fix color index crash + mask aspect ratio
+ * Stichai v55 — Fix color index crash + mask aspect ratio
  * ═══════════════════════════════════════════════════════════════════
  *  FIXES FROM v47
  *  ──────────────────────────────────────────────────────────────
@@ -570,6 +570,8 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
       }
     }
 
+    // FIX v54: Reset lastX/lastY before fill so underlay doesn't create long trims into fill
+    lastX=-1;lastY=-1;
     let rowIdx=0;
     for(let y=mny;y<=mxy;y+=pRow){
       const runs=getRunsInRow(pixMap,ci,y,mnx,mxx,canvasSize);
@@ -858,12 +860,19 @@ function encodeDST(stitches){
     if(s.color!==lCol&&lCol!==null){recs.push(Buffer.from([0,0,0xC3]));cc++;}
     lCol=s.color;
     if(s.type==="trim"){
-      // FIX v53: Encode trim moves as visible stitches (0x03) like the old code did,
-      // but without the 3 bogus color changes (0xC3) that broke viewers.
+      // FIX v55: Encode long trim moves as jumps (0x83) so viewers hide them.
+      // Short moves stay as stitches (0x03). Proper ±121 clamping per step.
       const dx=s.x-px,dy=s.y-py;px=s.x;py=s.y;
       const steps=Math.max(1,Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))/121));
       let ppx=0,ppy=0;
-      for(let i=1;i<=steps;i++){const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);recs.push(stitchRecord(fx-ppx,fy-ppy));ppx=fx;ppy=fy;}
+      for(let i=1;i<=steps;i++){
+        const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);
+        const sx=fx-ppx,sy=fy-ppy;
+        const cx=Math.max(-121,Math.min(121,Math.round(sx)));
+        const cy=Math.max(-121,Math.min(121,Math.round(sy)));
+        recs.push(Buffer.from([cy>=0?cy:0x100+cy,cx>=0?cx:0x100+cx,0x83]));
+        ppx=fx;ppy=fy;
+      }
       continue;
     }
     const dx=Math.round(s.x-px),dy=Math.round(s.y-py);px=s.x;py=s.y;
@@ -1151,9 +1160,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"53.0",features:"fixed-trim-visible,dst-header-bounds,pixmap-remap"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"55.0",features:"fixed-trim-jumps,dst-header-bounds,pixmap-remap"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v53 | :${PORT} | fixed ci index`));
+const server=app.listen(PORT,()=>console.log(`Stichai v55 | :${PORT} | fixed ci index`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
