@@ -1,14 +1,16 @@
 /**
- * Stichai v43 — Mask-Before-Quantize + Color Protection + Sharp-Only
+ * Stichai v44 — Mask as Holes, Not Colors
  * ═══════════════════════════════════════════════════════════════════
- *  FIXES
+ *  FIXES FROM v43
  *  ──────────────────────────────────────────────────────────────
- *  1. Mask is composited onto the original image BEFORE color
- *     quantization, so removed background can't steal palette slots.
- *  2. Photo mode uses 10 colors instead of 6.
- *  3. White & black are protected/injected if significant in image.
- *  4. buildPixelMap uses Sharp instead of Jimp (no version crash).
- *  5. Unmatched pixels are forced to nearest color — no holes.
+ *  1. Mask creates -1 holes in the pixel map — masked pixels are
+ *     completely excluded from regions & stitches, never quantized.
+ *  2. Quantization runs on the ORIGINAL image (background intact),
+ *     so white clothes, eyes, skin tones all survive in the palette.
+ *  3. Photo mode: 12 colors (was 6, then 10) — enough slots for
+ *     sand, white clothes, skin, hair, eyes, shadows.
+ *  4. Removed compositeMask — no more fake white background.
+ *  5. buildPixelMap uses Sharp (no Jimp crash).
  */
 
 "use strict";
@@ -124,58 +126,9 @@ function getStitchParams(specs) {
   return p;
 }
 
-/* ─── MASK COMPOSITE (apply BEFORE quantization) ─────────*/
-async function compositeMask(imageBuffer, maskBuffer, canvasSize) {
-  const maskRaw = await sharp(maskBuffer)
-    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const imgRaw = await sharp(imageBuffer)
-    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const { data: mData, info: mInfo } = maskRaw;
-  const { data: iData, info: iInfo } = imgRaw;
-  const iCh = iInfo.channels;
-  const mCh = mInfo.channels;
-  const out = Buffer.from(iData);
-
-  let maskedPixels = 0;
-  for (let y = 0; y < canvasSize; y++) {
-    for (let x = 0; x < canvasSize; x++) {
-      const idx = y * canvasSize + x;
-      const iOff = idx * iCh;
-      const mOff = idx * mCh;
-
-      const mR = mData[mOff] || 0;
-      const mG = mData[mOff + 1] || 0;
-      const mB = mData[mOff + 2] || 0;
-      const mA = mCh >= 4 ? mData[mOff + 3] : 255;
-
-      const shouldRemove = mR > 140 && mG < 90 && mB < 90 && mA > 30;
-
-      if (shouldRemove) {
-        out[iOff] = 255;
-        out[iOff + 1] = 255;
-        out[iOff + 2] = 255;
-        if (iCh >= 4) out[iOff + 3] = 255;
-        maskedPixels++;
-      }
-    }
-  }
-
-  console.log(`Mask composited: ${maskedPixels}px (${(maskedPixels / (canvasSize * canvasSize) * 100).toFixed(1)}%)`);
-
-  return await sharp(out, { raw: { width: canvasSize, height: canvasSize, channels: iCh } })
-    .png()
-    .toBuffer();
-}
-
-/* ─── IMAGE PRE-PROCESSING ───────────────────────────────*/
+/* ─── IMAGE PRE-PROCESSING (original image, no mask) ─────*/
 async function preprocessImage(buffer, canvasSize, mode) {
-  const colorCount = mode === 'photo' ? 10 : 16;
+  const colorCount = mode === 'photo' ? 12 : 16;
 
   const cleaned = await sharp(buffer)
     .resize(canvasSize, canvasSize, {fit:"contain",background:{r:255,g:255,b:255,alpha:1}})
@@ -204,7 +157,6 @@ async function preprocessImage(buffer, canvasSize, mode) {
   const bgColor = sorted[0][0];
   const totalPixels = canvasSize * canvasSize;
 
-  // Protect white & black: inject if significant but missing from palette
   const fallback = sorted.map(([h]) => h);
   if(brightPixels / totalPixels > 0.005 && !fallback.some(h => isNearWhite(h))) {
     fallback.unshift('#FFFFFF');
@@ -273,8 +225,8 @@ Return ONLY valid JSON, no markdown.
   }catch(e){console.error("Gemini JSON:",e.message);return null;}
 }
 
-/* ─── PIXEL MAP (Sharp-based, no Jimp) ───────────────────*/
-async function buildPixelMap(buffer, colors, canvasSize) {
+/* ─── PIXEL MAP (Sharp-based, mask creates holes) ────────*/
+async function buildPixelMap(buffer, colors, canvasSize, maskBuffer = null) {
   const { data, info } = await sharp(buffer)
     .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
     .raw()
@@ -285,64 +237,50 @@ async function buildPixelMap(buffer, colors, canvasSize) {
   const TOL   = 50;
   const pixMap= new Int16Array(canvasSize*canvasSize).fill(-1);
 
+  // Map each pixel to nearest color
   for(let y=0;y<canvasSize;y++){
     for(let x=0;x<canvasSize;x++){
       const i=(y*canvasSize+x)*channels;
       const lab=rgbToLab({r:data[i],g:data[i+1],b:data[i+2]});
       let best=-1,bestD=TOL;
       for(let c=0;c<labC.length;c++){const d=dE(lab,labC[c]);if(d<bestD){bestD=d;best=c;}}
-
-      // FIX: force nearest color if nothing matched within TOL — prevents holes
       if(best===-1 && labC.length>0){
         bestD=Infinity;
         for(let c=0;c<labC.length;c++){const d=dE(lab,labC[c]);if(d<bestD){bestD=d;best=c;}}
       }
-
       pixMap[y*canvasSize+x]=best;
     }
   }
 
-  // Neighborhood fill for any remaining -1 (safety net)
-  for(let y=1;y<canvasSize-1;y++){
-    for(let x=1;x<canvasSize-1;x++){
-      const idx=y*canvasSize+x;
-      if(pixMap[idx]!==-1)continue;
-      const nbr=[pixMap[idx-1],pixMap[idx+1],pixMap[idx-canvasSize],pixMap[idx+canvasSize]].filter(n=>n!==-1);
-      if(nbr.length>=3){
-        const freq={};
-        for(const n of nbr)freq[n]=(freq[n]||0)+1;
-        const top=Object.entries(freq).sort((a,b)=>+b[1]-+a[1])[0];
-        if(top&&+top[1]>=3)pixMap[idx]=+top[0];
-      }
-    }
-  }
-
-  // Final sweep: spread nearest valid neighbor into any stubborn -1 pixels
-  for(let y=0;y<canvasSize;y++){
-    for(let x=0;x<canvasSize;x++){
-      const idx=y*canvasSize+x;
-      if(pixMap[idx]!==-1)continue;
-      let filled=false;
-      for(let r=1;r<20 && !filled;r++){
-        for(let dy=-r;dy<=r && !filled;dy++){
-          for(let dx=-r;dx<=r && !filled;dx++){
-            const ny=y+dy,nx=x+dx;
-            if(ny>=0&&ny<canvasSize&&nx>=0&&nx<canvasSize){
-              const ni=ny*canvasSize+nx;
-              if(pixMap[ni]!==-1){pixMap[idx]=pixMap[ni];filled=true;}
-            }
-          }
+  // Apply mask: punch holes (-1) where user painted red
+  if(maskBuffer){
+    const maskRaw = await sharp(maskBuffer)
+      .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    
+    const { data: mData, info: mInfo } = maskRaw;
+    const mCh = mInfo.channels;
+    
+    for(let y=0;y<canvasSize;y++){
+      for(let x=0;x<canvasSize;x++){
+        const idx=y*canvasSize+x;
+        const mOff=idx*mCh;
+        const mR=mData[mOff]||0;
+        const mG=mData[mOff+1]||0;
+        const mB=mData[mOff+2]||0;
+        const mA=mCh>=4?mData[mOff+3]:255;
+        if(mR>140 && mG<90 && mB<90 && mA>30){
+          pixMap[idx]=-1;
         }
       }
-      if(pixMap[idx]===-1)pixMap[idx]=0;
     }
   }
 
   const cnt=new Array(colors.length).fill(0);let un=0;
   for(let i=0;i<pixMap.length;i++){if(pixMap[i]>=0)cnt[pixMap[i]]++;else un++;}
   const total=canvasSize*canvasSize;
-  console.log("Coverage:",cnt.map((c,i)=>`${normHex(colors[i])}:${(c/total*100).toFixed(1)}%`).join(" "),
-    `unmatched:${(un/total*100).toFixed(1)}%`);
+  console.log("Coverage:",cnt.map((c,i)=>`${normHex(colors[i])}:${(c/total*100).toFixed(1)}%`).join(" "),`unmatched:${(un/total*100).toFixed(1)}%`);
 
   return pixMap;
 }
@@ -359,7 +297,7 @@ function getRunsInRow(pixMap,ci,y,x0,x1,canvasSize){
   return runs;
 }
 
-/* ─── REGION EXTRACTION ──────────────────────────────────*/
+/* ─── REGION EXTRACTION (naturally skips -1 holes) ───────*/
 function extractRegions(pixMap, colors, canvasSize) {
   const visited  = new Uint8Array(canvasSize*canvasSize);
   const regions  = [];
@@ -872,26 +810,20 @@ app.post("/detect-shapes", upload.fields([{name:"image",maxCount:1},{name:"mask"
 
     console.log(`[${rid}] DETECT: mode=${mode} size=${canvasSize}px=${designMm}mm`);
 
-    // FIX: Apply mask BEFORE quantization so background can't steal palette slots
-    let workingBuffer = imgFile.buffer;
-    if(maskFile) workingBuffer = await compositeMask(imgFile.buffer, maskFile.buffer, canvasSize);
-
-    let pre = await preprocessImage(workingBuffer, canvasSize, mode);
+    // Quantize ORIGINAL image — background stays intact, all real colors survive
+    let pre = await preprocessImage(imgFile.buffer, canvasSize, mode);
     const gem = await analyzeWithGemini(imgFile.buffer, imgFile.mimetype || "image/png");
 
     let colors;
     if(gem && gem.colors && gem.colors.length >= 1){
-      colors = gem.colors;
-      // Protect white/black in Gemini results too
-      if(!colors.some(c => isNearWhite(c))) colors.unshift('#FFFFFF');
-      if(!colors.some(c => isNearBlack(c))) colors.push('#000000');
-      colors = dedupe(colors);
+      colors = dedupe(gem.colors);
     }else{
-      colors = cleanFallbackColors(pre.fallbackColors, mode === 'photo' ? 10 : 16);
+      colors = cleanFallbackColors(pre.fallbackColors, mode === 'photo' ? 12 : 16);
     }
     if(!colors.length) colors = ["#000000"];
 
-    const pixMap = await buildPixelMap(pre.buffer, colors, canvasSize);
+    // Build pixel map with mask creating holes (-1) — masked pixels excluded forever
+    const pixMap = await buildPixelMap(pre.buffer, colors, canvasSize, maskFile?.buffer);
     const rawRegions = extractRegions(pixMap, colors, canvasSize);
     const regions = mergeAdjacentRegions(rawRegions);
 
@@ -964,25 +896,18 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       mode = body.mode || 'logo';
       canvasSize = parseInt(body.canvasSize) || 800;
       
-      // FIX: mask-before-quantize here too
-      let workingBuffer = imgFile.buffer;
-      if(maskFile) workingBuffer = await compositeMask(imgFile.buffer, maskFile.buffer, canvasSize);
-
-      let pre = await preprocessImage(workingBuffer, canvasSize, mode);
+      let pre = await preprocessImage(imgFile.buffer, canvasSize, mode);
       const gem = await analyzeWithGemini(imgFile.buffer, imgFile.mimetype || "image/png");
       let colorMeta={};
       if(gem && gem.colors && gem.colors.length >= 1){
-        colors = gem.colors;
-        if(!colors.some(c => isNearWhite(c))) colors.unshift('#FFFFFF');
-        if(!colors.some(c => isNearBlack(c))) colors.push('#000000');
-        colors = dedupe(colors);
+        colors = dedupe(gem.colors);
         colorMeta = gem.meta || {};
       }else{
-        colors = cleanFallbackColors(pre.fallbackColors, mode === 'photo' ? 10 : 16);
+        colors = cleanFallbackColors(pre.fallbackColors, mode === 'photo' ? 12 : 16);
       }
       if(!colors.length) colors = ["#000000"];
 
-      pixMap = await buildPixelMap(pre.buffer, colors, canvasSize);
+      pixMap = await buildPixelMap(pre.buffer, colors, canvasSize, maskFile?.buffer);
       const rawRegions = extractRegions(pixMap, colors, canvasSize);
       regions = mergeAdjacentRegions(rawRegions);
     }
@@ -1100,9 +1025,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"43.0",features:"mask-first,10color-photo,sharp-only,color-protect"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"44.0",features:"mask-holes,12color-photo,sharp-only"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v43 | :${PORT} | mask-first quantize`));
+const server=app.listen(PORT,()=>console.log(`Stichai v44 | :${PORT} | mask-holes quantize`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
