@@ -1,5 +1,5 @@
 /**
- * Stichai v60 — Fix color index crash + mask aspect ratio
+ * Stichai v62 — Fix color index crash + mask aspect ratio
  * ═══════════════════════════════════════════════════════════════════
  *  FIXES FROM v47
  *  ──────────────────────────────────────────────────────────────
@@ -963,44 +963,37 @@ function encodeDST(stitches){
   hdr.write("Stichai",0,"ascii");
   const recs=[];
   let lCol=null,px=0,py=0,sc=0,cc=0,mnx=0,mxx=0,mny=0,mxy=0,ax=0,ay=0;
-  let first=true;
   let sewMnx=Infinity,sewMxx=-Infinity,sewMny=Infinity,sewMxy=-Infinity;
   for(const s of stitches){
-    // FIX v56: First stitch sets origin without jumping from (0,0)
-    if(first){px=s.x;py=s.y;ax=px;ay=py;first=false;continue;}
     ax+=s.x-px;ay+=s.y-py;
-    if(s.color!==lCol&&lCol!==null){recs.push(Buffer.from([0,0,0xC3]));cc++;}
+    if(s.color!==lCol&&lCol!==null){recs.push(Buffer.from([0,0,0xC3]));cc++;sc++;}
     lCol=s.color;
     if(s.type==="trim"||s.type==="bridge"){
-      // v60: Encode ALL moves as visible stitches (0x03) for universal viewer compatibility.
       const dx=s.x-px,dy=s.y-py;px=s.x;py=s.y;
       const steps=Math.max(1,Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))/121));
       let ppx=0,ppy=0;
-      for(let i=1;i<=steps;i++){const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);recs.push(stitchRecord(fx-ppx,fy-ppy));ppx=fx;ppy=fy;}
+      for(let i=1;i<=steps;i++){const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);recs.push(stitchRecord(fx-ppx,fy-ppy));ppx=fx;ppy=fy;sc++;}
       continue;
     }
-    // FIX v57: Only update SEWING bounds for normal stitches (0x03), not jumps
     if(ax<sewMnx)sewMnx=ax;if(ax>sewMxx)sewMxx=ax;if(ay<sewMny)sewMny=ay;if(ay>sewMxy)sewMxy=ay;
     const dx=Math.round(s.x-px),dy=Math.round(s.y-py);px=s.x;py=s.y;
     if(Math.abs(dx)>121||Math.abs(dy)>121){
       const steps=Math.max(Math.ceil(Math.abs(dx)/121),Math.ceil(Math.abs(dy)/121));
       let ppx=0,ppy=0;
-      for(let i=1;i<=steps;i++){const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);recs.push(stitchRecord(fx-ppx,fy-ppy));ppx=fx;ppy=fy;}
-    }else recs.push(stitchRecord(dx,dy));
-    sc++;
+      for(let i=1;i<=steps;i++){const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);recs.push(stitchRecord(fx-ppx,fy-ppy));ppx=fx;ppy=fy;sc++;}
+    }else{recs.push(stitchRecord(dx,dy));sc++;}
   }
   recs.push(Buffer.from([0,0,0xF3]));
 
-  // FIX v57: Use sewing bounds for the header so viewer zooms to actual design, not needle travel
   if(sewMnx===Infinity){sewMnx=mnx;sewMxx=mxx;sewMny=mny;sewMxy=mxy;}
   hdr.writeInt32LE(sc,20);
   hdr.writeInt32LE(cc,24);
-  hdr.writeInt32LE(Math.round(sewMxx-sewMnx),28);   // extent X in 0.1mm
-  hdr.writeInt32LE(Math.round(sewMxy-sewMny),32);   // extent Y in 0.1mm
-  hdr.writeInt32LE(Math.round(sewMnx),36);          // min X
-  hdr.writeInt32LE(Math.round(sewMxx),40);          // max X
-  hdr.writeInt32LE(Math.round(sewMny),44);          // min Y
-  hdr.writeInt32LE(Math.round(sewMxy),48);          // max Y
+  hdr.writeInt32LE(Math.round(sewMxx-sewMnx),28);
+  hdr.writeInt32LE(Math.round(sewMxy-sewMny),32);
+  hdr.writeInt32LE(Math.round(sewMnx),36);
+  hdr.writeInt32LE(Math.round(sewMxx),40);
+  hdr.writeInt32LE(Math.round(sewMny),44);
+  hdr.writeInt32LE(Math.round(sewMxy),48);
   hdr.write("(c)Stichai",56,"ascii");
   hdr.writeInt16LE(cc+1,88);
 
@@ -1266,9 +1259,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"60.0",features:"bridge-absolute,universal-0x03,dst-header-bounds"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"62.0",features:"fixed-stitch-count,bridge-origin-fix,universal-0x03"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v60 | :${PORT} | fixed ci index`));
+const server=app.listen(PORT,()=>console.log(`Stichai v62 | :${PORT} | fixed ci index`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
