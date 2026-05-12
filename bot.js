@@ -1,5 +1,5 @@
 /**
- * Stichai v58 — Fix color index crash + mask aspect ratio
+ * Stichai v59 — Fix color index crash + mask aspect ratio
  * ═══════════════════════════════════════════════════════════════════
  *  FIXES FROM v47
  *  ──────────────────────────────────────────────────────────────
@@ -510,136 +510,247 @@ function mergeAdjacentRegions(regions) {
   return merged;
 }
 
-/* ─── STITCH GENERATION ───────────────────────────────────*/
+/* ─── BRIDGE CONNECTOR (v59) ─────────────────────────────*/
+function getEdgePixels(pixMap, reg, canvasSize) {
+  const edge = [];
+  for (let y = reg.mny; y <= reg.mxy; y++) {
+    for (let x = reg.mnx; x <= reg.mxx; x++) {
+      const idx = y * canvasSize + x;
+      if (pixMap[idx] === reg.ci) {
+        let isEdge = false;
+        for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= canvasSize || ny < 0 || ny >= canvasSize) { isEdge = true; break; }
+          if (pixMap[ny * canvasSize + nx] !== reg.ci) { isEdge = true; break; }
+        }
+        if (isEdge) edge.push({x, y});
+      }
+    }
+  }
+  return edge.length ? edge : [{x: Math.round((reg.mnx + reg.mxx) / 2), y: Math.round((reg.mny + reg.mxy) / 2)}];
+}
+
+function findClosestPair(edgeA, edgeB) {
+  let best = {from: edgeA[0], to: edgeB[0], dist: Infinity};
+  for (const a of edgeA) {
+    for (const b of edgeB) {
+      const d = (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
+      if (d < best.dist) best = {from: a, to: b, dist: d};
+    }
+  }
+  return best;
+}
+
+function sortRegionsNearestNeighbor(regions) {
+  if (regions.length <= 1) return regions;
+  const sorted = [regions[0]];
+  const used = new Set([0]);
+  while (used.size < regions.length) {
+    const last = sorted[sorted.length - 1];
+    const lastCx = (last.mnx + last.mxx) / 2;
+    const lastCy = (last.mny + last.mxy) / 2;
+    let bestIdx = -1, bestDist = Infinity;
+    for (let i = 0; i < regions.length; i++) {
+      if (used.has(i)) continue;
+      const r = regions[i];
+      const d = ((r.mnx + r.mxx) / 2 - lastCx) ** 2 + ((r.mny + r.mxy) / 2 - lastCy) ** 2;
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    if (bestIdx === -1) break;
+    used.add(bestIdx);
+    sorted.push(regions[bestIdx]);
+  }
+  return sorted;
+}
+
+function generateBridgeStitches(fromX, fromY, toX, toY, color) {
+  const dx = toX - fromX, dy = toY - fromY;
+  const dist = Math.hypot(dx, dy);
+  const steps = Math.max(1, Math.ceil(dist / 8)); // 0.8mm bridge stitches
+  const stitches = [];
+  let px = fromX, py = fromY;
+  for (let i = 1; i <= steps; i++) {
+    const fx = Math.round(fromX + dx * i / steps);
+    const fy = Math.round(fromY + dy * i / steps);
+    const sx = fx - px, sy = fy - py;
+    stitches.push({x: sx, y: sy, color, type: "bridge"});
+    px = fx; py = fy;
+  }
+  return stitches;
+}
+
+/* ─── STITCH GENERATION (with bridge connector) ────────────*/
 function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize) {
-  const stitches    = [];
-  const colorCounts = colors.map(()=>({fill:0,satin:0,running:0}));
+  const stitches = [];
+  const colorCounts = colors.map(() => ({fill: 0, satin: 0, running: 0}));
 
   const P = params || {};
-  const pRow   = P.tatamiRow   !== undefined ? P.tatamiRow   : 4;
-  const pLen   = P.tatamiLen   !== undefined ? P.tatamiLen   : 30;
-  const pUl    = P.tatamiUl    !== undefined ? P.tatamiUl    : 40;
-  const pPull  = P.pull        !== undefined ? P.pull        : 2;
+  const pRow = P.tatamiRow !== undefined ? P.tatamiRow : 4;
+  const pLen = P.tatamiLen !== undefined ? P.tatamiLen : 30;
+  const pUl = P.tatamiUl !== undefined ? P.tatamiUl : 40;
+  const pPull = P.pull !== undefined ? P.pull : 2;
 
-  function emitTrim(x0,y0,x1,y1,color){
-    stitches.push({x:Math.round(x0),y:Math.round(y0),color,type:"trim"});
-    stitches.push({x:Math.round(x1),y:Math.round(y1),color,type:"trim"});
+  // FIX v59: Precompute edge pixels and reorder regions by nearest-neighbor within each color
+  const edgePixels = new Map();
+  for (const reg of regions) {
+    edgePixels.set(reg, getEdgePixels(pixMap, reg, canvasSize));
   }
 
-  let globalLastX=-1,globalLastY=-1;
+  // Group by (type, color) and sort each group by nearest neighbor
+  const byTypeColor = new Map();
+  for (const reg of regions) {
+    const key = reg.type + '|' + normHex(reg.color);
+    if (!byTypeColor.has(key)) byTypeColor.set(key, []);
+    byTypeColor.get(key).push(reg);
+  }
 
-  const ordered=[
-    ...regions.filter(r=>r.type==="fill"),
-    ...regions.filter(r=>r.type==="satin"),
-    ...regions.filter(r=>r.type==="running")
-  ];
+  const ordered = [];
+  for (const type of ['fill', 'satin', 'running']) {
+    for (const [key, group] of byTypeColor) {
+      if (key.startsWith(type + '|')) {
+        ordered.push(...sortRegionsNearestNeighbor(group));
+      }
+    }
+  }
 
-  for(const reg of ordered){
-    // FIX v48: Look up ci in the CURRENT colors array, don't trust reg.ci from original palette
+  let globalLastX = -1, globalLastY = -1;
+
+  for (let ri = 0; ri < ordered.length; ri++) {
+    const reg = ordered[ri];
     const ci = colors.findIndex(c => normHex(c) === normHex(reg.color));
     if (ci === -1) {
       console.warn(`Region color ${reg.color} not found in selected palette — skipping`);
       continue;
     }
-    
-    const {color,type,mnx,mny,mxx,mxy}=reg;
-    let lastX=globalLastX,lastY=globalLastY;
 
-    if(lastX!==-1){
-      const gap=Math.hypot(reg.mnx-lastX, reg.mny-lastY);
-      if(gap>SMART_TRIM) emitTrim(lastX,lastY,reg.mnx,reg.mny,color);
+    const {color, type, mnx, mny, mxx, mxy} = reg;
+    let lastX = globalLastX, lastY = globalLastY;
+
+    // FIX v59: Find closest edge point to previous region and bridge to it
+    if (lastX !== -1 && ri > 0) {
+      const prevReg = ordered[ri - 1];
+      if (normHex(prevReg.color) === normHex(reg.color)) {
+        const prevEdge = edgePixels.get(prevReg);
+        const currEdge = edgePixels.get(reg);
+        const pair = findClosestPair(prevEdge, currEdge);
+        const bridge = generateBridgeStitches(lastX, lastY, pair.to.x, pair.to.y, color);
+        stitches.push(...bridge);
+        lastX = pair.to.x;
+        lastY = pair.to.y;
+      } else {
+        // Different color — emit color change then jump to entry point
+        stitches.push({x: 0, y: 0, color, type: "trim"});
+        const entryEdge = edgePixels.get(reg);
+        const entry = entryEdge[Math.floor(entryEdge.length / 2)];
+        const bridge = generateBridgeStitches(lastX, lastY, entry.x, entry.y, color);
+        stitches.push(...bridge);
+        lastX = entry.x;
+        lastY = entry.y;
+      }
+    } else {
+      // First region — set origin to closest edge point
+      const entryEdge = edgePixels.get(reg);
+      const entry = entryEdge[Math.floor(entryEdge.length / 2)];
+      lastX = entry.x;
+      lastY = entry.y;
     }
 
-    if(type==="fill"){
-      let ulRow=0;
-      for(let y=mny;y<=mxy;y+=pUl){
-        const runs=getRunsInRow(pixMap,ci,y,mnx,mxx,canvasSize);
-        if(!runs.length)continue;
-        const rev=ulRow%2===1;
-        for(const{x1,x2} of (rev?[...runs].reverse():runs)){
-          const ux=rev?x2-pPull:x1+pPull;
-          if(lastX!==-1){
-            const g=Math.hypot(ux-lastX,y-lastY);
-            if(g>SMART_TRIM) emitTrim(lastX,lastY,ux,y,color);
-          } else stitches.push({x:ux,y,color,type:"trim"});
-          stitches.push({x:x1+pPull,y,color,type:"underlay"});
-          stitches.push({x:x2-pPull,y,color,type:"underlay"});
-          lastX=x2-pPull;lastY=y;
+    // Underlay (fill only)
+    if (type === "fill") {
+      let ulRow = 0;
+      for (let y = mny; y <= mxy; y += pUl) {
+        const runs = getRunsInRow(pixMap, ci, y, mnx, mxx, canvasSize);
+        if (!runs.length) continue;
+        const rev = ulRow % 2 === 1;
+        for (const {x1, x2} of (rev ? [...runs].reverse() : runs)) {
+          const ux = rev ? x2 - pPull : x1 + pPull;
+          stitches.push({x: ux - lastX, y: y - lastY, color, type: "underlay"});
+          stitches.push({x: (x2 - pPull) - ux, y: 0, color, type: "underlay"});
+          lastX = x2 - pPull;
+          lastY = y;
         }
         ulRow++;
       }
     }
 
-    // FIX v54: Reset lastX/lastY before fill so underlay doesn't create long trims into fill
-    lastX=-1;lastY=-1;
-    let rowIdx=0;
-    for(let y=mny;y<=mxy;y+=pRow){
-      const runs=getRunsInRow(pixMap,ci,y,mnx,mxx,canvasSize);
-      if(!runs.length)continue;
-      const rev=rowIdx%2===1;
-      const ord=rev?[...runs].reverse():runs;
+    // FIX v59: Reset lastX/lastY before fill so underlay doesn't create long trims into fill
+    lastX = -1; lastY = -1;
 
-      for(const{x1,x2} of ord){
-        const jx=rev?x2:x1;
+    let rowIdx = 0;
+    for (let y = mny; y <= mxy; y += pRow) {
+      const runs = getRunsInRow(pixMap, ci, y, mnx, mxx, canvasSize);
+      if (!runs.length) continue;
+      const rev = rowIdx % 2 === 1;
+      const ord = rev ? [...runs].reverse() : runs;
 
-        if(lastX!==-1){
-          const g=Math.hypot(jx-lastX,y-lastY);
-          if(g>SMART_TRIM) emitTrim(lastX,lastY,jx,y,color);
-        } else stitches.push({x:jx,y,color,type:"trim"});
+      for (const {x1, x2} of ord) {
+        const jx = rev ? x2 : x1;
 
-        if(type==="running"){
-          const rx=Math.round((x1+x2)/2);
-          stitches.push({x:rx,y,color,type:"running"});
+        if (lastX !== -1) {
+          const g = Math.hypot(jx - lastX, y - lastY);
+          if (g > SMART_TRIM) {
+            const bridge = generateBridgeStitches(lastX, lastY, jx, y, color);
+            stitches.push(...bridge);
+          } else {
+            stitches.push({x: jx - lastX, y: y - lastY, color, type: "trim"});
+          }
+        } else {
+          stitches.push({x: jx, y, color, type: "trim"});
+        }
+
+        if (type === "running") {
+          const rx = Math.round((x1 + x2) / 2);
+          stitches.push({x: rx - jx, y: 0, color, type: "running"});
           colorCounts[ci].running++;
-          lastX=rx;
+          lastX = rx;
 
-        }else if(type==="satin"){
-          const sx=rev?x2-pPull:x1+pPull;
-          const ex=rev?x1+pPull:x2-pPull;
-          if(Math.abs(ex-sx)>1){
-            stitches.push({x:sx,y,color,type:"satin"});
-            stitches.push({x:ex,y,color,type:"satin"});
-            colorCounts[ci].satin+=2;
-            lastX=ex;
-          }else{
-            const rx=Math.round((x1+x2)/2);
-            stitches.push({x:rx,y,color,type:"satin"});
+        } else if (type === "satin") {
+          const sx = rev ? x2 - pPull : x1 + pPull;
+          const ex = rev ? x1 + pPull : x2 - pPull;
+          if (Math.abs(ex - sx) > 1) {
+            stitches.push({x: sx - jx, y: 0, color, type: "satin"});
+            stitches.push({x: ex - sx, y: 0, color, type: "satin"});
+            colorCounts[ci].satin += 2;
+            lastX = ex;
+          } else {
+            const rx = Math.round((x1 + x2) / 2);
+            stitches.push({x: rx - jx, y: 0, color, type: "satin"});
             colorCounts[ci].satin++;
-            lastX=rx;
+            lastX = rx;
           }
 
-        }else{
-          const brickOff=rowIdx%2===0?0:Math.round(pLen*0.5);
-          const lx=x1+pPull+brickOff, rx=x2-pPull;
-          if(rx>lx){
-            const steps=Math.max(1,Math.round((rx-lx)/pLen));
-            const sx2=rev?rx:lx, ex2=rev?lx:rx;
-            for(let s=0;s<=steps;s++){
-              stitches.push({x:Math.round(sx2+(ex2-sx2)*s/steps),y,color,type:"fill"});
+        } else {
+          const brickOff = rowIdx % 2 === 0 ? 0 : Math.round(pLen * 0.5);
+          const lx = x1 + pPull + brickOff, rx = x2 - pPull;
+          if (rx > lx) {
+            const steps = Math.max(1, Math.round((rx - lx) / pLen));
+            const sx2 = rev ? rx : lx, ex2 = rev ? lx : rx;
+            for (let s = 0; s <= steps; s++) {
+              stitches.push({x: Math.round(sx2 + (ex2 - sx2) * s / steps) - (s === 0 ? jx : lastX), y: 0, color, type: "fill"});
               colorCounts[ci].fill++;
             }
-            lastX=stitches[stitches.length-1].x;
-          }else{
-            stitches.push({x:Math.round((x1+x2)/2),y,color,type:"fill"});
+            lastX = Math.round(sx2 + (ex2 - sx2) * steps / steps);
+          } else {
+            stitches.push({x: Math.round((x1 + x2) / 2) - jx, y: 0, color, type: "fill"});
             colorCounts[ci].fill++;
-            lastX=Math.round((x1+x2)/2);
+            lastX = Math.round((x1 + x2) / 2);
           }
         }
-        lastY=y;
+        lastY = y;
       }
       rowIdx++;
     }
-    globalLastX=lastX;globalLastY=lastY;
+    globalLastX = lastX;
+    globalLastY = lastY;
   }
 
-  console.log("Stitches:",colors.map((c,i)=>{
-    const k=colorCounts[i];
-    return`${normHex(c)} fill:${k.fill} satin:${k.satin} run:${k.running}`;
+  console.log("Stitches:", colors.map((c, i) => {
+    const k = colorCounts[i];
+    return `${normHex(c)} fill:${k.fill} satin:${k.satin} run:${k.running}`;
   }).join(" | "));
 
-  return{stitches,colorCounts};
+  return {stitches, colorCounts};
 }
-
 /* ─── QUALITY VALIDATION ─────────────────────────────────*/
 function validateQuality(stitches){
   const w=[];
@@ -1159,9 +1270,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"58.0",features:"fixed-universal-0x03,dst-header-bounds,pixmap-remap"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"59.0",features:"bridge-connector,universal-0x03,dst-header-bounds"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v58 | :${PORT} | fixed ci index`));
+const server=app.listen(PORT,()=>console.log(`Stichai v59 | :${PORT} | fixed ci index`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
