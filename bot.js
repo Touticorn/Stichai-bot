@@ -1,5 +1,5 @@
 /**
- * Stichai v59 — Fix color index crash + mask aspect ratio
+ * Stichai v60 — Fix color index crash + mask aspect ratio
  * ═══════════════════════════════════════════════════════════════════
  *  FIXES FROM v47
  *  ──────────────────────────────────────────────────────────────
@@ -510,7 +510,7 @@ function mergeAdjacentRegions(regions) {
   return merged;
 }
 
-/* ─── BRIDGE CONNECTOR (v59) ─────────────────────────────*/
+/* ─── BRIDGE CONNECTOR (v60) ─────────────────────────────*/
 function getEdgePixels(pixMap, reg, canvasSize) {
   const edge = [];
   for (let y = reg.mny; y <= reg.mxy; y++) {
@@ -568,18 +568,15 @@ function generateBridgeStitches(fromX, fromY, toX, toY, color) {
   const dist = Math.hypot(dx, dy);
   const steps = Math.max(1, Math.ceil(dist / 8)); // 0.8mm bridge stitches
   const stitches = [];
-  let px = fromX, py = fromY;
   for (let i = 1; i <= steps; i++) {
     const fx = Math.round(fromX + dx * i / steps);
     const fy = Math.round(fromY + dy * i / steps);
-    const sx = fx - px, sy = fy - py;
-    stitches.push({x: sx, y: sy, color, type: "bridge"});
-    px = fx; py = fy;
+    stitches.push({x: fx, y: fy, color, type: "bridge"});
   }
   return stitches;
 }
 
-/* ─── STITCH GENERATION (with bridge connector) ────────────*/
+/* ─── STITCH GENERATION (v60 — absolute coordinates) ───────*/
 function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize) {
   const stitches = [];
   const colorCounts = colors.map(() => ({fill: 0, satin: 0, running: 0}));
@@ -590,7 +587,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
   const pUl = P.tatamiUl !== undefined ? P.tatamiUl : 40;
   const pPull = P.pull !== undefined ? P.pull : 2;
 
-  // FIX v59: Precompute edge pixels and reorder regions by nearest-neighbor within each color
+  // Precompute edge pixels and reorder regions by nearest-neighbor within each color
   const edgePixels = new Map();
   for (const reg of regions) {
     edgePixels.set(reg, getEdgePixels(pixMap, reg, canvasSize));
@@ -626,7 +623,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
     const {color, type, mnx, mny, mxx, mxy} = reg;
     let lastX = globalLastX, lastY = globalLastY;
 
-    // FIX v59: Find closest edge point to previous region and bridge to it
+    // Bridge to closest edge point from previous region
     if (lastX !== -1 && ri > 0) {
       const prevReg = ordered[ri - 1];
       if (normHex(prevReg.color) === normHex(reg.color)) {
@@ -638,8 +635,8 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
         lastX = pair.to.x;
         lastY = pair.to.y;
       } else {
-        // Different color — emit color change then jump to entry point
-        stitches.push({x: 0, y: 0, color, type: "trim"});
+        // Different color — color change then bridge to entry point
+        stitches.push({x: lastX, y: lastY, color, type: "trim"});
         const entryEdge = edgePixels.get(reg);
         const entry = entryEdge[Math.floor(entryEdge.length / 2)];
         const bridge = generateBridgeStitches(lastX, lastY, entry.x, entry.y, color);
@@ -648,7 +645,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
         lastY = entry.y;
       }
     } else {
-      // First region — set origin to closest edge point
+      // First region — set origin to closest edge point (no jump from 0,0)
       const entryEdge = edgePixels.get(reg);
       const entry = entryEdge[Math.floor(entryEdge.length / 2)];
       lastX = entry.x;
@@ -664,8 +661,8 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
         const rev = ulRow % 2 === 1;
         for (const {x1, x2} of (rev ? [...runs].reverse() : runs)) {
           const ux = rev ? x2 - pPull : x1 + pPull;
-          stitches.push({x: ux - lastX, y: y - lastY, color, type: "underlay"});
-          stitches.push({x: (x2 - pPull) - ux, y: 0, color, type: "underlay"});
+          stitches.push({x: ux, y, color, type: "underlay"});
+          stitches.push({x: x2 - pPull, y, color, type: "underlay"});
           lastX = x2 - pPull;
           lastY = y;
         }
@@ -673,7 +670,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
       }
     }
 
-    // FIX v59: Reset lastX/lastY before fill so underlay doesn't create long trims into fill
+    // Reset lastX/lastY before fill so underlay doesn't create long trims into fill
     lastX = -1; lastY = -1;
 
     let rowIdx = 0;
@@ -692,7 +689,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
             const bridge = generateBridgeStitches(lastX, lastY, jx, y, color);
             stitches.push(...bridge);
           } else {
-            stitches.push({x: jx - lastX, y: y - lastY, color, type: "trim"});
+            stitches.push({x: jx, y, color, type: "trim"});
           }
         } else {
           stitches.push({x: jx, y, color, type: "trim"});
@@ -700,7 +697,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
 
         if (type === "running") {
           const rx = Math.round((x1 + x2) / 2);
-          stitches.push({x: rx - jx, y: 0, color, type: "running"});
+          stitches.push({x: rx, y, color, type: "running"});
           colorCounts[ci].running++;
           lastX = rx;
 
@@ -708,13 +705,13 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
           const sx = rev ? x2 - pPull : x1 + pPull;
           const ex = rev ? x1 + pPull : x2 - pPull;
           if (Math.abs(ex - sx) > 1) {
-            stitches.push({x: sx - jx, y: 0, color, type: "satin"});
-            stitches.push({x: ex - sx, y: 0, color, type: "satin"});
+            stitches.push({x: sx, y, color, type: "satin"});
+            stitches.push({x: ex, y, color, type: "satin"});
             colorCounts[ci].satin += 2;
             lastX = ex;
           } else {
             const rx = Math.round((x1 + x2) / 2);
-            stitches.push({x: rx - jx, y: 0, color, type: "satin"});
+            stitches.push({x: rx, y, color, type: "satin"});
             colorCounts[ci].satin++;
             lastX = rx;
           }
@@ -726,12 +723,13 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
             const steps = Math.max(1, Math.round((rx - lx) / pLen));
             const sx2 = rev ? rx : lx, ex2 = rev ? lx : rx;
             for (let s = 0; s <= steps; s++) {
-              stitches.push({x: Math.round(sx2 + (ex2 - sx2) * s / steps) - (s === 0 ? jx : lastX), y: 0, color, type: "fill"});
+              const fx = Math.round(sx2 + (ex2 - sx2) * s / steps);
+              stitches.push({x: fx, y, color, type: "fill"});
               colorCounts[ci].fill++;
             }
             lastX = Math.round(sx2 + (ex2 - sx2) * steps / steps);
           } else {
-            stitches.push({x: Math.round((x1 + x2) / 2) - jx, y: 0, color, type: "fill"});
+            stitches.push({x: Math.round((x1 + x2) / 2), y, color, type: "fill"});
             colorCounts[ci].fill++;
             lastX = Math.round((x1 + x2) / 2);
           }
@@ -973,10 +971,8 @@ function encodeDST(stitches){
     ax+=s.x-px;ay+=s.y-py;
     if(s.color!==lCol&&lCol!==null){recs.push(Buffer.from([0,0,0xC3]));cc++;}
     lCol=s.color;
-    if(s.type==="trim"){
-      // FIX v58: Encode ALL moves as visible stitches (0x03) for universal viewer compatibility.
-      // The good example had zero jumps because it was one continuous path.
-      // Our multi-region design needs connecting stitches — 0x03 works everywhere.
+    if(s.type==="trim"||s.type==="bridge"){
+      // v60: Encode ALL moves as visible stitches (0x03) for universal viewer compatibility.
       const dx=s.x-px,dy=s.y-py;px=s.x;py=s.y;
       const steps=Math.max(1,Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))/121));
       let ppx=0,ppy=0;
@@ -1270,9 +1266,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"59.0",features:"bridge-connector,universal-0x03,dst-header-bounds"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"60.0",features:"bridge-absolute,universal-0x03,dst-header-bounds"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v59 | :${PORT} | fixed ci index`));
+const server=app.listen(PORT,()=>console.log(`Stichai v60 | :${PORT} | fixed ci index`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
