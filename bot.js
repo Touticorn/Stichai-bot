@@ -954,82 +954,124 @@ async function renderPreview(pixMap, colors, stitches, params, canvasSize) {
 /* ─── DST ENCODER ─────────────────────────────────────────*/
 /* ============================================================
  *  DST ENCODER (Tajima specification)
- *  Each stitch record = 3 bytes. The dx,dy delta (-121..+121)
- *  is split into bit positions across all 3 bytes:
- *    byte0: ±1 and ±9 (X+Y)
- *    byte1: ±3 and ±27 (X+Y)
- *    byte2: ±81 (X+Y) + flag bits (0x03=stitch, 0x83=jump, 0xC3=color, 0xF3=end)
- *  The previous version put dx/dy as raw bytes which is why
- *  Embroidery Viewer Pro reads gibberish coordinates accumulating
- *  to thousands of millimeters in one direction.
+ *  Bit assignments verified against a known-good hand-made DST file
+ *  (KKK1111) — design header says 156.1mm × 488.3mm, decoded
+ *  coordinates match EXACTLY.
+ *
+ *  BYTE 0 (1-unit and 9-unit range):
+ *    0x01: x+1   0x02: x-1   0x04: x+9   0x08: x-9
+ *    0x10: y-9   0x20: y+9   0x40: y-1   0x80: y+1
+ *  BYTE 1 (3-unit and 27-unit range):
+ *    0x01: x+3   0x02: x-3   0x04: x+27  0x08: x-27
+ *    0x10: y-27  0x20: y+27  0x40: y-3   0x80: y+3
+ *  BYTE 2 (81-unit range + flag bits):
+ *    0x01: base  0x02: base  0x04: x+81  0x08: x-81
+ *    0x10: y-81  0x20: y+81  0x40: COLOR-CHANGE  0x80: JUMP
+ *
+ *  HEADER format (also verified against KKK1111):
+ *    "LA:<name padded with spaces to 16 chars>\r"   (20 bytes)
+ *    "ST:%7d\r"      (stitch count, 7-digit right-aligned)
+ *    "CO:%3d\r"      (color count, 3-digit right-aligned)
+ *    "+X:%5d\r"      (extent, 2-digit minimum then padded to 5)
+ *    "-X:%5d\r"
+ *    "+Y:%5d\r"
+ *    "-Y:%5d\r"
+ *    "AX:+%5d\r" "AY:+%5d\r" "MX:+%5d\r" "MY:+%5d\r"
+ *    "PD:******\r"
+ *    0x1A                                    (EOF marker)
+ *    spaces up to byte 511                  (header is 512 bytes total)
  * ============================================================ */
 
-// Encode one delta (-121..+121 in tenths of mm) into 3 DST bytes
-// `flag` controls byte 2 high bits: false=stitch(0x03), true=jump(0x83)
+// Encode (dx, dy) into 3 DST bytes. `isJump` true → set the JUMP flag.
+// dx, dy are in IMAGE COORDINATES (y increases downward).
+// DST machine coords have y UP positive, so we invert y here.
 function dstEncodeXY(dx, dy, isJump) {
-  // DST machine Y-axis is up-positive (image Y is down-positive)
   let x = dx;
-  let y = -dy;
-  let b0 = 0, b1 = 0, b2 = 0;
+  let y = -dy;            // machine y is up-positive
+  let b0 = 0, b1 = 0, b2 = 0x03;   // base bits always set
 
-  // ±81 -> byte 2
+  // Decompose into ±1, ±3, ±9, ±27, ±81 — greedy from largest
+  // X ±81
   if (x >  40) { b2 |= 0x04; x -= 81; }
-  if (x < -40) { b2 |= 0x20; x += 81; }
-  if (y >  40) { b2 |= 0x80; y -= 81; }
-  if (y < -40) { b2 |= 0x40; y += 81; }
-  // ±27 -> byte 1
+  if (x < -40) { b2 |= 0x08; x += 81; }
+  // Y ±81  (note bit positions differ from X)
+  if (y >  40) { b2 |= 0x20; y -= 81; }
+  if (y < -40) { b2 |= 0x10; y += 81; }
+
+  // X ±27
   if (x >  13) { b1 |= 0x04; x -= 27; }
-  if (x < -13) { b1 |= 0x20; x += 27; }
-  if (y >  13) { b1 |= 0x80; y -= 27; }
-  if (y < -13) { b1 |= 0x40; y += 27; }
-  // ±9 -> byte 0
+  if (x < -13) { b1 |= 0x08; x += 27; }
+  // Y ±27
+  if (y >  13) { b1 |= 0x20; y -= 27; }
+  if (y < -13) { b1 |= 0x10; y += 27; }
+
+  // X ±9
   if (x >   4) { b0 |= 0x04; x -=  9; }
-  if (x <  -4) { b0 |= 0x20; x +=  9; }
-  if (y >   4) { b0 |= 0x80; y -=  9; }
-  if (y <  -4) { b0 |= 0x40; y +=  9; }
-  // ±3 -> byte 1
+  if (x <  -4) { b0 |= 0x08; x +=  9; }
+  // Y ±9
+  if (y >   4) { b0 |= 0x20; y -=  9; }
+  if (y <  -4) { b0 |= 0x10; y +=  9; }
+
+  // X ±3
   if (x >   1) { b1 |= 0x01; x -=  3; }
   if (x <  -1) { b1 |= 0x02; x +=  3; }
-  if (y >   1) { b1 |= 0x08; y -=  3; }
-  if (y <  -1) { b1 |= 0x10; y +=  3; }
-  // ±1 -> byte 0
-  if (x >   0) { b0 |= 0x01; x -=  1; }
-  if (x <   0) { b0 |= 0x02; x +=  1; }
-  if (y >   0) { b0 |= 0x08; y -=  1; }
-  if (y <   0) { b0 |= 0x10; y +=  1; }
+  // Y ±3
+  if (y >   1) { b1 |= 0x80; y -=  3; }
+  if (y <  -1) { b1 |= 0x40; y +=  3; }
 
-  b2 |= isJump ? 0x83 : 0x03;
+  // X ±1
+  if (x >   0) { b0 |= 0x01; }
+  if (x <   0) { b0 |= 0x02; }
+  // Y ±1
+  if (y >   0) { b0 |= 0x80; }
+  if (y <   0) { b0 |= 0x40; }
+
+  if (isJump) b2 |= 0x80;          // JUMP flag, bit 7 of byte 2
   return Buffer.from([b0, b1, b2]);
 }
 
+// Format a numeric extent: at least 2 digits, right-aligned in 5 chars
+// (matches Tajima reference: 0 → "   00", 1561 → " 1561")
+function fmtExtent(n) {
+  const abs = Math.max(0, Math.round(Math.abs(n)));
+  let digits = String(abs);
+  if (digits.length < 2) digits = "0" + digits;     // min 2 digits
+  return digits.padStart(5, " ");
+}
+
 // Build the 512-byte ASCII Tajima header
-function dstHeader(stitchCount, colorCount, mnx, mxx, mny, mxy, name) {
+function dstHeader(stitchCount, colorCount, minX, maxX, minY, maxY, name) {
   const buf = Buffer.alloc(512, 0x20);
   let off = 0;
-  const writeField = (txt) => {
+  const write = (txt) => {
     buf.write(txt, off, "ascii");
     off += txt.length;
-    buf[off++] = 0x0D;          // CR terminator
+    buf[off++] = 0x0D;          // CR after each field
   };
-  // LA:<16 chars name>
+  // LA:<name padded with spaces to 16 chars>
   const safeName = (name || "Stichai").substring(0, 16).padEnd(16, " ");
-  writeField("LA:" + safeName);
-  // Note: x extents are in DST units (0.1mm). Use absolute extents.
-  // Y is inverted because DST uses machine-up = positive.
-  writeField(`ST:${String(stitchCount).padStart(7, "0")}`);
-  writeField(`CO:${String(colorCount).padStart(3, "0")}`);
-  writeField(`+X:${String(Math.max(0, Math.round( mxx))).padStart(5, "0")}`);
-  writeField(`-X:${String(Math.max(0, Math.round(-mnx))).padStart(5, "0")}`);
-  writeField(`+Y:${String(Math.max(0, Math.round(-mny))).padStart(5, "0")}`);
-  writeField(`-Y:${String(Math.max(0, Math.round( mxy))).padStart(5, "0")}`);
-  // AX/AY are last-stitch offsets relative to start, leave zero (single design)
-  writeField(`AX:+${String(0).padStart(5, "0")}`);
-  writeField(`AY:+${String(0).padStart(5, "0")}`);
-  writeField(`MX:+${String(0).padStart(5, "0")}`);
-  writeField(`MY:+${String(0).padStart(5, "0")}`);
-  writeField(`PD:******`);
-  buf[off++] = 0x1A;            // EOF marker for header
-  // Rest of header is already 0x20 (spaces)
+  write("LA:" + safeName);
+  // Stitch & color counts — right-aligned in their width
+  write("ST:" + String(stitchCount).padStart(7, " "));
+  write("CO:" + String(colorCount).padStart(3, " "));
+  // Extents in machine coords (y inverted from image coords):
+  //   image y range [minY, maxY] → machine y range [-maxY, -minY]
+  //   +X = max(machine x reached) = max(image x, 0)
+  //   -X = abs(min(machine x reached)) = abs(min(image x), 0)
+  //   +Y = max(machine y reached) = max(-image_y, 0) = max(0, -minY)
+  //   -Y = abs(min(machine y reached)) = abs(min(-image_y), 0) = max(0, maxY)
+  write("+X:" + fmtExtent(Math.max(0,  maxX)));
+  write("-X:" + fmtExtent(Math.max(0, -minX)));
+  write("+Y:" + fmtExtent(Math.max(0, -minY)));
+  write("-Y:" + fmtExtent(Math.max(0,  maxY)));
+  // Last-stitch and multi-volume offsets — all zero for single design
+  write("AX:+" + String(0).padStart(5, " "));
+  write("AY:+" + String(0).padStart(5, " "));
+  write("MX:+" + String(0).padStart(5, " "));
+  write("MY:+" + String(0).padStart(5, " "));
+  write("PD:******");
+  buf[off++] = 0x1A;            // EOF marker
+  // Remainder already 0x20 (space)
   return buf;
 }
 
@@ -1039,7 +1081,8 @@ function encodeDST(stitches) {
   let px = 0, py = 0;
   let stitchCount = 0;
   let colorChanges = 0;
-  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+  // Track image-coordinate extents
+  let mnx =  Infinity, mxx = -Infinity, mny =  Infinity, mxy = -Infinity;
 
   // Split a long move into multiple records of max ±121 each
   const emitLong = (dx, dy, isJump) => {
@@ -1060,7 +1103,7 @@ function encodeDST(stitches) {
   };
 
   for (const s of stitches) {
-    // Color change: emit color-change record (byte 2 = 0xC3)
+    // Color change: emit zero-motion COLOR record (0xC3 = bits 6+7+base)
     if (s.color !== lastColor && lastColor !== null) {
       recs.push(Buffer.from([0x00, 0x00, 0xC3]));
       colorChanges++;
@@ -1076,20 +1119,20 @@ function encodeDST(stitches) {
     const isTrimOrBridge = s.type === "trim" || s.type === "bridge" || s.type === "jump";
 
     if (Math.abs(dx) > 121 || Math.abs(dy) > 121) {
-      emitLong(dx, dy, isTrimOrBridge);     // split, mark each piece as jump if applicable
+      emitLong(dx, dy, isTrimOrBridge);
     } else {
       recs.push(dstEncodeXY(dx, dy, isTrimOrBridge));
       stitchCount++;
     }
 
-    // Track extents based on stitched coordinates
+    // Track extents based on actual positions reached
     if (s.x < mnx) mnx = s.x;
     if (s.x > mxx) mxx = s.x;
     if (s.y < mny) mny = s.y;
     if (s.y > mxy) mxy = s.y;
   }
 
-  // End-of-design marker
+  // End-of-design marker: byte 2 = 0xF3 (jump+color+base = all flag bits set)
   recs.push(Buffer.from([0x00, 0x00, 0xF3]));
 
   if (mnx === Infinity) { mnx = mxx = mny = mxy = 0; }
@@ -1357,9 +1400,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"63.0",features:"proper-dst-encoder,tajima-header,jump-records"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"64.0",features:"tajima-verified-encoder"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v63 | :${PORT} | proper DST encoder`));
+const server=app.listen(PORT,()=>console.log(`Stichai v64 | :${PORT} | Tajima-verified encoder`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
