@@ -952,52 +952,150 @@ async function renderPreview(pixMap, colors, stitches, params, canvasSize) {
 }
 
 /* ─── DST ENCODER ─────────────────────────────────────────*/
-function stitchRecord(dx,dy){
-  const cx=Math.max(-121,Math.min(121,Math.round(dx)));
-  const cy=Math.max(-121,Math.min(121,Math.round(dy)));
-  return Buffer.from([cy>=0?cy:0x100+cy,cx>=0?cx:0x100+cx,0x03]);
+/* ============================================================
+ *  DST ENCODER (Tajima specification)
+ *  Each stitch record = 3 bytes. The dx,dy delta (-121..+121)
+ *  is split into bit positions across all 3 bytes:
+ *    byte0: ±1 and ±9 (X+Y)
+ *    byte1: ±3 and ±27 (X+Y)
+ *    byte2: ±81 (X+Y) + flag bits (0x03=stitch, 0x83=jump, 0xC3=color, 0xF3=end)
+ *  The previous version put dx/dy as raw bytes which is why
+ *  Embroidery Viewer Pro reads gibberish coordinates accumulating
+ *  to thousands of millimeters in one direction.
+ * ============================================================ */
+
+// Encode one delta (-121..+121 in tenths of mm) into 3 DST bytes
+// `flag` controls byte 2 high bits: false=stitch(0x03), true=jump(0x83)
+function dstEncodeXY(dx, dy, isJump) {
+  // DST machine Y-axis is up-positive (image Y is down-positive)
+  let x = dx;
+  let y = -dy;
+  let b0 = 0, b1 = 0, b2 = 0;
+
+  // ±81 -> byte 2
+  if (x >  40) { b2 |= 0x04; x -= 81; }
+  if (x < -40) { b2 |= 0x20; x += 81; }
+  if (y >  40) { b2 |= 0x80; y -= 81; }
+  if (y < -40) { b2 |= 0x40; y += 81; }
+  // ±27 -> byte 1
+  if (x >  13) { b1 |= 0x04; x -= 27; }
+  if (x < -13) { b1 |= 0x20; x += 27; }
+  if (y >  13) { b1 |= 0x80; y -= 27; }
+  if (y < -13) { b1 |= 0x40; y += 27; }
+  // ±9 -> byte 0
+  if (x >   4) { b0 |= 0x04; x -=  9; }
+  if (x <  -4) { b0 |= 0x20; x +=  9; }
+  if (y >   4) { b0 |= 0x80; y -=  9; }
+  if (y <  -4) { b0 |= 0x40; y +=  9; }
+  // ±3 -> byte 1
+  if (x >   1) { b1 |= 0x01; x -=  3; }
+  if (x <  -1) { b1 |= 0x02; x +=  3; }
+  if (y >   1) { b1 |= 0x08; y -=  3; }
+  if (y <  -1) { b1 |= 0x10; y +=  3; }
+  // ±1 -> byte 0
+  if (x >   0) { b0 |= 0x01; x -=  1; }
+  if (x <   0) { b0 |= 0x02; x +=  1; }
+  if (y >   0) { b0 |= 0x08; y -=  1; }
+  if (y <   0) { b0 |= 0x10; y +=  1; }
+
+  b2 |= isJump ? 0x83 : 0x03;
+  return Buffer.from([b0, b1, b2]);
 }
 
-function encodeDST(stitches){
-  const hdr=Buffer.alloc(512,0x20);
-  hdr.write("Stichai",0,"ascii");
-  const recs=[];
-  let lCol=null,px=0,py=0,sc=0,cc=0,mnx=0,mxx=0,mny=0,mxy=0,ax=0,ay=0;
-  let sewMnx=Infinity,sewMxx=-Infinity,sewMny=Infinity,sewMxy=-Infinity;
-  for(const s of stitches){
-    ax+=s.x-px;ay+=s.y-py;
-    if(s.color!==lCol&&lCol!==null){recs.push(Buffer.from([0,0,0xC3]));cc++;sc++;}
-    lCol=s.color;
-    if(s.type==="trim"||s.type==="bridge"){
-      const dx=s.x-px,dy=s.y-py;px=s.x;py=s.y;
-      const steps=Math.max(1,Math.ceil(Math.max(Math.abs(dx),Math.abs(dy))/121));
-      let ppx=0,ppy=0;
-      for(let i=1;i<=steps;i++){const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);recs.push(stitchRecord(fx-ppx,fy-ppy));ppx=fx;ppy=fy;sc++;}
-      continue;
+// Build the 512-byte ASCII Tajima header
+function dstHeader(stitchCount, colorCount, mnx, mxx, mny, mxy, name) {
+  const buf = Buffer.alloc(512, 0x20);
+  let off = 0;
+  const writeField = (txt) => {
+    buf.write(txt, off, "ascii");
+    off += txt.length;
+    buf[off++] = 0x0D;          // CR terminator
+  };
+  // LA:<16 chars name>
+  const safeName = (name || "Stichai").substring(0, 16).padEnd(16, " ");
+  writeField("LA:" + safeName);
+  // Note: x extents are in DST units (0.1mm). Use absolute extents.
+  // Y is inverted because DST uses machine-up = positive.
+  writeField(`ST:${String(stitchCount).padStart(7, "0")}`);
+  writeField(`CO:${String(colorCount).padStart(3, "0")}`);
+  writeField(`+X:${String(Math.max(0, Math.round( mxx))).padStart(5, "0")}`);
+  writeField(`-X:${String(Math.max(0, Math.round(-mnx))).padStart(5, "0")}`);
+  writeField(`+Y:${String(Math.max(0, Math.round(-mny))).padStart(5, "0")}`);
+  writeField(`-Y:${String(Math.max(0, Math.round( mxy))).padStart(5, "0")}`);
+  // AX/AY are last-stitch offsets relative to start, leave zero (single design)
+  writeField(`AX:+${String(0).padStart(5, "0")}`);
+  writeField(`AY:+${String(0).padStart(5, "0")}`);
+  writeField(`MX:+${String(0).padStart(5, "0")}`);
+  writeField(`MY:+${String(0).padStart(5, "0")}`);
+  writeField(`PD:******`);
+  buf[off++] = 0x1A;            // EOF marker for header
+  // Rest of header is already 0x20 (spaces)
+  return buf;
+}
+
+function encodeDST(stitches) {
+  const recs = [];
+  let lastColor = null;
+  let px = 0, py = 0;
+  let stitchCount = 0;
+  let colorChanges = 0;
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+
+  // Split a long move into multiple records of max ±121 each
+  const emitLong = (dx, dy, isJump) => {
+    const steps = Math.max(
+      1,
+      Math.ceil(Math.abs(dx) / 121),
+      Math.ceil(Math.abs(dy) / 121)
+    );
+    let prevFx = 0, prevFy = 0;
+    for (let i = 1; i <= steps; i++) {
+      const fx = Math.round(dx * i / steps);
+      const fy = Math.round(dy * i / steps);
+      recs.push(dstEncodeXY(fx - prevFx, fy - prevFy, isJump));
+      prevFx = fx;
+      prevFy = fy;
+      stitchCount++;
     }
-    if(ax<sewMnx)sewMnx=ax;if(ax>sewMxx)sewMxx=ax;if(ay<sewMny)sewMny=ay;if(ay>sewMxy)sewMxy=ay;
-    const dx=Math.round(s.x-px),dy=Math.round(s.y-py);px=s.x;py=s.y;
-    if(Math.abs(dx)>121||Math.abs(dy)>121){
-      const steps=Math.max(Math.ceil(Math.abs(dx)/121),Math.ceil(Math.abs(dy)/121));
-      let ppx=0,ppy=0;
-      for(let i=1;i<=steps;i++){const fx=Math.round(dx*i/steps),fy=Math.round(dy*i/steps);recs.push(stitchRecord(fx-ppx,fy-ppy));ppx=fx;ppy=fy;sc++;}
-    }else{recs.push(stitchRecord(dx,dy));sc++;}
+  };
+
+  for (const s of stitches) {
+    // Color change: emit color-change record (byte 2 = 0xC3)
+    if (s.color !== lastColor && lastColor !== null) {
+      recs.push(Buffer.from([0x00, 0x00, 0xC3]));
+      colorChanges++;
+      stitchCount++;
+    }
+    lastColor = s.color;
+
+    const dx = Math.round(s.x - px);
+    const dy = Math.round(s.y - py);
+    px = s.x;
+    py = s.y;
+
+    const isTrimOrBridge = s.type === "trim" || s.type === "bridge" || s.type === "jump";
+
+    if (Math.abs(dx) > 121 || Math.abs(dy) > 121) {
+      emitLong(dx, dy, isTrimOrBridge);     // split, mark each piece as jump if applicable
+    } else {
+      recs.push(dstEncodeXY(dx, dy, isTrimOrBridge));
+      stitchCount++;
+    }
+
+    // Track extents based on stitched coordinates
+    if (s.x < mnx) mnx = s.x;
+    if (s.x > mxx) mxx = s.x;
+    if (s.y < mny) mny = s.y;
+    if (s.y > mxy) mxy = s.y;
   }
-  recs.push(Buffer.from([0,0,0xF3]));
 
-  if(sewMnx===Infinity){sewMnx=mnx;sewMxx=mxx;sewMny=mny;sewMxy=mxy;}
-  hdr.writeInt32LE(sc,20);
-  hdr.writeInt32LE(cc,24);
-  hdr.writeInt32LE(Math.round(sewMxx-sewMnx),28);
-  hdr.writeInt32LE(Math.round(sewMxy-sewMny),32);
-  hdr.writeInt32LE(Math.round(sewMnx),36);
-  hdr.writeInt32LE(Math.round(sewMxx),40);
-  hdr.writeInt32LE(Math.round(sewMny),44);
-  hdr.writeInt32LE(Math.round(sewMxy),48);
-  hdr.write("(c)Stichai",56,"ascii");
-  hdr.writeInt16LE(cc+1,88);
+  // End-of-design marker
+  recs.push(Buffer.from([0x00, 0x00, 0xF3]));
 
-  return Buffer.concat([hdr,...recs]);
+  if (mnx === Infinity) { mnx = mxx = mny = mxy = 0; }
+
+  const header = dstHeader(stitchCount, colorChanges + 1, mnx, mxx, mny, mxy, "Stichai");
+  return Buffer.concat([header, ...recs]);
 }
 
 /* ─── JOBS & DETECTIONS ───────────────────────────────────*/
@@ -1259,9 +1357,9 @@ app.get("/download/:id",(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"62.0",features:"fixed-stitch-count,bridge-origin-fix,universal-0x03"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"63.0",features:"proper-dst-encoder,tajima-header,jump-records"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v62 | :${PORT} | fixed ci index`));
+const server=app.listen(PORT,()=>console.log(`Stichai v63 | :${PORT} | proper DST encoder`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
