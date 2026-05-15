@@ -2843,21 +2843,21 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
   if(!d)return res.status(404).json({error:"Not found"});
 
   const fmt = req.query.fmt || 'dst';
-  let buf;
+
+  // Timestamp for filename: design_YYYYMMDD_HHMMSS
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const ts = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 
   if (fmt === 'dst') {
     const dstBuf = encodeDST(d.stitches, d.params?.machineLimits);
-    /* Build a .inf sidecar so Tajima-compatible viewers display correct thread colors */
-    /* Build .INF sidecar — Tajima-compatible thread palette */
+
+    // Build .INF sidecar with thread colors
     const infLines = [
       "[Version]", "Major=1", "Minor=0", "",
       "[Parameters]",
       "ST=" + String(d.stitches.filter(s => s.type !== 'trim' && s.type !== 'jump' && s.type !== 'color-change').length),
       "CO=" + String(d.colors.length),
-      "+X=" + String(Math.max(0, mxx)),
-      "-X=" + String(Math.max(0, -mnx)),
-      "+Y=" + String(Math.max(0, -mny)),
-      "-Y=" + String(Math.max(0, mxy)),
       "AX=+    0", "AY=+    0", "MX=+    0", "MY=+    0",
       "PD=******", "",
       "[Threads]",
@@ -2874,18 +2874,24 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
       const name = NAMES[nearIdx] || hex;
       infLines.push(`[thread${idx+1}]`, `Color=${rgb.r},${rgb.g},${rgb.b}`, `Name=${name}`, `ID=${String(nearIdx+1).padStart(3,'0')}`, `Hex=${hex}`, "");
     });
-    const infBuf = Buffer.from(infLines.join("\r\n"), "utf8");
+    const infBuf = Buffer.from(infLines.join("
+"), "utf8");
 
-    /* Pure-Node ZIP (STORE compression, no external deps) */
+    // Build ZIP with DST + INF
     const zipBuf = buildZipStore([
       { name: "design.dst", data: dstBuf },
       { name: "design.inf", data: infBuf }
     ]);
+
     if(req.firebaseUser) await recordDownload(req.firebaseUser.uid);
     res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", `attachment; filename="design.zip"`);
+    res.setHeader("Content-Length", String(zipBuf.length));
+    res.setHeader("Content-Disposition", `attachment; filename="design_${ts}.zip"`);
     return res.send(zipBuf);
-  } else if (fmt === 'jef') {
+  }
+
+  let buf;
+  if (fmt === 'jef') {
     buf = encodeJEF(d.stitches, d.colors);
   } else if (fmt === 'pes') {
     buf = encodePES(d.stitches, d.colors);
@@ -2895,7 +2901,8 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
 
   if(req.firebaseUser) await recordDownload(req.firebaseUser.uid);
   res.setHeader("Content-Type","application/octet-stream");
-  res.setHeader("Content-Disposition",`attachment; filename="design.${fmt}"`);
+  res.setHeader("Content-Length", String(buf.length));
+  res.setHeader("Content-Disposition",`attachment; filename="design_${ts}.${fmt}"`);
   return res.send(buf);
 });
 
