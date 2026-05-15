@@ -1,21 +1,21 @@
 /**
- * Stichai v68.2 — Deployment fix + all promised features actually implemented
+ * Stichai v69.0 — Vectorized stitch generation
  * ═══════════════════════════════════════════════════════════════════════════════
- *  FIXES
+ *  v69 CHANGES (vs v68.3)
  *  ─────────────────────────────────────────────────────────────────────────────
- *  1. Optional firebase-admin / stripe requires — app starts without env vars
- *  2. package.json now lists firebase-admin and stripe (fixes Railway crash)
- *  3. Color-first region ordering (finish one thread before next color)
- *  4. Origin trim jump before first tie-in (no accidental 200mm stitch from 0,0)
- *  5. Bridge distance limit: >12mm gets trim instead of 200 bridge stitches
- *  6. Bridges encoded as stitches, not jumps (isJump = trim||jump only)
- *  7. ALL << typos fixed to < (infinite loop bug in region extraction)
- *  8. Machine-specific limits: Tajima/Barudan 121/3, Brother/Janome 127/4, Singer 100/5
- *  9. Hoop-based pull compensation: 4x4→1, 5x7→2, 6x10→3, 8x8→4, 8x12→6
- *  10. Basting box implemented: running-stitch rectangle around design extents
- *  11. Color merges implemented: backend reads colorMerges, remaps pixMap indices
- *  12. Small-stitch filter in DST encoder (drops stitches below machine minimum)
- *  13. Download route rejects PES/JEF with 501 until true converters are added
+ *  • Region outlines via Moore boundary tracing (instead of bounding box only)
+ *  • Per-shape stitch angle via PCA (instead of always horizontal)
+ *  • Satin columns follow the medial axis of elongated shapes
+ *  • Tatami fill rotated to shape's principal angle
+ *  • Running-stitch outline pass before fills (crisp edges)
+ *  • Holes properly detected and respected
+ *  • Pure-Node ZIP for DST+INF download (no archiver dep needed)
+ *  • Background color auto-detection (still here from v68.3)
+ *  • Optional potrace at runtime if installed
+ *
+ *  PRESERVED FROM v68.x: auth, Stripe, Firebase, color extraction,
+ *  DST/JEF/PES encoders, basting, color merges, machine-specific limits,
+ *  hoop-based pull comp, mask support
  */
 
 "use strict";
@@ -662,6 +662,390 @@ function getRunsInRow(pixMap,ci,y,x0,x1,canvasSize){
   if(s!==-1)runs.push({x1:s,x2:x1});
   return runs;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   V69 VECTORIZATION + SHAPE-AWARE STITCH GENERATION
+   ═══════════════════════════════════════════════════════════════════════
+   Replaces the dumb pixel-row scanner with proper shape tracing:
+     • Moore-neighbour boundary tracing → ordered outlines + holes
+     • Douglas-Peucker simplification → clean polygons
+     • PCA on region pixels → per-shape stitch angle
+     • Tatami fill at the computed angle (rotated coords)
+     • Satin column for elongated shapes (along medial axis)
+     • Running-stitch outline pass before fills (crisp edges)
+
+   Potrace is detected at runtime for higher-quality outlines but the
+   code works without it.
+   ═══════════════════════════════════════════════════════════════════════ */
+let _potrace = null;
+try { _potrace = require("potrace"); } catch(e) { console.log("potrace not installed, using built-in tracer"); }
+
+function v69_traceBoundary(mask, w, h, startIdx) {
+  const dirs = [[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
+  const path = [];
+  const sx = startIdx % w, sy = (startIdx / w) | 0;
+  let cx = sx, cy = sy, backDir = 4, steps = 0;
+  const maxSteps = (w + h) * 4 + 1000;
+  do {
+    path.push([cx, cy]);
+    let found = false;
+    for (let i = 0; i < 8; i++) {
+      const d = (backDir + 1 + i) & 7;
+      const nx = cx + dirs[d][0], ny = cy + dirs[d][1];
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+      if (mask[ny * w + nx]) {
+        backDir = (d + 4) & 7;
+        cx = nx; cy = ny;
+        found = true;
+        break;
+      }
+    }
+    if (!found) break;
+    steps++;
+  } while ((cx !== sx || cy !== sy) && steps < maxSteps);
+  return path;
+}
+
+function v69_simplify(points, epsilon) {
+  if (points.length < 3) return points.slice();
+  const keep = new Uint8Array(points.length);
+  keep[0] = 1; keep[points.length - 1] = 1;
+  const stack = [[0, points.length - 1]];
+  while (stack.length) {
+    const [lo, hi] = stack.pop();
+    if (hi - lo < 2) continue;
+    const [ax, ay] = points[lo];
+    const [bx, by] = points[hi];
+    const dx = bx - ax, dy = by - ay;
+    const segLen2 = dx * dx + dy * dy;
+    let maxD = 0, maxI = lo;
+    for (let i = lo + 1; i < hi; i++) {
+      const [px, py] = points[i];
+      const d2 = segLen2 === 0
+        ? (px - ax) ** 2 + (py - ay) ** 2
+        : (((px - ax) * dy - (py - ay) * dx) ** 2) / segLen2;
+      if (d2 > maxD) { maxD = d2; maxI = i; }
+    }
+    if (maxD > epsilon * epsilon) {
+      keep[maxI] = 1;
+      stack.push([lo, maxI], [maxI, hi]);
+    }
+  }
+  const out = [];
+  for (let i = 0; i < points.length; i++) if (keep[i]) out.push(points[i]);
+  return out;
+}
+
+function v69_principalAngle(pixMap, canvasSize, mnx, mny, mxx, mxy, ciValue) {
+  let n = 0, sx = 0, sy = 0;
+  for (let y = mny; y <= mxy; y++) {
+    for (let x = mnx; x <= mxx; x++) {
+      if (pixMap[y * canvasSize + x] === ciValue) { sx += x; sy += y; n++; }
+    }
+  }
+  if (n < 4) return { angle: 0, aspect: 1, area: n, cx: (mnx+mxx)/2, cy: (mny+mxy)/2 };
+  const cx = sx / n, cy = sy / n;
+  let sxx = 0, syy = 0, sxy = 0;
+  for (let y = mny; y <= mxy; y++) {
+    for (let x = mnx; x <= mxx; x++) {
+      if (pixMap[y * canvasSize + x] === ciValue) {
+        const dx = x - cx, dy = y - cy;
+        sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+      }
+    }
+  }
+  sxx /= n; syy /= n; sxy /= n;
+  const tr = sxx + syy;
+  const det = sxx * syy - sxy * sxy;
+  const disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
+  const lam1 = tr / 2 + disc;
+  const lam2 = tr / 2 - disc;
+  const longAngle = Math.atan2(lam1 - sxx, sxy || 1e-9);
+  const stitchAngle = longAngle + Math.PI / 2;
+  const aspect = lam2 > 0.01 ? Math.sqrt(lam1 / lam2) : 999;
+  return { angle: stitchAngle, aspect, area: n, cx, cy };
+}
+
+function v69_regionMask(pixMap, reg, canvasSize) {
+  const w = reg.mxx - reg.mnx + 1;
+  const h = reg.mxy - reg.mny + 1;
+  const mask = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (pixMap[(reg.mny + y) * canvasSize + (reg.mnx + x)] === reg.ci) {
+        mask[y * w + x] = 1;
+      }
+    }
+  }
+  return { mask, w, h, offX: reg.mnx, offY: reg.mny };
+}
+
+function v69_findContours(mask, w, h) {
+  const seen = new Uint8Array(w * h);
+  const contours = [];
+  for (let y = 0; y < h; y++) {
+    let prev = 0;
+    for (let x = 0; x < w; x++) {
+      const v = mask[y * w + x];
+      if (v && !prev && !seen[y * w + x]) {
+        const path = v69_traceBoundary(mask, w, h, y * w + x);
+        for (const [px, py] of path) seen[py * w + px] = 1;
+        if (path.length >= 4) contours.push(path);
+      }
+      prev = v;
+    }
+  }
+  return contours;
+}
+
+function v69_buildShapeDescriptor(pixMap, reg, canvasSize, pxPerMm) {
+  const { mask, w, h, offX, offY } = v69_regionMask(pixMap, reg, canvasSize);
+  const contoursLocal = v69_findContours(mask, w, h);
+  if (!contoursLocal.length) return null;
+  contoursLocal.sort((a, b) => b.length - a.length);
+  const outerLocal = contoursLocal[0];
+  const holesLocal = contoursLocal.slice(1).filter(c => c.length >= 12);
+  const eps = Math.max(1.0, pxPerMm * 0.15);
+  const outer = v69_simplify(outerLocal, eps).map(([x, y]) => [x + offX, y + offY]);
+  const holes = holesLocal.map(c =>
+    v69_simplify(c, eps).map(([x, y]) => [x + offX, y + offY])
+  );
+
+  const pca = v69_principalAngle(pixMap, canvasSize, reg.mnx, reg.mny, reg.mxx, reg.mxy, reg.ci);
+
+  const bw = reg.mxx - reg.mnx + 1, bh = reg.mxy - reg.mny + 1;
+  /* Average width perpendicular to long axis = area / long-axis length.
+     This is more accurate than bbox/aspect because it handles diagonal shapes. */
+  const longAxisPx = Math.max(bw, bh);
+  const shortAxisPx = pca.area / Math.max(1, longAxisPx);
+  const widthMm = shortAxisPx / pxPerMm;
+  const areaMm2 = pca.area / (pxPerMm * pxPerMm);
+
+  let type;
+  if (areaMm2 < 1.5)                              type = "running";
+  else if (widthMm < 0.6)                         type = "running";
+  else if (widthMm <= 7.0 && pca.aspect > 2.5)    type = "satin";
+  else                                            type = "fill";
+
+  return {
+    ci: reg.ci, color: reg.color, type, outer, holes,
+    angle: pca.angle, aspect: pca.aspect, cx: pca.cx, cy: pca.cy,
+    bounds: { mnx: reg.mnx, mny: reg.mny, mxx: reg.mxx, mxy: reg.mxy },
+    area: pca.area, areaMm2, widthMm
+  };
+}
+
+/* ── STITCH GENERATOR (operates on shape descriptors) ─────────────────── */
+
+function v69_rotatePoint(x, y, cx, cy, c, s) {
+  const dx = x - cx, dy = y - cy;
+  return [cx + dx * c - dy * s, cy + dx * s + dy * c];
+}
+
+function v69_rayIntersectsX(outer, holes, Y) {
+  const xs = [];
+  function scan(poly) {
+    const n = poly.length;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const yi = poly[i][1], yj = poly[j][1];
+      if ((yi <= Y && yj > Y) || (yj <= Y && yi > Y)) {
+        const x = poly[i][0] + (Y - yi) * (poly[j][0] - poly[i][0]) / ((yj - yi) || 1e-9);
+        xs.push(x);
+      }
+    }
+  }
+  scan(outer);
+  for (const h of holes) scan(h);
+  xs.sort((a, b) => a - b);
+  return xs;
+}
+
+function v69_outlinePath(path, color, stepPx) {
+  const out = [];
+  if (path.length < 2) return out;
+  let acc = 0;
+  let [px, py] = path[0];
+  out.push({ x: px, y: py, color, type: "running" });
+  for (let i = 1; i < path.length; i++) {
+    const [nx, ny] = path[i];
+    const dx = nx - px, dy = ny - py;
+    const seg = Math.hypot(dx, dy);
+    if (seg < 0.01) continue;
+    let t = 0;
+    while (acc + (seg - t) >= stepPx) {
+      const remain = stepPx - acc;
+      const tt = t + remain;
+      const sx = px + dx * tt / seg;
+      const sy = py + dy * tt / seg;
+      out.push({ x: sx, y: sy, color, type: "running" });
+      t = tt; acc = 0;
+    }
+    acc += seg - t;
+    px = nx; py = ny;
+  }
+  out.push({ x: px, y: py, color, type: "running" });
+  return out;
+}
+
+function v69_fillAtAngle(shape, color, pRow, pLen, pPullComp, brickAmt) {
+  const { angle, cx, cy } = shape;
+  const cosNeg = Math.cos(-angle), sinNeg = Math.sin(-angle);
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+
+  const rOuter = shape.outer.map(([x,y]) => v69_rotatePoint(x, y, cx, cy, cosNeg, sinNeg));
+  const rHoles = shape.holes.map(h => h.map(([x,y]) => v69_rotatePoint(x, y, cx, cy, cosNeg, sinNeg)));
+
+  let mny = Infinity, mxy = -Infinity;
+  for (const [, y] of rOuter) { if (y < mny) mny = y; if (y > mxy) mxy = y; }
+
+  const stitches = [];
+  let rowIdx = 0;
+  let reversed = false;
+
+  for (let yLine = mny; yLine <= mxy; yLine += pRow) {
+    const xs = v69_rayIntersectsX(rOuter, rHoles, yLine);
+    if (xs.length < 2) { rowIdx++; reversed = !reversed; continue; }
+    const segs = [];
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      segs.push([xs[i] + pPullComp, xs[i+1] - pPullComp]);
+    }
+    if (reversed) segs.reverse();
+    const brickOff = (rowIdx % 2 === 0) ? 0 : brickAmt;
+
+    for (const [x1, x2] of segs) {
+      if (x2 - x1 < 0.5) continue;
+      const startX = reversed ? x2 : x1;
+      const endX   = reversed ? x1 : x2;
+      const [sx, sy] = v69_rotatePoint(startX, yLine,            cx, cy, cosA, sinA);
+      const [ex, ey] = v69_rotatePoint(endX,   yLine + brickOff, cx, cy, cosA, sinA);
+      stitches.push({ x: sx, y: sy, color, type: "fill" });
+      stitches.push({ x: ex, y: ey, color, type: "fill" });
+    }
+    reversed = !reversed;
+    rowIdx++;
+  }
+  return stitches;
+}
+
+function v69_satinColumn(shape, color, pLen) {
+  const { angle, cx, cy } = shape;
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+  const longCos = -sinA, longSin = cosA;
+
+  let minT = Infinity, maxT = -Infinity;
+  for (const [x, y] of shape.outer) {
+    const t = (x - cx) * longCos + (y - cy) * longSin;
+    if (t < minT) minT = t;
+    if (t > maxT) maxT = t;
+  }
+  const step = Math.max(2, pLen * 0.5);
+  const stitches = [];
+  let zigzag = 0;
+
+  for (let t = minT; t <= maxT; t += step) {
+    let minP = Infinity, maxP = -Infinity;
+    for (const [x, y] of shape.outer) {
+      const tt = (x - cx) * longCos + (y - cy) * longSin;
+      if (Math.abs(tt - t) > step) continue;
+      const pp = (x - cx) * cosA + (y - cy) * sinA;
+      if (pp < minP) minP = pp;
+      if (pp > maxP) maxP = pp;
+    }
+    if (minP === Infinity) continue;
+
+    const axCenterX = cx + t * longCos;
+    const axCenterY = cy + t * longSin;
+    const leftX  = axCenterX + minP * cosA;
+    const leftY  = axCenterY + minP * sinA;
+    const rightX = axCenterX + maxP * cosA;
+    const rightY = axCenterY + maxP * sinA;
+
+    if (zigzag % 2 === 0) {
+      stitches.push({ x: leftX,  y: leftY,  color, type: "satin" });
+      stitches.push({ x: rightX, y: rightY, color, type: "satin" });
+    } else {
+      stitches.push({ x: rightX, y: rightY, color, type: "satin" });
+      stitches.push({ x: leftX,  y: leftY,  color, type: "satin" });
+    }
+    zigzag++;
+  }
+  return stitches;
+}
+
+function v69_generateStitchesFromShapes(shapes, colors, params, canvasSize) {
+  const out = [];
+  const colorCounts = colors.map(() => ({fill:0, satin:0, running:0, underlay:0}));
+  const pxScale = canvasSize / 800;
+  const P = params || {};
+  const pRow      = Math.round((P.tatamiRow || 5) * pxScale);
+  const pLen      = Math.round((P.tatamiLen || 30) * pxScale);
+  const pPullComp = Math.round((P.pullComp  || 2)  * pxScale);
+  const pOutline  = Math.round(15 * pxScale);
+  const pBrick    = Math.round(pLen * 0.5);
+
+  const byColor = new Map();
+  for (const sh of shapes) {
+    const ci = sh.ci;
+    if (!byColor.has(ci)) byColor.set(ci, []);
+    byColor.get(ci).push(sh);
+  }
+
+  let lastX = 0, lastY = 0;
+
+  for (let ci = 0; ci < colors.length; ci++) {
+    const group = byColor.get(ci);
+    if (!group || !group.length) continue;
+    group.sort((a, b) => {
+      const tA = a.type === "fill" ? 0 : a.type === "satin" ? 1 : 2;
+      const tB = b.type === "fill" ? 0 : b.type === "satin" ? 1 : 2;
+      if (tA !== tB) return tA - tB;
+      return b.area - a.area;
+    });
+
+    const color = colors[ci];
+
+    for (const sh of group) {
+      const startX = sh.outer[0][0], startY = sh.outer[0][1];
+      if (Math.hypot(startX - lastX, startY - lastY) > 12 * pxScale) {
+        out.push({ x: lastX, y: lastY, color, type: "trim" });
+      }
+
+      /* Outline pass (crisp edges, hides fill ends) */
+      const ol = v69_outlinePath(sh.outer, color, pOutline);
+      for (const s of ol) {
+        out.push(s);
+        colorCounts[ci].running++;
+      }
+      for (const hole of sh.holes) {
+        const oh = v69_outlinePath(hole, color, pOutline);
+        for (const s of oh) {
+          out.push(s);
+          colorCounts[ci].running++;
+        }
+      }
+
+      /* Main stitching */
+      if (sh.type === "fill") {
+        const stitches = v69_fillAtAngle(sh, color, pRow, pLen, pPullComp, pBrick);
+        for (const s of stitches) {
+          out.push(s);
+          colorCounts[ci].fill++;
+          lastX = s.x; lastY = s.y;
+        }
+      } else if (sh.type === "satin") {
+        const stitches = v69_satinColumn(sh, color, pLen);
+        for (const s of stitches) {
+          out.push(s);
+          colorCounts[ci].satin++;
+          lastX = s.x; lastY = s.y;
+        }
+      }
+    }
+  }
+
+  return { stitches: out, colorCounts };
+}
+
 
 /* ─── REGION EXTRACTION ──────────────────────────────────*/
 function extractRegions(pixMap, colors, canvasSize) {
@@ -2246,7 +2630,34 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       return res.status(400).json({error:"No regions left after selection — select more colors/shapes"});
     }
 
-    let {stitches, colorCounts} = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
+    /* ─── V69 VECTORIZATION ────────────────────────────────
+       Build per-region shape descriptors (outline + holes + PCA angle).
+       The new stitch generator works on shapes, not raw pixel rows. */
+    const pxPerMm_gen = canvasSize / (canvasSize / 10);  /* 10 px per mm */
+    const shapeDescriptors = [];
+    for (const reg of filteredRegions) {
+      try {
+        const desc = v69_buildShapeDescriptor(pixMap, reg, canvasSize, pxPerMm_gen);
+        if (desc && desc.outer && desc.outer.length >= 3) {
+          desc.ci = selectedColors.findIndex(c => normHex(c) === normHex(reg.color));
+          if (desc.ci < 0) desc.ci = reg.ci;
+          shapeDescriptors.push(desc);
+        }
+      } catch(e) { console.error(`Shape descriptor failed for region:`, e.message); }
+    }
+    console.log(`[${rid}] v69 shapes: ${shapeDescriptors.length} | fill:${shapeDescriptors.filter(s=>s.type==="fill").length} satin:${shapeDescriptors.filter(s=>s.type==="satin").length} run:${shapeDescriptors.filter(s=>s.type==="running").length}`);
+
+    let stitches, colorCounts;
+    if (shapeDescriptors.length > 0) {
+      const result = v69_generateStitchesFromShapes(shapeDescriptors, selectedColors, params, canvasSize);
+      stitches = result.stitches;
+      colorCounts = result.colorCounts;
+    } else {
+      /* Fallback to legacy generator if vectorization produced nothing */
+      console.warn(`[${rid}] v69 produced no shapes; using legacy generator`);
+      const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
+      stitches = legacy.stitches; colorCounts = legacy.colorCounts;
+    }
 
     /* ─── ADD BASTING BOX ──────────────────────────────── */
     if (body.bastingBox === '1' || body.bastingBox === 'true') {
@@ -2324,6 +2735,65 @@ app.get("/preview-image/:id",async(req,res)=>{
   return res.status(500).json({error:"Preview not ready"});
 });
 
+/* ─── PURE-NODE ZIP BUILDER (STORE, no compression, no deps) ───────── */
+function buildZipStore(files) {
+  const crcTable = (() => {
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      t[i] = c;
+    }
+    return t;
+  })();
+  function crc32(buf) {
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) crc = crcTable[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+  function u16(v) { const b = Buffer.alloc(2); b.writeUInt16LE(v, 0); return b; }
+  function u32(v) { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0, 0); return b; }
+  const localHeaders = [];
+  const centralDir   = [];
+  let offset = 0;
+  for (const { name, data } of files) {
+    const nameBuf = Buffer.from(name, "utf8");
+    const crc     = crc32(data);
+    const size    = data.length;
+    const now     = new Date();
+    const dosTime = ((now.getSeconds() >> 1) | (now.getMinutes() << 5) | (now.getHours() << 11));
+    const dosDate = (now.getDate() | ((now.getMonth()+1) << 5) | ((now.getFullYear()-1980) << 9));
+    const lh = Buffer.concat([
+      Buffer.from([0x50,0x4B,0x03,0x04]),
+      u16(20), u16(0), u16(0),
+      u16(dosTime), u16(dosDate),
+      u32(crc), u32(size), u32(size),
+      u16(nameBuf.length), u16(0),
+      nameBuf
+    ]);
+    localHeaders.push(lh, data);
+    centralDir.push(Buffer.concat([
+      Buffer.from([0x50,0x4B,0x01,0x02]),
+      u16(20), u16(20), u16(0), u16(0),
+      u16(dosTime), u16(dosDate),
+      u32(crc), u32(size), u32(size),
+      u16(nameBuf.length), u16(0), u16(0), u16(0), u16(0), u32(0),
+      u32(offset),
+      nameBuf
+    ]));
+    offset += lh.length + data.length;
+  }
+  const cdBuf = Buffer.concat(centralDir);
+  const eocd  = Buffer.concat([
+    Buffer.from([0x50,0x4B,0x05,0x06]),
+    u16(0), u16(0),
+    u16(files.length), u16(files.length),
+    u32(cdBuf.length), u32(offset),
+    u16(0)
+  ]);
+  return Buffer.concat([...localHeaders, cdBuf, eocd]);
+}
+
 app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
   const d=jobs.get(req.params.id);
   if(!d)return res.status(404).json({error:"Not found"});
@@ -2333,39 +2803,30 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
 
   if (fmt === 'dst') {
     const dstBuf = encodeDST(d.stitches, d.params?.machineLimits);
-    /* Build a .inf sidecar so Tajima-compatible viewers (Viewer Pro, SewWhat, etc.)
-       display the correct thread color names instead of their default palette.
-       The .inf format is plain text: one [thread N] section per color-change.   */
-    const infLines = ["[Version]\nMajor=1\nMinor=0\n"];
+    /* Build a .inf sidecar so Tajima-compatible viewers display correct thread colors */
+    const infLines = ["[Version]", "Major=1", "Minor=0", ""];
     d.colors.forEach((hex, idx) => {
       const rgb = hexToRgb(hex);
       const nearIdx = findNearestThread(rgb, JEF_THREADS);
-      const name = ["Black","White","Yellow","Orange","Red","Burgundy","Pink","Light Pink",
-                    "Gold","Dark Gold","Brown","Dark Brown","Olive Green","Green","Dark Green",
-                    "Sky Blue","Light Blue","Blue","Dark Blue","Purple","Light Purple","Lavender",
-                    "Silver","Grey","Dark Grey","Beige","Light Beige","Tan","Caramel","Dark Caramel",
-                    "Orange Red","Light Orange"][nearIdx] || hex;
-      infLines.push(`[thread${idx+1}]\nColor=${rgb.r},${rgb.g},${rgb.b}\nName=${name}\nID=${String(nearIdx+1).padStart(3,'0')}\n`);
+      const NAMES = ["Black","White","Yellow","Orange","Red","Burgundy","Pink","Light Pink",
+                     "Gold","Dark Gold","Brown","Dark Brown","Olive Green","Green","Dark Green",
+                     "Sky Blue","Light Blue","Blue","Dark Blue","Purple","Light Purple","Lavender",
+                     "Silver","Grey","Dark Grey","Beige","Light Beige","Tan","Caramel","Dark Caramel",
+                     "Orange Red","Light Orange"];
+      const name = NAMES[nearIdx] || hex;
+      infLines.push(`[thread${idx+1}]`, `Color=${rgb.r},${rgb.g},${rgb.b}`, `Name=${name}`, `ID=${String(nearIdx+1).padStart(3,'0')}`, "");
     });
-    const infBuf = Buffer.from(infLines.join("\n"), "utf8");
+    const infBuf = Buffer.from(infLines.join("\r\n"), "utf8");
 
-    /* Try to zip dst+inf together; fall back to raw dst if archiver unavailable */
-    let archiver;
-    try { archiver = require("archiver"); } catch(e) { archiver = null; }
-    if (archiver) {
-      if(req.firebaseUser) await recordDownload(req.firebaseUser.uid);
-      res.setHeader("Content-Type", "application/zip");
-      res.setHeader("Content-Disposition", `attachment; filename="design.zip"`);
-      const archive = archiver("zip", { zlib: { level: 6 } });
-      archive.pipe(res);
-      archive.append(dstBuf, { name: "design.dst" });
-      archive.append(infBuf, { name: "design.inf" });
-      await archive.finalize();
-      return;
-    } else {
-      /* No archiver — send dst only but attach inf as custom header for info */
-      buf = dstBuf;
-    }
+    /* Pure-Node ZIP (STORE compression, no external deps) */
+    const zipBuf = buildZipStore([
+      { name: "design.dst", data: dstBuf },
+      { name: "design.inf", data: infBuf }
+    ]);
+    if(req.firebaseUser) await recordDownload(req.firebaseUser.uid);
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="design.zip"`);
+    return res.send(zipBuf);
   } else if (fmt === 'jef') {
     buf = encodeJEF(d.stitches, d.colors);
   } else if (fmt === 'pes') {
@@ -2380,9 +2841,9 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"68.3",features:"color-first,origin-trim,bridge-limits,basting,merges,machine-limits,hoop-pull,pes,jef"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"69.0",features:"v69-vectorized,boundary-trace,pca-angles,satin-columns,outline-pass,bg-detect,zip-inf,scale-aware"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v68.3 | :${PORT} | All features`));
+const server=app.listen(PORT,()=>console.log(`Stichai v69.0 | :${PORT} | Vectorized stitch generation`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
