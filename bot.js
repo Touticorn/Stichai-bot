@@ -290,7 +290,7 @@ function rgbToLab({r,g,b}) {
 function dE(a,b){return Math.sqrt((a.l-b.l)**2+(a.a-b.a)**2+(a.b-b.b)**2);}
 function normHex(h){const m=(h||"").match(/^#?([0-9a-fA-F]{6})$/i);return m?`#${m[1].toUpperCase()}`:"#000000";}
 function isNearWhite(hex){const {r,g,b}=hexToRgb(hex);return r>230&&g>230&&b>230;}
-function isNearBlack(hex){const {r,g,b}=hexToRgb(hex);return r<<40&&g<<40&&b<<40;}
+function isNearBlack(hex){const {r,g,b}=hexToRgb(hex);return r<40&&g<40&&b<40;}
 
 /* ─── SPEC TUNING ─────────────────────────────────────────*/
 function getStitchParams(specs) {
@@ -1528,6 +1528,304 @@ function encodeDST(stitches, machineLimits) {
   return Buffer.concat([header, ...recs]);
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════
+   JEF ENCODER (Janome) — based on pyembroidery / libembroidery
+   ═══════════════════════════════════════════════════════════════════ */
+const JEF_THREADS = [
+  {r:0,g:0,b:0},{r:255,g:255,b:255},{r:255,g:0,b:0},{r:0,g:255,b:0},
+  {r:0,g:0,b:255},{r:255,g:255,b:0},{r:255,g:0,b:255},{r:0,g:255,b:255},
+  {r:255,g:128,b:0},{r:128,g:0,b:128},{r:255,g:192,b:203},{r:165,g:42,b:42},
+  {r:128,g:128,b:128},{r:192,g:192,b:192},{r:255,g:215,b:0},{r:0,g:128,b:0},
+  {r:128,g:0,b:0},{r:0,g:0,b:128},{r:128,g:128,b:0},{r:0,g:128,b:128},
+  {r:255,g:165,b:0},{r:255,g:105,b:180},{r:139,g:69,b:19},{r:64,g:64,b:64},
+  {r:218,g:165,b:32},{r:135,g:206,b:235},{r:255,g:218,b:185},{r:70,g:130,b:180},
+  {r:210,g:105,b:30},{r:244,g:164,b:96},{r:32,g:178,b:170},{r:221,g:160,b:221}
+];
+
+const PEC_THREADS = [
+  {r:0,g:0,b:0},{r:255,g:255,b:255},{r:255,g:0,b:0},{r:0,g:255,b:0},
+  {r:0,g:0,b:255},{r:255,g:255,b:0},{r:255,g:0,b:255},{r:0,g:255,b:255},
+  {r:255,g:128,b:0},{r:128,g:0,b:128},{r:255,g:192,b:203},{r:165,g:42,b:42},
+  {r:128,g:128,b:128},{r:192,g:192,b:192},{r:255,g:215,b:0},{r:0,g:128,b:0},
+  {r:128,g:0,b:0},{r:0,g:0,b:128},{r:128,g:128,b:0},{r:0,g:128,b:128},
+  {r:255,g:165,b:0},{r:255,g:105,b:180},{r:139,g:69,b:19},{r:64,g:64,b:64},
+  {r:218,g:165,b:32},{r:135,g:206,b:235},{r:255,g:218,b:185},{r:70,g:130,b:180},
+  {r:210,g:105,b:30},{r:244,g:164,b:96},{r:32,g:178,b:170},{r:221,g:160,b:221},
+  {r:255,g:250,b:205},{r:0,g:206,b:209},{r:147,g:112,b:219},{r:255,g:20,b:147},
+  {r:50,g:205,b:50},{r:240,g:230,b:140},{r:255,g:99,b:71},{r:199,g:21,b:133},
+  {r:255,g:140,b:0},{r:173,g:255,b:47},{r:65,g:105,b:225},{r:218,g:112,b:214},
+  {r:240,g:128,b:128},{r:255,g:160,b:122},{r:127,g:255,b:212},{r:112,g:128,b:144},
+  {r:255,g:228,b:225},{r:255,g:250,b:240},{r:240,g:248,b:255},{r:245,g:245,b:245},
+  {r:47,g:79,b:79},{r:105,g:105,b:105},{r:176,g:196,b:222},{r:220,g:20,b:60},
+  {r:0,g:191,b:255},{r:154,g:205,b:50},{r:255,g:127,b:80},{r:106,g:90,b:205},
+  {r:253,g:245,b:230},{r:128,g:0,b:128},{r:102,g:205,b:170},{r:233,g:150,b:122},
+  {r:255,g:222,b:173},{r:30,g:144,b:255},{r:119,g:136,b:153},{r:255,g:250,b:250}
+];
+
+function findNearestThread(rgb, set) {
+  let best = 0, bestD = 1e9;
+  for (let i = 0; i < set.length; i++) {
+    const d = Math.abs(rgb.r - set[i].r) + Math.abs(rgb.g - set[i].g) + Math.abs(rgb.b - set[i].b);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+function writeInt8(buf, v) { buf.push(v & 0xFF); }
+function writeInt16LE(buf, v) { buf.push(v & 0xFF, (v >> 8) & 0xFF); }
+function writeInt16BE(buf, v) { buf.push((v >> 8) & 0xFF, v & 0xFF); }
+function writeInt24LE(buf, v) { buf.push(v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF); }
+function writeInt32LE(buf, v) { buf.push(v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF); }
+function writeString(buf, s) { for (let i = 0; i < s.length; i++) buf.push(s.charCodeAt(i)); }
+
+function getBounds(stitches) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const s of stitches) {
+    if (s.type === 'trim' || s.type === 'end') continue;
+    if (s.x < minX) minX = s.x;
+    if (s.x > maxX) maxX = s.x;
+    if (s.y < minY) minY = s.y;
+    if (s.y > maxY) maxY = s.y;
+  }
+  if (minX === Infinity) { minX = maxX = minY = maxY = 0; }
+  return {minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY};
+}
+
+/* Normalize stitches: split long moves, convert trims→jumps, emit color_changes */
+function normalizeStitches(stitches, maxJump) {
+  const out = [];
+  let px = 0, py = 0, prevColor = null;
+  for (const s of stitches) {
+    if (s.type === 'trim') {
+      // Treat trim as jump to next position
+      continue;
+    }
+    if (prevColor !== null && s.color !== prevColor) {
+      out.push({dx: 0, dy: 0, type: 'color_change'});
+    }
+    prevColor = s.color;
+    const dx = s.x - px, dy = s.y - py;
+    const dist = Math.hypot(dx, dy);
+    if (dist > maxJump) {
+      const steps = Math.ceil(dist / maxJump);
+      for (let i = 1; i < steps; i++) {
+        const ix = Math.round(px + dx * i / steps);
+        const iy = Math.round(py + dy * i / steps);
+        out.push({dx: ix - px, dy: iy - py, type: 'jump'});
+        px = ix; py = iy;
+      }
+      out.push({dx: s.x - px, dy: s.y - py, type: s.type === 'jump' ? 'jump' : 'stitch'});
+    } else {
+      out.push({dx, dy, type: s.type === 'jump' ? 'jump' : 'stitch'});
+    }
+    px = s.x; py = s.y;
+  }
+  out.push({dx: 0, dy: 0, type: 'end'});
+  return out;
+}
+
+function getJefHoopSize(width, height) {
+  if (width < 500 && height < 500) return 1; // 50x50
+  if (width < 1260 && height < 1100) return 3; // 126x110
+  if (width < 1400 && height < 2000) return 2; // 140x200
+  if (width < 2000 && height < 2000) return 4; // 200x200
+  return 0; // 110x110 default
+}
+
+function writeHoopEdge(buf, x, y) {
+  if (x >= 0 && y >= 0) {
+    writeInt32LE(buf, x); writeInt32LE(buf, y);
+    writeInt32LE(buf, x); writeInt32LE(buf, y);
+  } else {
+    writeInt32LE(buf, -1); writeInt32LE(buf, -1);
+    writeInt32LE(buf, -1); writeInt32LE(buf, -1);
+  }
+}
+
+function encodeJEF(stitches, colors) {
+  const norm = normalizeStitches(stitches, 127);
+  const bounds = getBounds(stitches);
+  const colorCount = colors.length;
+
+  let pointCount = 1; // END
+  for (const s of norm) {
+    if (s.type === 'stitch') pointCount += 1;
+    else if (s.type === 'jump') pointCount += 2;
+    else if (s.type === 'color_change') pointCount += 2;
+  }
+
+  const palette = colors.map(c => findNearestThread(hexToRgb(c), JEF_THREADS));
+  const headerSize = 0x74 + colorCount * 8;
+
+  const buf = [];
+  writeInt32LE(buf, headerSize); // stitch offset
+  writeInt32LE(buf, 0x14);
+
+  const now = new Date();
+  const dateStr = now.getFullYear().toString() +
+    String(now.getMonth()+1).padStart(2,'0') +
+    String(now.getDate()).padStart(2,'0') +
+    String(now.getHours()).padStart(2,'0') +
+    String(now.getMinutes()).padStart(2,'0') +
+    String(now.getSeconds()).padStart(2,'0');
+  writeString(buf, dateStr);
+  writeInt8(buf, 0); writeInt8(buf, 0);
+
+  writeInt32LE(buf, colorCount);
+  writeInt32LE(buf, pointCount);
+  writeInt32LE(buf, getJefHoopSize(bounds.width, bounds.height));
+
+  const halfW = Math.round(bounds.width / 2);
+  const halfH = Math.round(bounds.height / 2);
+  writeInt32LE(buf, halfW); writeInt32LE(buf, halfH);
+  writeInt32LE(buf, halfW); writeInt32LE(buf, halfH);
+
+  writeHoopEdge(buf, 550 - halfW, 550 - halfH);
+  writeHoopEdge(buf, 250 - halfW, 250 - halfH);
+  writeHoopEdge(buf, 700 - halfW, 1000 - halfH);
+  writeHoopEdge(buf, 700 - halfW, 1000 - halfH);
+
+  for (const p of palette) writeInt32LE(buf, p);
+  for (let i = 0; i < colorCount; i++) writeInt32LE(buf, 0x0D);
+
+  let xx = 0, yy = 0;
+  for (const s of norm) {
+    if (s.type === 'stitch') {
+      writeInt8(buf, s.dx); writeInt8(buf, -s.dy);
+    } else if (s.type === 'color_change') {
+      buf.push(0x80, 0x01);
+      writeInt8(buf, s.dx); writeInt8(buf, -s.dy);
+    } else if (s.type === 'jump') {
+      buf.push(0x80, 0x02);
+      writeInt8(buf, s.dx); writeInt8(buf, -s.dy);
+    } else if (s.type === 'end') {
+      buf.push(0x80, 0x10);
+      break;
+    }
+  }
+  return Buffer.from(buf);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   PES / PEC ENCODER (Brother) — based on pyembroidery / libembroidery
+   ═══════════════════════════════════════════════════════════════════ */
+function writePecValue(buf, value, long, flag) {
+  if (!long && value > -64 && value < 63) {
+    writeInt8(buf, value & 0x7F);
+  } else {
+    let v = value & 0x0FFF;
+    v |= 0x8000;
+    v |= (flag || 0) << 8;
+    writeInt8(buf, (v >> 8) & 0xFF);
+    writeInt8(buf, v & 0xFF);
+  }
+}
+
+function encodePEC(stitches, colors) {
+  const norm = normalizeStitches(stitches, 2047);
+  const bounds = getBounds(stitches);
+  const width = bounds.width, height = bounds.height;
+  const colorCount = colors.length;
+  const palette = colors.map(c => findNearestThread(hexToRgb(c), PEC_THREADS));
+  const rgbList = colors.map(c => { const r = hexToRgb(c); return (r.r << 16) | (r.g << 8) | r.b; });
+
+  const buf = [];
+  // 512-byte header
+  const name = "Stichai";
+  writeString(buf, "LA:" + name.padEnd(16, ' '));
+  buf.push(0x0D);
+  for (let i = 0; i < 12; i++) buf.push(0x20);
+  buf.push(0xFF, 0x00);
+  buf.push(6); // icon width bytes (48/8)
+  buf.push(38); // icon height
+  const pad1 = [0x20,0x20,0x20,0x20,0x64,0x20,0x00,0x20,0x00,0x20,0x20,0x20];
+  for (const b of pad1) buf.push(b);
+
+  if (colorCount > 0) {
+    for (let i = 0; i < 12; i++) buf.push(0x20);
+    buf.push(colorCount - 1);
+    for (const p of palette) buf.push(p);
+  } else {
+    for (let i = 0; i < 12; i++) buf.push(0x20);
+    buf.push(0x64, 0x20, 0x00, 0x20, 0x00, 0x20, 0x20, 0x20, 0xFF);
+  }
+  while (buf.length < 512) buf.push(0x20);
+
+  // Second section
+  buf.push(0x00, 0x00);
+  const graphicsOffsetPos = buf.length;
+  writeInt24LE(buf, 0); // placeholder
+  buf.push(0x31, 0xFF, 0xF0);
+  writeInt16LE(buf, Math.round(width));
+  writeInt16LE(buf, Math.round(height));
+  writeInt16LE(buf, 0x01E0);
+  writeInt16LE(buf, 0x01B0);
+  writeInt16BE(buf, 0x9000 - bounds.minX);
+  writeInt16BE(buf, 0x9000 - bounds.minY);
+
+  const stitchBlockStart = buf.length;
+  let xx = 0, yy = 0, colorTwo = true, jumping = true, init = true;
+  for (const s of norm) {
+    if (s.type === 'stitch') {
+      if (jumping) {
+        if (s.dx !== 0 || s.dy !== 0) {
+          writePecValue(buf, 0, false); writePecValue(buf, 0, false);
+        }
+        jumping = false;
+      }
+      writePecValue(buf, s.dx, false);
+      writePecValue(buf, s.dy, false);
+    } else if (s.type === 'jump') {
+      jumping = true;
+      if (init) {
+        writePecValue(buf, s.dx, true, 0x10);
+        writePecValue(buf, s.dy, true, 0x10);
+      } else {
+        writePecValue(buf, s.dx, true, 0x20);
+        writePecValue(buf, s.dy, true, 0x20);
+      }
+    } else if (s.type === 'color_change') {
+      if (jumping) {
+        writePecValue(buf, 0, false); writePecValue(buf, 0, false);
+        jumping = false;
+      }
+      buf.push(0xFE, 0xB0);
+      buf.push(colorTwo ? 0x02 : 0x01);
+      colorTwo = !colorTwo;
+    } else if (s.type === 'end') {
+      buf.push(0xFF);
+      break;
+    }
+    init = false;
+  }
+
+  const stitchBlockLength = buf.length - stitchBlockStart;
+  buf[graphicsOffsetPos] = stitchBlockLength & 0xFF;
+  buf[graphicsOffsetPos + 1] = (stitchBlockLength >> 8) & 0xFF;
+  buf[graphicsOffsetPos + 2] = (stitchBlockLength >> 16) & 0xFF;
+
+  // Graphics thumbnails (blank)
+  const thumbSize = 6 * 38; // 228 bytes per thumbnail
+  for (let i = 0; i < thumbSize; i++) buf.push(0); // main thumbnail
+  for (let c = 0; c < colorCount; c++) {
+    for (let i = 0; i < thumbSize; i++) buf.push(0);
+  }
+
+  return Buffer.from(buf);
+}
+
+function encodePES(stitches, colors) {
+  const pec = encodePEC(stitches, colors);
+  const pecOffset = 8 + 4 + 10; // signature + offset field + padding
+  const buf = [];
+  writeString(buf, "#PES0001");
+  writeInt32LE(buf, pecOffset);
+  while (buf.length < pecOffset) buf.push(0);
+  for (let i = 0; i < pec.length; i++) buf.push(pec[i]);
+  return Buffer.from(buf);
+}
+
 /* ─── JOBS & DETECTIONS ───────────────────────────────────*/
 const jobs         = new Map();
 const previewCache = new Map();
@@ -1896,22 +2194,29 @@ app.get("/preview-image/:id",async(req,res)=>{
 app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
   const d=jobs.get(req.params.id);
   if(!d)return res.status(404).json({error:"Not found"});
-  
+
   const fmt = req.query.fmt || 'dst';
-  if (fmt !== 'dst') {
-    return res.status(501).json({error: "PES/JEF conversion not yet implemented. Please use DST format."});
+  let buf;
+
+  if (fmt === 'dst') {
+    buf = encodeDST(d.stitches, d.params?.machineLimits);
+  } else if (fmt === 'jef') {
+    buf = encodeJEF(d.stitches, d.colors);
+  } else if (fmt === 'pes') {
+    buf = encodePES(d.stitches, d.colors);
+  } else {
+    return res.status(400).json({error: "Unsupported format. Use dst, pes, or jef."});
   }
-  
+
   if(req.firebaseUser) await recordDownload(req.firebaseUser.uid);
-  const buf = encodeDST(d.stitches, d.params?.machineLimits);
   res.setHeader("Content-Type","application/octet-stream");
   res.setHeader("Content-Disposition",`attachment; filename="design.${fmt}"`);
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"68.2",features:"color-first,origin-trim,bridge-limits,basting,merges,machine-limits,hoop-pull"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"68.3",features:"color-first,origin-trim,bridge-limits,basting,merges,machine-limits,hoop-pull,pes,jef"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v68.2 | :${PORT} | All features implemented`));
+const server=app.listen(PORT,()=>console.log(`Stichai v68.3 | :${PORT} | All features`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
