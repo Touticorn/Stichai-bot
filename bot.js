@@ -619,7 +619,7 @@ Return ONLY valid JSON, no markdown.
 function getRunsInRow(pixMap,ci,y,x0,x1,canvasSize){
   const runs=[];let s=-1;
   for(let x=x0;x<=x1;x++){
-    const hit=y>=0&&y<<canvasSize&&pixMap[y*canvasSize+x]===ci;
+    const hit=y>=0&&y<canvasSize&&pixMap[y*canvasSize+x]===ci;
     if(hit&&s===-1)s=x;
     if(!hit&&s!==-1){runs.push({x1:s,x2:x-1});s=-1;}
   }
@@ -632,9 +632,9 @@ function extractRegions(pixMap, colors, canvasSize) {
   const visited  = new Uint8Array(canvasSize*canvasSize);
   const regions  = [];
 
-  for(let ci=0;ci<<colors.length;ci++){
-    for(let sy=0;sy<<canvasSize;sy++){
-      for(let sx=0;sx<<canvasSize;sx++){
+  for(let ci=0;ci<colors.length;ci++){
+    for(let sy=0;sy<canvasSize;sy++){
+      for(let sx=0;sx<canvasSize;sx++){
         const si = sy*canvasSize+sx;
         if(pixMap[si]!==ci||visited[si])continue;
 
@@ -642,22 +642,22 @@ function extractRegions(pixMap, colors, canvasSize) {
         visited[si]=1;
         let mnx=sx,mxx=sx,mny=sy,mxy=sy,area=0;
 
-        while(qp<<q.length){
+        while(qp<q.length){
           const idx=q[qp++]; area++;
           const x=idx%canvasSize, y=(idx/canvasSize)|0;
-          if(x<<mnx)mnx=x;if(x>mxx)mxx=x;
+          if(x<mnx)mnx=x;if(x>mxx)mxx=x;
           if(y<mny)mny=y;if(y>mxy)mxy=y;
 
           for(const[dx,dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]]){
             const nx=x+dx,ny=y+dy;
-            if(nx>=0&&nx<<canvasSize&&ny>=0&&ny<<canvasSize){
+            if(nx>=0&&nx<canvasSize&&ny>=0&&ny<canvasSize){
               const ni=ny*canvasSize+nx;
               if(!visited[ni]&&pixMap[ni]===ci){visited[ni]=1;q.push(ni);}
             }
           }
         }
 
-        if(area<<MIN_AREA)continue;
+        if(area<MIN_AREA)continue;
 
         const bw=mxx-mnx+1, bh=mxy-mny+1;
         const aspectRatio=bh/Math.max(bw,1);
@@ -691,7 +691,7 @@ function mergeAdjacentRegions(regions) {
   const merged = [];
   const used = new Set();
 
-  for(let i=0;i<<regions.length;i++){
+  for(let i=0;i<regions.length;i++){
     if(used.has(i)) continue;
     const base = regions[i];
     let mnx=base.mnx, mny=base.mny, mxx=base.mxx, mxy=base.mxy, area=base.area;
@@ -699,7 +699,7 @@ function mergeAdjacentRegions(regions) {
     let runCount = base.bh;
     used.add(i);
 
-    for(let j=i+1;j<<regions.length;j++){
+    for(let j=i+1;j<regions.length;j++){
       if(used.has(j)) continue;
       const other = regions[j];
       if(other.color !== base.color) continue;
