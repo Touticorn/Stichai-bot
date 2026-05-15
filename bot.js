@@ -515,6 +515,42 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
   }
   
   console.log(`Extracted ${result.length}/${maxColors} colors: ${result.join(', ')}`);
+
+  /* ── Background exclusion ────────────────────────────────────────────────
+     A color that (a) covers >35% of the unmasked canvas AND (b) dominates
+     the border pixels is almost certainly the fabric background — mark it
+     so the caller can skip digitising it.                                   */
+  const borderSamples = [];
+  for (let x = 0; x < analysisSize; x++) {
+    borderSamples.push(x, (analysisSize - 1) * analysisSize + x);          // top/bottom row
+  }
+  for (let y = 1; y < analysisSize - 1; y++) {
+    borderSamples.push(y * analysisSize, y * analysisSize + analysisSize - 1); // left/right col
+  }
+  const borderVotes = new Array(result.length).fill(0);
+  const resultLabs = result.map(c => rgbToLab(hexToRgb(c)));
+  for (const i of borderSamples) {
+    const iOff = i * iCh;
+    const lab = rgbToLab({ r: iData[iOff], g: iData[iOff+1], b: iData[iOff+2] });
+    let best = 0, bestD = Infinity;
+    for (let c = 0; c < resultLabs.length; c++) {
+      const d = dE(lab, resultLabs[c]);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    borderVotes[best]++;
+  }
+  const totalBorder = borderSamples.length;
+  result._bgIndex = -1;
+  for (let c = 0; c < result.length; c++) {
+    const bucket = allBuckets.find(b => b.hex === result[c]);
+    const coverage = bucket ? bucket.pct : 0;
+    if (coverage > 0.35 && borderVotes[c] / totalBorder > 0.50) {
+      result._bgIndex = c;
+      console.log(`Background color detected: ${result[c]} (coverage ${(coverage*100).toFixed(1)}%, border ${(borderVotes[c]/totalBorder*100).toFixed(1)}%)`);
+      break;
+    }
+  }
+
   return result.length ? result : ["#000000"];
 }
 
@@ -657,7 +693,10 @@ function extractRegions(pixMap, colors, canvasSize) {
           }
         }
 
-        if(area<MIN_AREA)continue;
+        /* Scale minimum area to canvas resolution.
+           At 800px: MIN_AREA=25 → ~0.04mm². At 1600px: use 100px² for same physical size. */
+        const scaledMinArea = MIN_AREA * Math.pow(canvasSize / 800, 2);
+        if(area < scaledMinArea) continue;
 
         const bw=mxx-mnx+1, bh=mxy-mny+1;
         const aspectRatio=bh/Math.max(bw,1);
@@ -671,9 +710,11 @@ function extractRegions(pixMap, colors, canvasSize) {
         const avgRunW=runCount>0?totalRunW/runCount:bw;
 
         let type;
-        if(area < MIN_AREA * 3) type = "running";
-        else if(aspectRatio > 2.5 && avgRunW <= 18 && solidity > 0.4) type = "satin";
-        else if(avgRunW > 3 && avgRunW <= 14 && solidity > 0.5 && aspectRatio > 1.5) type = "satin";
+        const scaledMin3 = MIN_AREA * 3 * Math.pow(canvasSize / 800, 2);
+        const avgRunMM = avgRunW / (canvasSize / 800) / 10;
+        if(area < scaledMin3) type = "running";
+        else if(avgRunMM <= 4.0) type = "satin";
+        else if(avgRunMM <= 8.0 && aspectRatio > 1.8 && solidity > 0.4) type = "satin";
         else type = "fill";
 
         regions.push({ci,color:normHex(colors[ci]),type,mnx,mny,mxx,mxy,bw,bh,area,aspectRatio,solidity,avgRunW});
@@ -2041,8 +2082,15 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
     const gem = await analyzeWithGemini(imgFile.buffer, imgFile.mimetype || "image/png", colorCount);
 
     const pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
+    const bgColor = colors._bgIndex >= 0 ? normHex(colors[colors._bgIndex]) : null;
+    if (bgColor) console.log(`[${rid}] Excluding background: ${bgColor}`);
+
     const rawRegions = extractRegions(pixMap, colors, canvasSize);
-    const regions = mergeAdjacentRegions(rawRegions);
+    /* Filter out background-color regions entirely */
+    const nonBgRegions = bgColor
+      ? rawRegions.filter(r => normHex(r.color) !== bgColor)
+      : rawRegions;
+    const regions = mergeAdjacentRegions(nonBgRegions, canvasSize);
 
     if(!regions.length){
       return res.status(500).json({error:"No stitchable regions found"});
@@ -2067,6 +2115,7 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
       success:true,
       detectionId,
       colors,
+      bgColor: bgColor || null,
       colorMeta:colorInfo,
       shapes,
       designMm,
@@ -2283,7 +2332,40 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
   let buf;
 
   if (fmt === 'dst') {
-    buf = encodeDST(d.stitches, d.params?.machineLimits);
+    const dstBuf = encodeDST(d.stitches, d.params?.machineLimits);
+    /* Build a .inf sidecar so Tajima-compatible viewers (Viewer Pro, SewWhat, etc.)
+       display the correct thread color names instead of their default palette.
+       The .inf format is plain text: one [thread N] section per color-change.   */
+    const infLines = ["[Version]\nMajor=1\nMinor=0\n"];
+    d.colors.forEach((hex, idx) => {
+      const rgb = hexToRgb(hex);
+      const nearIdx = findNearestThread(rgb, JEF_THREADS);
+      const name = ["Black","White","Yellow","Orange","Red","Burgundy","Pink","Light Pink",
+                    "Gold","Dark Gold","Brown","Dark Brown","Olive Green","Green","Dark Green",
+                    "Sky Blue","Light Blue","Blue","Dark Blue","Purple","Light Purple","Lavender",
+                    "Silver","Grey","Dark Grey","Beige","Light Beige","Tan","Caramel","Dark Caramel",
+                    "Orange Red","Light Orange"][nearIdx] || hex;
+      infLines.push(`[thread${idx+1}]\nColor=${rgb.r},${rgb.g},${rgb.b}\nName=${name}\nID=${String(nearIdx+1).padStart(3,'0')}\n`);
+    });
+    const infBuf = Buffer.from(infLines.join("\n"), "utf8");
+
+    /* Try to zip dst+inf together; fall back to raw dst if archiver unavailable */
+    let archiver;
+    try { archiver = require("archiver"); } catch(e) { archiver = null; }
+    if (archiver) {
+      if(req.firebaseUser) await recordDownload(req.firebaseUser.uid);
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="design.zip"`);
+      const archive = archiver("zip", { zlib: { level: 6 } });
+      archive.pipe(res);
+      archive.append(dstBuf, { name: "design.dst" });
+      archive.append(infBuf, { name: "design.inf" });
+      await archive.finalize();
+      return;
+    } else {
+      /* No archiver — send dst only but attach inf as custom header for info */
+      buf = dstBuf;
+    }
   } else if (fmt === 'jef') {
     buf = encodeJEF(d.stitches, d.colors);
   } else if (fmt === 'pes') {
