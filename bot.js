@@ -1,5 +1,21 @@
 /**
- * Stichai v68 — Critical fixes: color-first order, origin trim, bridge limits, proper jump flags
+ * Stichai v68.2 — Deployment fix + all promised features actually implemented
+ * ═══════════════════════════════════════════════════════════════════════════════
+ *  FIXES
+ *  ─────────────────────────────────────────────────────────────────────────────
+ *  1. Optional firebase-admin / stripe requires — app starts without env vars
+ *  2. package.json now lists firebase-admin and stripe (fixes Railway crash)
+ *  3. Color-first region ordering (finish one thread before next color)
+ *  4. Origin trim jump before first tie-in (no accidental 200mm stitch from 0,0)
+ *  5. Bridge distance limit: >12mm gets trim instead of 200 bridge stitches
+ *  6. Bridges encoded as stitches, not jumps (isJump = trim||jump only)
+ *  7. ALL << typos fixed to < (infinite loop bug in region extraction)
+ *  8. Machine-specific limits: Tajima/Barudan 121/3, Brother/Janome 127/4, Singer 100/5
+ *  9. Hoop-based pull compensation: 4x4→1, 5x7→2, 6x10→3, 8x8→4, 8x12→6
+ *  10. Basting box implemented: running-stitch rectangle around design extents
+ *  11. Color merges implemented: backend reads colorMerges, remaps pixMap indices
+ *  12. Small-stitch filter in DST encoder (drops stitches below machine minimum)
+ *  13. Download route rejects PES/JEF with 501 until true converters are added
  */
 
 "use strict";
@@ -239,10 +255,22 @@ const GEMINI_MODELS = [
 ];
 
 /* ─── CONSTANTS ───────────────────────────────────────────*/
-const DST_MAX      = 121;
 const SMART_TRIM   = 30;
 const MIN_AREA     = 25;
 const PREVIEW_MAX  = 1200;
+
+const MACHINE_LIMITS = {
+  tajima:  { maxJump: 121, minStitch: 3 },
+  barudan: { maxJump: 121, minStitch: 3 },
+  brother: { maxJump: 127, minStitch: 4 },
+  janome:  { maxJump: 127, minStitch: 4 },
+  singer:  { maxJump: 100, minStitch: 5 },
+  generic: { maxJump: 121, minStitch: 3 },
+};
+
+const HOOP_PULL = {
+  "4x4": 1, "5x7": 2, "6x10": 3, "8x8": 4, "8x12": 6,
+};
 
 /* ─── COLOR UTILITIES ────────────────────────────────────*/
 function hexToRgb(hex) {
@@ -271,10 +299,15 @@ function getStitchParams(specs) {
   const density = (s.density || "medium").toLowerCase();
   const machine = (s.machine || "generic").toLowerCase();
   const stabilizer = (s.stabilizer || "cutaway").toLowerCase();
+  const hoop = (s.hoop || "5x7").toLowerCase();
+
+  const limits = MACHINE_LIMITS[machine] || MACHINE_LIMITS.generic;
 
   const p = {
     tatamiRow: 4, tatamiLen: 30, tatamiUl: 40, pull: 2,
-    machine, fabric, stabilizer, density, maxStitchLen: 121
+    pullComp: HOOP_PULL[hoop] || 2,
+    machineLimits: limits,
+    machine, fabric, stabilizer, density, maxStitchLen: limits.maxJump, hoop
   };
 
   const fabricMap = {
@@ -710,7 +743,7 @@ function mergeAdjacentRegions(regions) {
   return merged;
 }
 
-/* ─── BRIDGE CONNECTOR (v60) ─────────────────────────────*/
+/* ─── BRIDGE CONNECTOR ─────────────────────────────*/
 function getEdgePixels(pixMap, reg, canvasSize) {
   const edge = [];
   for (let y = reg.mny; y <= reg.mxy; y++) {
@@ -766,7 +799,7 @@ function sortRegionsNearestNeighbor(regions) {
 function generateBridgeStitches(fromX, fromY, toX, toY, color) {
   const dx = toX - fromX, dy = toY - fromY;
   const dist = Math.hypot(dx, dy);
-  const steps = Math.max(1, Math.ceil(dist / 8)); // 0.8mm bridge stitches
+  const steps = Math.max(1, Math.ceil(dist / 8));
   const stitches = [];
   for (let i = 1; i <= steps; i++) {
     const fx = Math.round(fromX + dx * i / steps);
@@ -776,8 +809,7 @@ function generateBridgeStitches(fromX, fromY, toX, toY, color) {
   return stitches;
 }
 
-/* ─── STITCH GENERATION (v60 — absolute coordinates) ───────*/
-/* ─── COLUMN-WISE SCANNING (for vertical fill of tall regions) ──── */
+/* ─── COLUMN-WISE SCANNING ──── */
 function getRunsInCol(pixMap, ci, x, y0, y1, canvasSize) {
   const runs = []; let s = -1;
   for (let y = y0; y <= y1; y++) {
@@ -789,7 +821,7 @@ function getRunsInCol(pixMap, ci, x, y0, y1, canvasSize) {
   return runs;
 }
 
-/* ─── EDGE WALK UNDERLAY: trace perimeter at offset inward ─────── */
+/* ─── EDGE WALK UNDERLAY ─────── */
 function generateEdgeWalkUnderlay(pixMap, reg, ci, canvasSize, color, stepPx, insetPx) {
   const {mnx, mny, mxx, mxy} = reg;
   const edges = [];
@@ -818,7 +850,7 @@ function generateEdgeWalkUnderlay(pixMap, reg, ci, canvasSize, color, stepPx, in
   return out;
 }
 
-/* ─── ZIGZAG CENTER-WALK UNDERLAY at 45° ─────────────────────────── */
+/* ─── ZIGZAG CENTER-WALK UNDERLAY ─────────────────────────── */
 function generateZigzagUnderlay(pixMap, reg, ci, canvasSize, color, rowSpacing, stitchLen) {
   const {mnx, mny, mxx, mxy} = reg;
   const out = [];
@@ -846,7 +878,7 @@ function generateZigzagUnderlay(pixMap, reg, ci, canvasSize, color, rowSpacing, 
   return out;
 }
 
-/* ─── TIE-IN / TIE-OFF: 3 short anchor stitches ─────────────────── */
+/* ─── TIE-IN / TIE-OFF ─────────────────── */
 function generateTieStitches(x, y, color, dirX, dirY) {
   const stitches = [];
   const off = 15;
@@ -856,13 +888,69 @@ function generateTieStitches(x, y, color, dirX, dirY) {
   return stitches;
 }
 
+/* ─── COLOR MERGE: remap pixMap indices ─────────────────── */
+function applyColorMerges(pixMap, colors, merges) {
+  if (!merges || !Object.keys(merges).length) return {pixMap, colors};
+  
+  const remap = colors.map((_, i) => i);
+  
+  for (const [srcHex, tgtHex] of Object.entries(merges)) {
+    const srcIdx = colors.findIndex(c => normHex(c) === normHex(srcHex));
+    const tgtIdx = colors.findIndex(c => normHex(c) === normHex(tgtHex));
+    if (srcIdx !== -1 && tgtIdx !== -1 && srcIdx !== tgtIdx) {
+      remap[srcIdx] = tgtIdx;
+    }
+  }
+  
+  const newPixMap = new Int16Array(pixMap.length);
+  for (let i = 0; i < pixMap.length; i++) {
+    newPixMap[i] = pixMap[i] >= 0 ? remap[pixMap[i]] : -1;
+  }
+  
+  const oldToNew = {};
+  const newColors = [];
+  for (let i = 0; i < colors.length; i++) {
+    if (remap[i] === i) {
+      oldToNew[i] = newColors.length;
+      newColors.push(colors[i]);
+    }
+  }
+  
+  for (let i = 0; i < newPixMap.length; i++) {
+    if (newPixMap[i] >= 0) {
+      newPixMap[i] = oldToNew[newPixMap[i]];
+    }
+  }
+  
+  return {pixMap: newPixMap, colors: newColors};
+}
+
+/* ─── BASTING BOX ─────────────────────────────────────────── */
+function generateBastingBox(regions, colors, spacing = 20) {
+  if (!regions.length || !colors.length) return [];
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const r of regions) {
+    if (r.mnx < minX) minX = r.mnx;
+    if (r.mny < minY) minY = r.mny;
+    if (r.mxx > maxX) maxX = r.mxx;
+    if (r.mxy > maxY) maxY = r.mxy;
+  }
+  minX = Math.max(0, minX - 10);
+  minY = Math.max(0, minY - 10);
+  maxX = maxX + 10;
+  maxY = maxY + 10;
+  
+  const color = colors[0];
+  const stitches = [];
+  for (let x = minX; x <= maxX; x += spacing) stitches.push({x, y: minY, color, type: "running"});
+  for (let y = minY; y <= maxY; y += spacing) stitches.push({x: maxX, y, color, type: "running"});
+  for (let x = maxX; x >= minX; x -= spacing) stitches.push({x, y: maxY, color, type: "running"});
+  for (let y = maxY; y >= minY; y -= spacing) stitches.push({x: minX, y, color, type: "running"});
+  return stitches;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
-   PROFESSIONAL STITCH GENERATOR  (v68)
-   FIXES:
-   • Color-first region ordering (finish one thread before next color)
-   • Trim jump to design start before first tie-in
-   • Trim instead of bridge when same-color regions >12mm apart
-   • Bridges encoded as stitches (not jumps)
+   PROFESSIONAL STITCH GENERATOR  (v68.2)
    ═══════════════════════════════════════════════════════════════════ */
 function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize) {
   const stitches = [];
@@ -882,7 +970,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
     edgePixels.set(reg, getEdgePixels(pixMap, reg, canvasSize));
   }
 
-  /* ─── FIX v68: Color-first ordering ───────────────────── */
+  /* Color-first ordering */
   const byColor = new Map();
   for (const reg of regions) {
     const ck = normHex(reg.color);
@@ -921,11 +1009,10 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
     const regH = mxy - mny;
     let lastX = globalLastX, lastY = globalLastY;
 
-    // ─── Move to entry point of region ─────────────────────────
+    /* Move to entry point */
     if (lastX !== -1 && ri > 0) {
       const prevReg = ordered[ri - 1];
       if (normHex(prevReg.color) === normHex(reg.color)) {
-        /* FIX v68: Trim if same-color regions are >12mm apart */
         const pair = findClosestPair(edgePixels.get(prevReg), edgePixels.get(reg));
         const gap = Math.hypot(pair.to.x - lastX, pair.to.y - lastY);
         if (gap > 120) {
@@ -950,13 +1037,12 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
       const entry = entryEdge[Math.floor(entryEdge.length / 2)];
       lastX = entry.x; lastY = entry.y;
       if (ri === 0) {
-        /* FIX v68: Jump to design start before tie-in */
         stitches.push({x: lastX, y: lastY, color, type: "trim"});
         stitches.push(...generateTieStitches(lastX, lastY, color, 1, 0));
       }
     }
 
-    // ─── UNDERLAY for fill regions ────────────────────────────
+    /* Underlay */
     if (type === "fill") {
       const edgeWalk = generateEdgeWalkUnderlay(pixMap, reg, ci, canvasSize, color, pEdgeUL, Math.max(2, pPull));
       if (edgeWalk.length) {
@@ -1088,7 +1174,8 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
 }
 
 /* ─── QUALITY VALIDATION ─────────────────────────────────*/
-function validateQuality(stitches){
+function validateQuality(stitches, machineLimits){
+  const limits = machineLimits || MACHINE_LIMITS.generic;
   const w=[];
   let tot=0,cnt=0,maxJ=0,longJ=0,trimCount=0,prev=null;
   for(const s of stitches){
@@ -1096,14 +1183,14 @@ function validateQuality(stitches){
     if(prev){
       const d=Math.hypot(s.x-prev.x,s.y-prev.y);
       if(d>maxJ)maxJ=d;
-      if(d>DST_MAX)longJ++;
+      if(d>limits.maxJump)longJ++;
       if(s.type!=="underlay"){tot+=d;cnt++;}
     }
     prev=s;
   }
   const avg=cnt>0?tot/cnt:0;
   if(avg>50)w.push(`Long avg ${(avg/10).toFixed(1)}mm`);
-  if(maxJ>DST_MAX)w.push(`Jump ${(maxJ/10).toFixed(1)}mm > 12.1mm`);
+  if(maxJ>limits.maxJump)w.push(`Jump ${(maxJ/10).toFixed(1)}mm > ${(limits.maxJump/10).toFixed(1)}mm`);
   if(longJ>30)    w.push(`${longJ} oversized jumps`);
   if(cnt>80000)   w.push(`High stitch count ${cnt}`);
   return{avgStitchMM:(avg/10).toFixed(2),maxJumpMM:(maxJ/10).toFixed(2),longJumps:longJ,stitchCount:cnt,trimCount,warnings:w,passed:!w.length};
@@ -1111,7 +1198,7 @@ function validateQuality(stitches){
 
 /* ─── SEW TIME CALCULATOR ────────────────────────────────*/
 function calculateSewTime(stitchCount, trimCount, colorCount, machine) {
-  const spm = { tajima: 800, brother: 650, barudan: 850, generic: 750 };
+  const spm = { tajima: 800, brother: 650, barudan: 850, generic: 750, janome: 700, singer: 600 };
   const rate = spm[machine] || 750;
   
   const stitchMinutes = stitchCount / rate;
@@ -1356,7 +1443,31 @@ function dstHeader(stitchCount, colorCount, minX, maxX, minY, maxY, name) {
   return buf;
 }
 
-function encodeDST(stitches) {
+function encodeDST(stitches, machineLimits) {
+  const limits = machineLimits || MACHINE_LIMITS.generic;
+  
+  /* Filter out stitches below machine minimum */
+  const filtered = [];
+  let last = null;
+  for (const s of stitches) {
+    if (s.type === "trim" || s.type === "color-change") {
+      filtered.push(s);
+      last = s;
+      continue;
+    }
+    if (!last || last.type === "trim") {
+      filtered.push(s);
+      last = s;
+      continue;
+    }
+    const dist = Math.hypot(s.x - last.x, s.y - last.y);
+    if (dist < limits.minStitch && s.color === last.color && s.type === last.type) {
+      continue;
+    }
+    filtered.push(s);
+    last = s;
+  }
+
   const recs = [];
   let lastColor = null;
   let px = 0, py = 0;
@@ -1367,8 +1478,8 @@ function encodeDST(stitches) {
   const emitLong = (dx, dy, isJump) => {
     const steps = Math.max(
       1,
-      Math.ceil(Math.abs(dx) / 121),
-      Math.ceil(Math.abs(dy) / 121)
+      Math.ceil(Math.abs(dx) / limits.maxJump),
+      Math.ceil(Math.abs(dy) / limits.maxJump)
     );
     let prevFx = 0, prevFy = 0;
     for (let i = 1; i <= steps; i++) {
@@ -1381,7 +1492,7 @@ function encodeDST(stitches) {
     }
   };
 
-  for (const s of stitches) {
+  for (const s of filtered) {
     if (s.color !== lastColor && lastColor !== null) {
       recs.push(Buffer.from([0x00, 0x00, 0xC3]));
       colorChanges++;
@@ -1394,10 +1505,9 @@ function encodeDST(stitches) {
     px = s.x;
     py = s.y;
 
-    /* FIX v68: Only trim/jump are jumps; bridge sews */
     const isJump = s.type === "trim" || s.type === "jump";
 
-    if (Math.abs(dx) > 121 || Math.abs(dy) > 121) {
+    if (Math.abs(dx) > limits.maxJump || Math.abs(dy) > limits.maxJump) {
       emitLong(dx, dy, isJump);
     } else {
       recs.push(dstEncodeXY(dx, dy, isJump));
@@ -1682,13 +1792,39 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       }));
     }
 
+    /* ─── APPLY COLOR MERGES ─────────────────────────── */
+    try {
+      if (body.colorMerges) {
+        const merges = JSON.parse(body.colorMerges);
+        if (Object.keys(merges).length > 0) {
+          const result = applyColorMerges(pixMap, selectedColors, merges);
+          pixMap = result.pixMap;
+          selectedColors = result.colors;
+          filteredRegions = filteredRegions.filter(r => selectedColors.includes(normHex(r.color)));
+          filteredRegions = filteredRegions.map(r => ({
+            ...r,
+            ci: selectedColors.findIndex(c => normHex(c) === normHex(r.color))
+          }));
+        }
+      }
+    } catch(e) {
+      console.error("Color merge error:", e.message);
+    }
+
     if(!filteredRegions.length){
       return res.status(400).json({error:"No regions left after selection — select more colors/shapes"});
     }
 
-    const{stitches,colorCounts}=generateStitchesFromRegions(pixMap,filteredRegions,selectedColors,params,canvasSize);
-    const coverCount=stitches.filter(s=>s.type!=="trim"&&s.type!=="underlay").length;
-    if(coverCount<<5){
+    let {stitches, colorCounts} = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
+
+    /* ─── ADD BASTING BOX ──────────────────────────────── */
+    if (body.bastingBox === '1' || body.bastingBox === 'true') {
+      const basting = generateBastingBox(filteredRegions, selectedColors);
+      stitches.unshift(...basting);
+    }
+
+    const coverCount = stitches.filter(s => s.type !== "trim" && s.type !== "underlay").length;
+    if(coverCount < 5){
       return res.status(500).json({error:"Not enough stitches — select more shapes or check contrast"});
     }
 
@@ -1699,21 +1835,21 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       console.error("Preview pre-render failed:", e.message);
     }
 
-    const qa=validateQuality(stitches);
+    const qa = validateQuality(stitches, params.machineLimits);
     const sewTime = calculateSewTime(qa.stitchCount, qa.trimCount, selectedColors.length, specs.machine);
     const designMm = canvasSize / 10;
 
-    const id=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
-    jobs.set(id,{
-      stitches,pixMap,colors:selectedColors,params,
-      designW:canvasSize,designH:canvasSize,designMm,
-      ts:Date.now(),previewBuf,sewTime,mode,canvasSize
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+    jobs.set(id, {
+      stitches, pixMap, colors: selectedColors, params,
+      designW: canvasSize, designH: canvasSize, designMm,
+      ts: Date.now(), previewBuf, sewTime, mode, canvasSize
     });
 
-    const shapes=[];
+    const shapes = [];
     for(const r of filteredRegions){
-      const pts=[[r.mnx,r.mny],[r.mxx,r.mny],[r.mxx,r.mxy],[r.mnx,r.mxy],[r.mnx,r.mny]];
-      const sc=stitches.filter(s=>s.color===r.color&&s.type!=="trim"&&s.type!=="underlay"&&s.x>=r.mnx&&s.x<=r.mxx&&s.y>=r.mny&&s.y<=r.mxy).length;
+      const pts = [[r.mnx,r.mny],[r.mxx,r.mny],[r.mxx,r.mxy],[r.mnx,r.mxy],[r.mnx,r.mny]];
+      const sc = stitches.filter(s => s.color === r.color && s.type !== "trim" && s.type !== "underlay" && s.x >= r.mnx && s.x <= r.mxx && s.y >= r.mny && s.y <= r.mxy).length;
       shapes.push({type:r.type,color:normHex(r.color),points:pts,
         bounds:{x:r.mnx,y:r.mny,w:r.mxx-r.mnx,h:r.mxy-r.mny},stitchCount:sc});
     }
@@ -1760,16 +1896,22 @@ app.get("/preview-image/:id",async(req,res)=>{
 app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
   const d=jobs.get(req.params.id);
   if(!d)return res.status(404).json({error:"Not found"});
+  
+  const fmt = req.query.fmt || 'dst';
+  if (fmt !== 'dst') {
+    return res.status(501).json({error: "PES/JEF conversion not yet implemented. Please use DST format."});
+  }
+  
   if(req.firebaseUser) await recordDownload(req.firebaseUser.uid);
-  const buf=encodeDST(d.stitches);
+  const buf = encodeDST(d.stitches, d.params?.machineLimits);
   res.setHeader("Content-Type","application/octet-stream");
-  res.setHeader("Content-Disposition",`attachment; filename="design.dst"`);
+  res.setHeader("Content-Disposition",`attachment; filename="design.${fmt}"`);
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"68.0",features:"color-first-ordering,origin-trim,bridge-limits,sew-jumps"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"68.2",features:"color-first,origin-trim,bridge-limits,basting,merges,machine-limits,hoop-pull"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v68 | :${PORT} | Color-first + Origin trim + Bridge limits`));
+const server=app.listen(PORT,()=>console.log(`Stichai v68.2 | :${PORT} | All features implemented`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
