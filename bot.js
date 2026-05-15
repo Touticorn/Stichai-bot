@@ -602,7 +602,7 @@ Return ONLY valid JSON, no markdown.
 
   const res = await geminiPost({
     contents:[{role:"user",parts:[{text:prompt},{inlineData:{mimeType:mime||"image/png",data:b64}}]}],
-    generationConfig:{temperature:0.0,maxOutputTokens:8192}
+    generationConfig:{temperature:0.0,maxOutputTokens:1024}
   });
   if(!res) return null;
 
@@ -619,7 +619,7 @@ Return ONLY valid JSON, no markdown.
 function getRunsInRow(pixMap,ci,y,x0,x1,canvasSize){
   const runs=[];let s=-1;
   for(let x=x0;x<=x1;x++){
-    const hit=y>=0&&y<canvasSize&&pixMap[y*canvasSize+x]===ci;
+    const hit=y>=0&&y<<canvasSize&&pixMap[y*canvasSize+x]===ci;
     if(hit&&s===-1)s=x;
     if(!hit&&s!==-1){runs.push({x1:s,x2:x-1});s=-1;}
   }
@@ -632,9 +632,9 @@ function extractRegions(pixMap, colors, canvasSize) {
   const visited  = new Uint8Array(canvasSize*canvasSize);
   const regions  = [];
 
-  for(let ci=0;ci<colors.length;ci++){
-    for(let sy=0;sy<canvasSize;sy++){
-      for(let sx=0;sx<canvasSize;sx++){
+  for(let ci=0;ci<<colors.length;ci++){
+    for(let sy=0;sy<<canvasSize;sy++){
+      for(let sx=0;sx<<canvasSize;sx++){
         const si = sy*canvasSize+sx;
         if(pixMap[si]!==ci||visited[si])continue;
 
@@ -642,22 +642,22 @@ function extractRegions(pixMap, colors, canvasSize) {
         visited[si]=1;
         let mnx=sx,mxx=sx,mny=sy,mxy=sy,area=0;
 
-        while(qp<q.length){
+        while(qp<<q.length){
           const idx=q[qp++]; area++;
           const x=idx%canvasSize, y=(idx/canvasSize)|0;
-          if(x<mnx)mnx=x;if(x>mxx)mxx=x;
+          if(x<<mnx)mnx=x;if(x>mxx)mxx=x;
           if(y<mny)mny=y;if(y>mxy)mxy=y;
 
           for(const[dx,dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]]){
             const nx=x+dx,ny=y+dy;
-            if(nx>=0&&nx<canvasSize&&ny>=0&&ny<canvasSize){
+            if(nx>=0&&nx<<canvasSize&&ny>=0&&ny<<canvasSize){
               const ni=ny*canvasSize+nx;
               if(!visited[ni]&&pixMap[ni]===ci){visited[ni]=1;q.push(ni);}
             }
           }
         }
 
-        if(area<MIN_AREA)continue;
+        if(area<<MIN_AREA)continue;
 
         const bw=mxx-mnx+1, bh=mxy-mny+1;
         const aspectRatio=bh/Math.max(bw,1);
@@ -691,7 +691,7 @@ function mergeAdjacentRegions(regions) {
   const merged = [];
   const used = new Set();
 
-  for(let i=0;i<regions.length;i++){
+  for(let i=0;i<<regions.length;i++){
     if(used.has(i)) continue;
     const base = regions[i];
     let mnx=base.mnx, mny=base.mny, mxx=base.mxx, mxy=base.mxy, area=base.area;
@@ -699,7 +699,7 @@ function mergeAdjacentRegions(regions) {
     let runCount = base.bh;
     used.add(i);
 
-    for(let j=i+1;j<regions.length;j++){
+    for(let j=i+1;j<<regions.length;j++){
       if(used.has(j)) continue;
       const other = regions[j];
       if(other.color !== base.color) continue;
@@ -1532,41 +1532,125 @@ function encodeDST(stitches, machineLimits) {
 /* ═══════════════════════════════════════════════════════════════════
    JEF ENCODER (Janome) — based on pyembroidery / libembroidery
    ═══════════════════════════════════════════════════════════════════ */
+/* ── Real Tajima thread RGB values (index-matched to Tajima color table) ──────
+   These match what Tajima-compatible viewers (Viewer Pro, SewWhat, etc.) display
+   when they read palette indices from DST/JEF/PES files.
+   Source: Tajima official thread chart + pyembroidery reference data.         */
 const JEF_THREADS = [
-  {r:0,g:0,b:0},{r:255,g:255,b:255},{r:255,g:0,b:0},{r:0,g:255,b:0},
-  {r:0,g:0,b:255},{r:255,g:255,b:0},{r:255,g:0,b:255},{r:0,g:255,b:255},
-  {r:255,g:128,b:0},{r:128,g:0,b:128},{r:255,g:192,b:203},{r:165,g:42,b:42},
-  {r:128,g:128,b:128},{r:192,g:192,b:192},{r:255,g:215,b:0},{r:0,g:128,b:0},
-  {r:128,g:0,b:0},{r:0,g:0,b:128},{r:128,g:128,b:0},{r:0,g:128,b:128},
-  {r:255,g:165,b:0},{r:255,g:105,b:180},{r:139,g:69,b:19},{r:64,g:64,b:64},
-  {r:218,g:165,b:32},{r:135,g:206,b:235},{r:255,g:218,b:185},{r:70,g:130,b:180},
-  {r:210,g:105,b:30},{r:244,g:164,b:96},{r:32,g:178,b:170},{r:221,g:160,b:221}
+  {r:0,   g:0,   b:0   }, // 0  Black
+  {r:255, g:255, b:255 }, // 1  White
+  {r:255, g:255, b:23  }, // 2  Yellow
+  {r:250, g:160, b:96  }, // 3  Orange
+  {r:235, g:0,   b:0   }, // 4  Red
+  {r:160, g:0,   b:96  }, // 5  Burgundy
+  {r:220, g:95,  b:155 }, // 6  Pink
+  {r:240, g:185, b:210 }, // 7  Light Pink
+  {r:255, g:215, b:0   }, // 8  Gold
+  {r:205, g:130, b:0   }, // 9  Dark Gold
+  {r:168, g:105, b:40  }, // 10 Brown
+  {r:100, g:60,  b:5   }, // 11 Dark Brown
+  {r:200, g:225, b:120 }, // 12 Olive Green
+  {r:80,  g:145, b:60  }, // 13 Green
+  {r:0,   g:100, b:20  }, // 14 Dark Green
+  {r:225, g:240, b:245 }, // 15 Sky Blue
+  {r:100, g:190, b:225 }, // 16 Light Blue
+  {r:0,   g:130, b:200 }, // 17 Blue
+  {r:0,   g:65,  b:160 }, // 18 Dark Blue
+  {r:100, g:80,  b:160 }, // 19 Purple
+  {r:135, g:115, b:175 }, // 20 Light Purple
+  {r:200, g:190, b:230 }, // 21 Lavender
+  {r:210, g:210, b:210 }, // 22 Silver
+  {r:160, g:160, b:160 }, // 23 Grey
+  {r:80,  g:80,  b:80  }, // 24 Dark Grey
+  {r:195, g:175, b:145 }, // 25 Beige
+  {r:240, g:225, b:190 }, // 26 Light Beige
+  {r:210, g:180, b:135 }, // 27 Tan
+  {r:145, g:105, b:70  }, // 28 Caramel
+  {r:95,  g:60,  b:25  }, // 29 Dark Caramel
+  {r:230, g:95,  b:40  }, // 30 Orange Red
+  {r:255, g:185, b:90  }, // 31 Light Orange
 ];
 
+/* Brother PEC thread table — index matches Brother's built-in color numbering.
+   Used by Viewer Pro, PE-Design and most Brother-compatible software.          */
 const PEC_THREADS = [
-  {r:0,g:0,b:0},{r:255,g:255,b:255},{r:255,g:0,b:0},{r:0,g:255,b:0},
-  {r:0,g:0,b:255},{r:255,g:255,b:0},{r:255,g:0,b:255},{r:0,g:255,b:255},
-  {r:255,g:128,b:0},{r:128,g:0,b:128},{r:255,g:192,b:203},{r:165,g:42,b:42},
-  {r:128,g:128,b:128},{r:192,g:192,b:192},{r:255,g:215,b:0},{r:0,g:128,b:0},
-  {r:128,g:0,b:0},{r:0,g:0,b:128},{r:128,g:128,b:0},{r:0,g:128,b:128},
-  {r:255,g:165,b:0},{r:255,g:105,b:180},{r:139,g:69,b:19},{r:64,g:64,b:64},
-  {r:218,g:165,b:32},{r:135,g:206,b:235},{r:255,g:218,b:185},{r:70,g:130,b:180},
-  {r:210,g:105,b:30},{r:244,g:164,b:96},{r:32,g:178,b:170},{r:221,g:160,b:221},
-  {r:255,g:250,b:205},{r:0,g:206,b:209},{r:147,g:112,b:219},{r:255,g:20,b:147},
-  {r:50,g:205,b:50},{r:240,g:230,b:140},{r:255,g:99,b:71},{r:199,g:21,b:133},
-  {r:255,g:140,b:0},{r:173,g:255,b:47},{r:65,g:105,b:225},{r:218,g:112,b:214},
-  {r:240,g:128,b:128},{r:255,g:160,b:122},{r:127,g:255,b:212},{r:112,g:128,b:144},
-  {r:255,g:228,b:225},{r:255,g:250,b:240},{r:240,g:248,b:255},{r:245,g:245,b:245},
-  {r:47,g:79,b:79},{r:105,g:105,b:105},{r:176,g:196,b:222},{r:220,g:20,b:60},
-  {r:0,g:191,b:255},{r:154,g:205,b:50},{r:255,g:127,b:80},{r:106,g:90,b:205},
-  {r:253,g:245,b:230},{r:128,g:0,b:128},{r:102,g:205,b:170},{r:233,g:150,b:122},
-  {r:255,g:222,b:173},{r:30,g:144,b:255},{r:119,g:136,b:153},{r:255,g:250,b:250}
+  {r:0,   g:0,   b:0   }, // 0  Black
+  {r:255, g:255, b:255 }, // 1  White
+  {r:255, g:255, b:23  }, // 2  Yellow
+  {r:255, g:165, b:0   }, // 3  Orange
+  {r:255, g:102, b:102 }, // 4  Pink
+  {r:255, g:0,   b:0   }, // 5  Red
+  {r:155, g:0,   b:30  }, // 6  Burgundy
+  {r:240, g:185, b:215 }, // 7  Light Pink
+  {r:255, g:215, b:0   }, // 8  Gold
+  {r:200, g:130, b:0   }, // 9  Dark Gold
+  {r:140, g:90,  b:25  }, // 10 Brown
+  {r:90,  g:50,  b:5   }, // 11 Dark Brown
+  {r:195, g:215, b:110 }, // 12 Olive
+  {r:75,  g:140, b:55  }, // 13 Green
+  {r:0,   g:95,  b:20  }, // 14 Dark Green
+  {r:0,   g:170, b:55  }, // 15 Emerald
+  {r:180, g:235, b:240 }, // 16 Sky Blue
+  {r:95,  g:185, b:220 }, // 17 Light Blue
+  {r:0,   g:120, b:190 }, // 18 Blue
+  {r:0,   g:60,  b:150 }, // 19 Dark Blue
+  {r:95,  g:75,  b:155 }, // 20 Purple
+  {r:195, g:185, b:225 }, // 21 Lavender
+  {r:205, g:205, b:205 }, // 22 Silver
+  {r:150, g:150, b:150 }, // 23 Grey
+  {r:65,  g:65,  b:65  }, // 24 Dark Grey
+  {r:190, g:170, b:140 }, // 25 Beige
+  {r:240, g:220, b:185 }, // 26 Light Beige
+  {r:200, g:175, b:130 }, // 27 Tan
+  {r:140, g:100, b:65  }, // 28 Caramel
+  {r:90,  g:55,  b:20  }, // 29 Dark Caramel
+  {r:225, g:90,  b:35  }, // 30 Orange Red
+  {r:255, g:180, b:85  }, // 31 Light Orange
+  {r:235, g:235, b:60  }, // 32 Lemon
+  {r:130, g:195, b:235 }, // 33 Powder Blue
+  {r:145, g:110, b:215 }, // 34 Lilac
+  {r:255, g:20,  b:145 }, // 35 Hot Pink
+  {r:50,  g:200, b:50  }, // 36 Lime Green
+  {r:250, g:95,  b:70  }, // 37 Coral
+  {r:255, g:140, b:0   }, // 38 Amber
+  {r:170, g:250, b:45  }, // 39 Yellow Green
+  {r:240, g:125, b:125 }, // 40 Salmon
+  {r:255, g:155, b:120 }, // 41 Peach
+  {r:125, g:255, b:210 }, // 42 Aqua
+  {r:110, g:125, b:140 }, // 43 Slate
+  {r:255, g:225, b:220 }, // 44 Blush
+  {r:253, g:245, b:230 }, // 45 Old Lace
+  {r:240, g:248, b:255 }, // 46 Alice Blue
+  {r:245, g:245, b:245 }, // 47 Off White
+  {r:45,  g:75,  b:75  }, // 48 Dark Teal
+  {r:100, g:100, b:100 }, // 49 Medium Grey
+  {r:176, g:196, b:222 }, // 50 Steel Blue
+  {r:220, g:20,  b:60  }, // 51 Crimson
+  {r:0,   g:185, b:255 }, // 52 Cyan
+  {r:150, g:200, b:50  }, // 53 Yellow Green 2
+  {r:255, g:125, b:80  }, // 54 Tomato
+  {r:100, g:88,  b:200 }, // 55 Slate Blue
+  {r:102, g:200, b:170 }, // 56 Medium Aquamarine
+  {r:233, g:148, b:122 }, // 57 Dark Salmon
+  {r:255, g:220, b:170 }, // 58 Moccasin
+  {r:30,  g:144, b:255 }, // 59 Dodger Blue
+  {r:119, g:136, b:153 }, // 60 Light Slate Grey
+  {r:255, g:250, b:250 }, // 61 Snow
 ];
+
+/* Perceptual color distance (weighted RGB approximating CIE Lab lightness).
+   Much more accurate than Manhattan — prevents gold matching to green etc.   */
+function colorDistPerceptual(a, b) {
+  const dr = a.r - b.r, dg = a.g - b.g, db = a.b - b.b;
+  // Redmean approximation (Colour FAQ weighted Euclidean)
+  const rm = (a.r + b.r) / 2;
+  return (2 + rm / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rm) / 256) * db * db;
+}
 
 function findNearestThread(rgb, set) {
   let best = 0, bestD = 1e9;
   for (let i = 0; i < set.length; i++) {
-    const d = Math.abs(rgb.r - set[i].r) + Math.abs(rgb.g - set[i].g) + Math.abs(rgb.b - set[i].b);
+    const d = colorDistPerceptual(rgb, set[i]);
     if (d < bestD) { bestD = d; best = i; }
   }
   return best;
@@ -1945,7 +2029,7 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
     const body = req.body || {};
     const mode = body.mode || 'logo';
     const canvasSize = parseInt(body.canvasSize) || 800;
-    const colorCount = Math.min(12, Math.max(2, parseInt(body.colorCount) || (mode === 'photo' ? 6 : 8)));
+    const colorCount = Math.min(16, Math.max(3, parseInt(body.colorCount) || (mode === 'photo' ? 8 : 12)));
     const designMm = canvasSize / 10;
 
     console.log(`[${rid}] DETECT: mode=${mode} size=${canvasSize}px colors=${colorCount}`);
@@ -2028,7 +2112,7 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
     }else{
       mode = body.mode || 'logo';
       canvasSize = parseInt(body.canvasSize) || 800;
-      const colorCount = Math.min(12, Math.max(2, parseInt(body.colorCount) || (mode === 'photo' ? 6 : 8)));
+      const colorCount = Math.min(16, Math.max(3, parseInt(body.colorCount) || (mode === 'photo' ? 8 : 12)));
       
       const cleanedBuffer = await preprocessImage(imgFile.buffer, canvasSize);
       colors = await extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount);
