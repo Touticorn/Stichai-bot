@@ -1005,10 +1005,9 @@ function v69_generateStitchesFromShapes(shapes, colors, params, canvasSize) {
 
     const color = colors[ci];
 
-    /* Color change handling */
+    /* Color change handling — trim old color, encodeDST auto-detects new color */
     if (prevColor !== null && color !== prevColor) {
       out.push({ x: lastX, y: lastY, color: prevColor, type: "trim" });
-      out.push({ x: lastX, y: lastY, color: color, type: "color-change" });
     }
 
     for (const sh of group) {
@@ -1959,7 +1958,7 @@ function encodeDST(stitches, machineLimits) {
       recs.push(Buffer.from([0x00, 0x00, 0xC3]));
       colorChanges++;
       stitchCount++;
-      needJump = true;
+      needJump = true; // after color change, next move must be a jump
     }
     lastColor = s.color;
 
@@ -1973,7 +1972,9 @@ function encodeDST(stitches, machineLimits) {
       isJump = true;
       needJump = false;
     }
-    if (s.type === "trim") needJump = true;
+    if (s.type === "trim" || s.type === "color-change") {
+      needJump = true; // after trim/color-change, next move must be a jump
+    }
 
     if (Math.abs(dx) > limits.maxJump || Math.abs(dy) > limits.maxJump) {
       emitLong(dx, dy, isJump);
@@ -2847,7 +2848,21 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
   if (fmt === 'dst') {
     const dstBuf = encodeDST(d.stitches, d.params?.machineLimits);
     /* Build a .inf sidecar so Tajima-compatible viewers display correct thread colors */
-    const infLines = ["[Version]", "Major=1", "Minor=0", ""];
+    /* Build .INF sidecar — Tajima-compatible thread palette */
+    const infLines = [
+      "[Version]", "Major=1", "Minor=0", "",
+      "[Parameters]",
+      "ST=" + String(d.stitches.filter(s => s.type !== 'trim' && s.type !== 'jump' && s.type !== 'color-change').length),
+      "CO=" + String(d.colors.length),
+      "+X=" + String(Math.max(0, mxx)),
+      "-X=" + String(Math.max(0, -mnx)),
+      "+Y=" + String(Math.max(0, -mny)),
+      "-Y=" + String(Math.max(0, mxy)),
+      "AX=+    0", "AY=+    0", "MX=+    0", "MY=+    0",
+      "PD=******", "",
+      "[Threads]",
+      "Count=" + d.colors.length, ""
+    ];
     d.colors.forEach((hex, idx) => {
       const rgb = hexToRgb(hex);
       const nearIdx = findNearestThread(rgb, JEF_THREADS);
@@ -2857,7 +2872,7 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
                      "Silver","Grey","Dark Grey","Beige","Light Beige","Tan","Caramel","Dark Caramel",
                      "Orange Red","Light Orange"];
       const name = NAMES[nearIdx] || hex;
-      infLines.push(`[thread${idx+1}]`, `Color=${rgb.r},${rgb.g},${rgb.b}`, `Name=${name}`, `ID=${String(nearIdx+1).padStart(3,'0')}`, "");
+      infLines.push(`[thread${idx+1}]`, `Color=${rgb.r},${rgb.g},${rgb.b}`, `Name=${name}`, `ID=${String(nearIdx+1).padStart(3,'0')}`, `Hex=${hex}`, "");
     });
     const infBuf = Buffer.from(infLines.join("\r\n"), "utf8");
 
