@@ -802,6 +802,7 @@ function v69_buildShapeDescriptor(pixMap, reg, canvasSize, pxPerMm) {
   const { mask, w, h, offX, offY } = v69_regionMask(pixMap, reg, canvasSize);
   const contoursLocal = v69_findContours(mask, w, h);
   if (!contoursLocal.length) return null;
+  if (contoursLocal[0].length < 4) return null; // too small to form a polygon
   contoursLocal.sort((a, b) => b.length - a.length);
   const outerLocal = contoursLocal[0];
   const holesLocal = contoursLocal.slice(1).filter(c => c.length >= 12);
@@ -904,7 +905,7 @@ function v69_fillAtAngle(shape, color, pRow, pLen, pPullComp, brickAmt) {
 
   for (let yLine = mny; yLine <= mxy; yLine += pRow) {
     const xs = v69_rayIntersectsX(rOuter, rHoles, yLine);
-    if (xs.length < 2) { rowIdx++; reversed = !reversed; continue; }
+    if (xs.length < 2 || xs.length % 2 !== 0) { rowIdx++; reversed = !reversed; continue; }
     const segs = [];
     for (let i = 0; i + 1 < xs.length; i += 2) {
       segs.push([xs[i] + pPullComp, xs[i+1] - pPullComp]);
@@ -975,7 +976,7 @@ function v69_satinColumn(shape, color, pLen) {
 function v69_generateStitchesFromShapes(shapes, colors, params, canvasSize) {
   const out = [];
   const colorCounts = colors.map(() => ({fill:0, satin:0, running:0, underlay:0}));
-  const pxScale = canvasSize / 800;
+  const pxScale = 1; // 1px = 0.1mm always, stitch density independent of canvas resolution
   const P = params || {};
   const pRow      = Math.round((P.tatamiRow || 5) * pxScale);
   const pLen      = Math.round((P.tatamiLen || 30) * pxScale);
@@ -990,7 +991,7 @@ function v69_generateStitchesFromShapes(shapes, colors, params, canvasSize) {
     byColor.get(ci).push(sh);
   }
 
-  let lastX = 0, lastY = 0;
+  let lastX = 0, lastY = 0, prevColor = null;
 
   for (let ci = 0; ci < colors.length; ci++) {
     const group = byColor.get(ci);
@@ -1004,10 +1005,36 @@ function v69_generateStitchesFromShapes(shapes, colors, params, canvasSize) {
 
     const color = colors[ci];
 
+    /* Color change handling */
+    if (prevColor !== null && color !== prevColor) {
+      out.push({ x: lastX, y: lastY, color: prevColor, type: "trim" });
+      out.push({ x: lastX, y: lastY, color: color, type: "color-change" });
+    }
+
     for (const sh of group) {
       const startX = sh.outer[0][0], startY = sh.outer[0][1];
-      if (Math.hypot(startX - lastX, startY - lastY) > 12 * pxScale) {
-        out.push({ x: lastX, y: lastY, color, type: "trim" });
+      const gap = Math.hypot(startX - lastX, startY - lastY);
+
+      if (gap > 12 * pxScale) {
+        if (prevColor !== null && gap > 120) {
+          out.push({ x: lastX, y: lastY, color: prevColor || color, type: "trim" });
+          out.push({ x: startX, y: startY, color: color, type: "jump" });
+        } else if (gap > 12) {
+          /* Bridge with running stitches for short gaps */
+          const steps = Math.max(1, Math.ceil(gap / 8));
+          for (let i = 1; i <= steps; i++) {
+            const fx = Math.round(lastX + (startX - lastX) * i / steps);
+            const fy = Math.round(lastY + (startY - lastY) * i / steps);
+            out.push({ x: fx, y: fy, color, type: "running" });
+          }
+        }
+      }
+
+      /* Tie-in at start of shape */
+      if (sh.type !== "running") {
+        out.push({ x: startX, y: startY, color, type: "running" });
+        out.push({ x: startX + 2, y: startY, color, type: "running" });
+        out.push({ x: startX, y: startY, color, type: "running" });
       }
 
       /* Outline pass (crisp edges, hides fill ends) */
@@ -1040,7 +1067,15 @@ function v69_generateStitchesFromShapes(shapes, colors, params, canvasSize) {
           lastX = s.x; lastY = s.y;
         }
       }
+
+      /* Tie-off at end of shape */
+      if (sh.type !== "running") {
+        out.push({ x: lastX + 2, y: lastY, color, type: "running" });
+        out.push({ x: lastX, y: lastY, color, type: "running" });
+      }
     }
+
+    prevColor = color;
   }
 
   return { stitches: out, colorCounts };
@@ -1917,11 +1952,14 @@ function encodeDST(stitches, machineLimits) {
     }
   };
 
+  let needJump = false;
+
   for (const s of filtered) {
     if (s.color !== lastColor && lastColor !== null) {
       recs.push(Buffer.from([0x00, 0x00, 0xC3]));
       colorChanges++;
       stitchCount++;
+      needJump = true;
     }
     lastColor = s.color;
 
@@ -1930,7 +1968,12 @@ function encodeDST(stitches, machineLimits) {
     px = s.x;
     py = s.y;
 
-    const isJump = s.type === "trim" || s.type === "jump";
+    let isJump = s.type === "trim" || s.type === "jump";
+    if (needJump && !isJump) {
+      isJump = true;
+      needJump = false;
+    }
+    if (s.type === "trim") needJump = true;
 
     if (Math.abs(dx) > limits.maxJump || Math.abs(dy) > limits.maxJump) {
       emitLong(dx, dy, isJump);
@@ -2474,7 +2517,7 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
     const nonBgRegions = bgColor
       ? rawRegions.filter(r => normHex(r.color) !== bgColor)
       : rawRegions;
-    const regions = mergeAdjacentRegions(nonBgRegions, canvasSize);
+    const regions = nonBgRegions; // v69 needs raw connected components, not merged bounds
 
     if(!regions.length){
       return res.status(500).json({error:"No stitchable regions found"});
