@@ -85,6 +85,23 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
 .error{color:#c0392b;background:#fdecea;padding:10px;border-radius:6px;margin-top:8px;font-size:13px}
 .ok{color:#27ae60}
 
+
+/* Merge/Remove popup */
+.c-actions{display:none;gap:4px;margin-top:6px}
+.c-item.pending .c-actions{display:flex}
+.c-act-btn{flex:1;padding:5px 8px;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s}
+.c-act-remove{background:#fdecea;color:#c0392b}
+.c-act-remove:hover{background:#c0392b;color:#fff}
+.c-act-merge{background:#e8f5e9;color:#1a7a45}
+.c-act-merge:hover{background:#1a7a45;color:#fff}
+.c-merge-target{width:18px;height:18px;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.25);flex-shrink:0;display:none}
+.c-item.merged .c-merge-target{display:block}
+.c-item.merged{opacity:.6;border-color:#27ae60 !important;background:#f0faf2 !important}
+.c-item.merged .c-box{opacity:.5}
+/* Basting checkbox */
+.basting-row{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;color:#555;padding:8px;background:#f8f6f1;border-radius:6px}
+.basting-row input{width:18px;height:18px;accent-color:#e94560;cursor:pointer;flex-shrink:0}
+
 /* Install Modal */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;display:none;align-items:center;justify-content:center;padding:16px}
 .modal-overlay.on{display:flex}
@@ -215,11 +232,14 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
       <strong style="font-size:13px" data-t="machineSpecs">Machine Specs</strong>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:8px">
         <select id="fb"><option value="cotton" data-t="fabCotton">Cotton</option><option value="denim">Denim</option><option value="fleece">Fleece</option><option value="twill">Twill</option><option value="satin">Satin</option><option value="leather">Leather</option><option value="towel">Towel</option></select>
-        <select id="mb"><option value="tajima">Tajima</option><option value="brother">Brother</option><option value="barudan">Barudan</option><option value="generic">Generic</option></select>
+        <select id="mb"><option value="tajima">Tajima</option><option value="brother">Brother</option><option value="barudan">Barudan</option><option value="janome">Janome</option>
+            <option value="singer">Singer</option>
+            <option value="generic">Generic</option></select>
         <select id="hp"><option value="4x4">4x4</option><option value="5x7" selected>5x7</option><option value="6x10">6x10</option><option value="8x8">8x8</option><option value="8x12">8x12</option></select>
         <select id="ds"><option value="low" data-t="denLow">Low</option><option value="medium" selected data-t="denMedium">Medium</option><option value="high" data-t="denHigh">High</option></select>
       </div>
     </div>
+    <div class="basting-row"><input type="checkbox" id="bastingBox"><label for="bastingBox" data-t="bastingLabel">🧷 Add basting box (hoop alignment guide)</label></div>
     <button class="btn" id="gB" onclick="generate()" style="margin-top:12px;padding:14px;font-size:16px">⚡ <span data-t="generate">Generate</span></button>
   </div>
 
@@ -232,10 +252,12 @@ select{padding:10px 12px;border-radius:6px;border:1px solid #ccc;font-size:14px;
     <div class="btns" style="margin-top:12px">
       <select id="fs">
         <option value="dst">DST (Tajima — Universal)</option>
+        <option value="pes">PES (Brother / Babylock)</option>
+        <option value="jef">JEF (Janome)</option>
       </select>
       <button class="btn btn-secondary" onclick="dl()">⬇ <span data-t="download">Download</span></button>
     </div>
-    <p style="font-size:11px;color:#999;margin-top:8px" data-t="dstNote">DST is the universal embroidery format. Convert to PES/JEF using your machine software if needed.</p>
+    <p style="font-size:11px;color:#999;margin-top:8px" data-t="dstNote">DST = Tajima · PES = Brother/Babylock · JEF = Janome</p>
   </div>
 
 </div>
@@ -373,6 +395,7 @@ var T = {
     generate:"⚡ Générer",
     step4:"Étape 4 : Aperçu & Téléchargement",
     download:"⬇ Télécharger",
+    bastingLabel:'🧷 Ajouter un cadre de bâti (guide d\'alignement)',
     dstNote:"DST est le format universel de broderie. Convertissez en PES/JEF avec le logiciel de votre machine si nécessaire.",
     errFileType:"Veuillez importer une image (JPG, PNG, WEBP)",
     errFileSize:"Fichier trop volumineux — max 10 Mo",
@@ -759,14 +782,31 @@ function doAnalyze(fd){
     try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">'+t('errInvalid')+'</div>';return}
     if(!d.success){document.getElementById('st').innerHTML='<div class="error">'+(d.error||t('errUnknown'))+'</div>';return}
     dd=d;ci=d.detectionId;
+  initColorState();
 
     var cg=document.getElementById('cg');
     cg.innerHTML='';
     for(var i=0;i<d.colors.length;i++){
       var c=d.colors[i];
-      cg.innerHTML+='<div class="c-item on" id="ci-'+i+'" onclick="tC('+i+')">'+
-        '<div class="c-box" style="background:'+c+'"></div>'+
-        '<div><div class="c-name">'+gN(c)+'</div><div class="c-hex">'+c+'</div></div></div>';
+      cg.innerHTML+=
+        '<div class="c-item on" id="ci-'+i+'">'+
+          '<div class="c-box" style="background:'+c+'"></div>'+
+          '<div style="flex:1">'+
+            '<div style="display:flex;align-items:center;gap:8px">'+
+              '<div style="flex:1"><div class="c-name">'+gN(c)+'</div><div class="c-hex">'+c+'</div></div>'+
+              '<div class="c-merge-target" id="mt-'+i+'"></div>'+
+            '</div>'+
+            '<div class="c-actions" id="ca-'+i+'">'+
+              '<button class="c-act-btn c-act-remove" onclick="doRemoveColor('+i+')">✕ Remove</button>'+
+              '<button class="c-act-btn c-act-merge" onclick="doMergeColor('+i+')">⇒ Merge</button>'+
+            '</div>'+
+          '</div>'+
+        '</div>';
+      document.getElementById('ci-'+i).addEventListener('click', function(e) {
+        if (e.target.closest('.c-actions')) return;
+        var idx = parseInt(this.id.replace('ci-',''));
+        toggleColorPending(idx);
+      }.bind(document.getElementById('ci-'+i)));
     }
 
     document.getElementById('sn').textContent=d.shapes.length;
@@ -791,40 +831,130 @@ function doAnalyze(fd){
   xhr.send(fd);
 }
 
-function tC(i){
-  var el=document.getElementById('ci-'+i);
-  el.classList.toggle('on');
-  var on=el.classList.contains('on');
-  var hc=dd.colors[i];
+/* colorState: "on" | "pending" | "removed" | "merged:targetHex" */
+var colorState=[];
+var colorMerges={};  /* {"#srcHex":"#targetHex"} sent to backend */
+
+function initColorState(){
+  colorState=dd.colors.map(function(){return 'on';});
+  colorMerges={};
+}
+
+function syncShapesForColor(hex,enabled){
   var rows=document.querySelectorAll('.s-item');
   for(var j=0;j<rows.length;j++){
-    if(rows[j].dataset.c==hc){
+    if(rows[j].dataset.c==hex){
       var cb=rows[j].querySelector('input[type=checkbox]');
-      cb.checked=on;
-      rows[j].classList.toggle('off',!on);
-      cb.disabled=!on;
+      cb.checked=enabled; rows[j].classList.toggle('off',!enabled); cb.disabled=!enabled;
     }
   }
 }
+
+function renderColorState(i){
+  var el=document.getElementById('ci-'+i);
+  var st=colorState[i];
+  el.className='c-item';
+  document.getElementById('ca-'+i).parentNode.style.opacity='';
+  if(st==='on'){
+    el.classList.add('on');
+    syncShapesForColor(dd.colors[i],true);
+  } else if(st==='pending'){
+    el.classList.add('on','pending');
+  } else if(st==='removed'){
+    syncShapesForColor(dd.colors[i],false);
+  } else if(st.indexOf('merged:')==0){
+    el.classList.add('merged');
+    var targetHex=st.replace('merged:','');
+    document.getElementById('mt-'+i).style.background=targetHex;
+    document.getElementById('mt-'+i).title='Merged into '+targetHex;
+    syncShapesForColor(dd.colors[i],false);  /* merged color's shapes hidden */
+    colorMerges[dd.colors[i]]=targetHex;
+  }
+}
+
+function toggleColorPending(i){
+  if(colorState[i]==='on'){
+    /* Check at least one other color stays on */
+    var otherOn=colorState.filter(function(s,j){return j!==i&&s==='on';}).length>0;
+    if(!otherOn){alert(t('keepColor'));return;}
+    colorState[i]='pending';
+    renderColorState(i);
+    document.getElementById('ca-'+i).style.display='flex';
+  } else if(colorState[i]==='pending'){
+    /* Second click on pending = cancel, restore on */
+    colorState[i]='on';
+    document.getElementById('ca-'+i).style.display='none';
+    renderColorState(i);
+  } else {
+    /* Was removed/merged — restore */
+    delete colorMerges[dd.colors[i]];
+    colorState[i]='on';
+    renderColorState(i);
+  }
+}
+
+function doRemoveColor(i){
+  colorState[i]='removed';
+  document.getElementById('ca-'+i).style.display='none';
+  renderColorState(i);
+}
+
+function doMergeColor(i){
+  /* Find nearest ON color by Lab ΔE */
+  var srcHex=dd.colors[i];
+  var srcLab=hexToLab(srcHex);
+  var bestJ=-1, bestD=Infinity;
+  for(var j=0;j<dd.colors.length;j++){
+    if(j===i||colorState[j]!=='on') continue;
+    var d=labDist(srcLab,hexToLab(dd.colors[j]));
+    if(d<bestD){bestD=d;bestJ=j;}
+  }
+  if(bestJ<0){alert('No other active color to merge into.');return;}
+  colorState[i]='merged:'+dd.colors[bestJ];
+  document.getElementById('ca-'+i).style.display='none';
+  renderColorState(i);
+}
+
+/* Lab helpers for merge */
+function hexToLab(hex){
+  var c=hexToRgb(hex);
+  var r=c[0]/255,g=c[1]/255,b=c[2]/255;
+  r=r>0.04045?Math.pow((r+0.055)/1.055,2.4):r/12.92;
+  g=g>0.04045?Math.pow((g+0.055)/1.055,2.4):g/12.92;
+  b=b>0.04045?Math.pow((b+0.055)/1.055,2.4):b/12.92;
+  var x=r*0.4124+g*0.3576+b*0.1805;
+  var y=r*0.2126+g*0.7152+b*0.0722;
+  var z=r*0.0193+g*0.1192+b*0.9505;
+  var f=function(t){return t>0.008856?Math.cbrt(t):7.787*t+16/116;};
+  return{l:116*f(y)-16,a:500*(f(x/0.95047)-f(y)),b:200*(f(y)-f(z/1.08883))};
+}
+function labDist(a,b){return Math.sqrt(Math.pow(a.l-b.l,2)+Math.pow(a.a-b.a,2)+Math.pow(a.b-b.b,2));}
+function hexToRgb(hex){
+  var m=(hex||'').match(/^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/);
+  return m?[parseInt(m[1],16),parseInt(m[2],16),parseInt(m[3],16)]:[0,0,0];
+}
+
+/* Legacy tC for allC compatibility */
+function tC(i){toggleColorPending(i);}
 
 function tS(i){var cb=document.getElementById('cb-'+i);document.getElementById('si-'+i).classList.toggle('off',!cb.checked)}
 
 function allC(on){
   if(!on){
-    var anyOtherOn=false;
-    for(var i=0;i<dd.colors.length;i++){
-      if(document.getElementById('ci-'+i).classList.contains('on')) anyOtherOn=true;
-    }
-    if(!anyOtherOn){
-      alert(t('keepColor'));
-      return;
-    }
+    var onCount=colorState.filter(function(s){return s==='on';}).length;
+    if(onCount<=1){alert(t('keepColor'));return;}
   }
   for(var i=0;i<dd.colors.length;i++){
-    var el=document.getElementById('ci-'+i);
-    var sel=el.classList.contains('on');
-    if(on&&!sel)tC(i);
-    if(!on&&sel)tC(i);
+    if(on&&colorState[i]!=='on'){
+      delete colorMerges[dd.colors[i]];
+      colorState[i]='on';
+      document.getElementById('ca-'+i).style.display='none';
+      renderColorState(i);
+    }
+    if(!on&&colorState[i]==='on'){
+      var otherOn=colorState.filter(function(s,j){return j!==i&&s==='on';}).length>0;
+      if(otherOn){colorState[i]='removed';renderColorState(i);}
+    }
   }
 }
 
@@ -849,8 +979,17 @@ function generate(){
     }
   }
 
+  /* Build selectedColors from colorState — include both "on" and "merged:*" target colors */
   var sc=[],ss=[];
-  for(var i=0;i<dd.colors.length;i++){if(document.getElementById('ci-'+i).classList.contains('on'))sc.push(dd.colors[i])}
+  var seenColors=new Set();
+  for(var i=0;i<dd.colors.length;i++){
+    var st=colorState[i]||'on';
+    if(st==='on'){
+      if(!seenColors.has(dd.colors[i])){sc.push(dd.colors[i]);seenColors.add(dd.colors[i]);}
+    } else if(st.indexOf('merged:')==0){
+      /* target color already included when we process it as "on" */
+    }
+  }
   if(!sc.length){alert(t('selColor'));return}
   for(var i=0;i<dd.shapes.length;i++){if(document.getElementById('cb-'+i).checked)ss.push(i)}
   if(!ss.length){alert(t('selShape'));return}
@@ -866,6 +1005,9 @@ function generate(){
   fd.append('detectionId',ci);
   fd.append('selectedColors',JSON.stringify(sc));
   fd.append('selectedShapes',JSON.stringify(ss));
+  if(Object.keys(colorMerges).length>0) fd.append('colorMerges',JSON.stringify(colorMerges));
+  var bastingBox=document.getElementById('bastingBox');
+  if(bastingBox&&bastingBox.checked) fd.append('bastingBox','1');
   fd.append('fabric',document.getElementById('fb').value);
   fd.append('machine',document.getElementById('mb').value);
   fd.append('hoop',document.getElementById('hp').value);
@@ -912,9 +1054,10 @@ function doGen(fd,sc,ss,btn){
 
 function dl(){
   if(!jid){alert(t('download'));return;}
+  var fmt=document.getElementById('fs').value||'dst';
   var a=document.createElement('a');
-  a.href='/download/'+jid;
-  a.download='design.dst';
+  a.href='/download/'+jid+'?fmt='+fmt;
+  a.download='design.'+fmt;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
