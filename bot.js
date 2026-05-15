@@ -1,12 +1,5 @@
 /**
- * Stichai v62 — Fix color index crash + mask aspect ratio
- * ═══════════════════════════════════════════════════════════════════
- *  FIXES FROM v47
- *  ──────────────────────────────────────────────────────────────
- *  1. When selectedColors < full palette, regions' ci is re-indexed
- *     to match the new shortened palette before stitch generation.
- *  2. Frontend initMask uses contain-fit with white background,
- *     matching server preprocessing exactly.
+ * Stichai v68 — Critical fixes: color-first order, origin trim, bridge limits, proper jump flags
  */
 
 "use strict";
@@ -16,22 +9,24 @@ const multer   = require("multer");
 const axios    = require("axios");
 const path     = require("path");
 const sharp    = require("sharp");
-const admin    = require("firebase-admin");
-const Stripe   = require("stripe");
+
+/* Optional requires — app starts even if packages aren't installed yet */
+let admin    = null;
+let Stripe   = null;
+try { admin = require("firebase-admin"); } catch(e) { console.warn("firebase-admin not installed"); }
+try { Stripe = require("stripe"); } catch(e) { console.warn("stripe not installed"); }
 
 const app    = express();
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 
 /* ═══════════════════════════════════════════════════════════
-   FIREBASE ADMIN  — verifies Google / Facebook / Email JWT
-   Env var: FIREBASE_SERVICE_ACCOUNT = the full JSON string
-   from Firebase Console → Project Settings → Service Accounts
+   FIREBASE ADMIN
    ═══════════════════════════════════════════════════════════ */
 let fbReady = false;
 let db = null;
 try {
   const svc = process.env.FIREBASE_SERVICE_ACCOUNT;
-  if (svc) {
+  if (admin && svc) {
     admin.initializeApp({ credential: admin.credential.cert(JSON.parse(svc)) });
     db = admin.firestore();
     fbReady = true;
@@ -42,23 +37,13 @@ try {
 } catch(e) { console.error("Firebase init error:", e.message); }
 
 /* ═══════════════════════════════════════════════════════════
-   STRIPE  — subscription billing
-   Env vars:
-     STRIPE_SECRET_KEY          sk_live_...
-     STRIPE_WEBHOOK_SECRET      whsec_...
-     STRIPE_PRICE_SIMPLE_M / _Y
-     STRIPE_PRICE_PRO_M / _Y
-     STRIPE_PRICE_PROMAX_M / _Y
-     APP_URL                    https://stichai.pro
+   STRIPE
    ═══════════════════════════════════════════════════════════ */
-const stripe = process.env.STRIPE_SECRET_KEY
+const stripe = process.env.STRIPE_SECRET_KEY && Stripe
   ? Stripe(process.env.STRIPE_SECRET_KEY)
   : null;
 
-/* ─── PLANS ─────────────────────────────────────────────────
-   period = day | week | month
-   downloadsPerPeriod = null means unlimited
-   ─────────────────────────────────────────────────────────── */
+/* ─── PLANS ────────────────────────────────────────────── */
 const PLANS = {
   none:    { label:"No plan",  downloadsPerPeriod: 0,    period:"day"  },
   trial:   { label:"Trial",    downloadsPerPeriod: 1,    period:"day",  trialDays:7 },
@@ -67,7 +52,6 @@ const PLANS = {
   promax:  { label:"Pro Max",  downloadsPerPeriod: null, period:"month"},
 };
 
-/* Price key → { stripeId, plan, label, price } */
 function buildPrices() {
   return {
     simple_m:  { id:process.env.STRIPE_PRICE_SIMPLE_M,  plan:"simple",  label:"Simple Monthly",  price:"$5.99/mo",  annual:false },
@@ -80,16 +64,15 @@ function buildPrices() {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   USER HELPERS  (Firestore)
+   USER HELPERS
    ═══════════════════════════════════════════════════════════ */
-
 function getPeriodStart(period) {
   const now = new Date();
   if (period === "day") {
     return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   }
   if (period === "week") {
-    const d = now.getUTCDay();               // 0=Sun … 6=Sat; Monday=1
+    const d = now.getUTCDay();
     const monday = now.getUTCDate() - ((d + 6) % 7);
     return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), monday);
   }
@@ -148,7 +131,7 @@ async function recordDownload(uid) {
   if (!snap.exists) return;
   const user = snap.data();
   const plan = PLANS[user.plan] || PLANS.none;
-  if (plan.downloadsPerPeriod === null) return;       // unlimited — nothing to track
+  if (plan.downloadsPerPeriod === null) return;
   const currentPeriodStart = getPeriodStart(plan.period);
   const isSamePeriod = (user.periodStart || 0) >= currentPeriodStart;
   await ref.update({
@@ -163,9 +146,8 @@ async function recordDownload(uid) {
 /* ═══════════════════════════════════════════════════════════
    MIDDLEWARE
    ═══════════════════════════════════════════════════════════ */
-
 async function requireAuth(req, res, next) {
-  if (!fbReady) return next();          // auth disabled in dev mode
+  if (!fbReady) return next();
   const auth = req.headers.authorization || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
   if (!token) return res.status(401).json({ error:"auth_required" });
@@ -183,7 +165,7 @@ async function requireAuth(req, res, next) {
 }
 
 function checkDownloadQuota(req, res, next) {
-  if (!fbReady) return next();          // auth disabled in dev mode
+  if (!fbReady) return next();
   const result = checkQuota(req.userDoc);
   if (!result.allowed) {
     return res.status(403).json({ error:result.reason, upgrade:true });
@@ -192,7 +174,7 @@ function checkDownloadQuota(req, res, next) {
   next();
 }
 
-/* Stripe webhook needs raw body — register BEFORE express.json() */
+/* Stripe webhook */
 app.post("/api/webhook",
   express.raw({ type:"application/json" }),
   async (req, res) => {
@@ -207,10 +189,8 @@ app.post("/api/webhook",
       return res.status(400).send(`Webhook error: ${e.message}`);
     }
 
-    /* Update user plan on subscription events */
     const handleSub = async (sub, active) => {
       if (!db) return;
-      // Find user by stripeCustomerId
       const snap = await db.collection("users")
         .where("stripeCustomerId", "==", sub.customer).limit(1).get();
       if (snap.empty) return;
@@ -282,80 +262,54 @@ function rgbToLab({r,g,b}) {
 function dE(a,b){return Math.sqrt((a.l-b.l)**2+(a.a-b.a)**2+(a.b-b.b)**2);}
 function normHex(h){const m=(h||"").match(/^#?([0-9a-fA-F]{6})$/i);return m?`#${m[1].toUpperCase()}`:"#000000";}
 function isNearWhite(hex){const {r,g,b}=hexToRgb(hex);return r>230&&g>230&&b>230;}
-function isNearBlack(hex){const {r,g,b}=hexToRgb(hex);return r<40&&g<40&&b<40;}
+function isNearBlack(hex){const {r,g,b}=hexToRgb(hex);return r<<40&&g<<40&&b<<40;}
 
 /* ─── SPEC TUNING ─────────────────────────────────────────*/
 function getStitchParams(specs) {
   const s = specs || {};
-  const fabric     = (s.fabric     || "cotton" ).toLowerCase();
-  const density    = (s.density    || "medium" ).toLowerCase();
-  const machine    = (s.machine    || "generic").toLowerCase();
+  const fabric = (s.fabric || "cotton").toLowerCase();
+  const density = (s.density || "medium").toLowerCase();
+  const machine = (s.machine || "generic").toLowerCase();
   const stabilizer = (s.stabilizer || "cutaway").toLowerCase();
-  const hoop       = (s.hoop       || "5x7"   ).toLowerCase();
 
   const p = {
-    tatamiRow: 4, tatamiLen: 30, tatamiUl: 40, pull: 2, pullComp: 2,
-    maxJumpMm: 12, minStitchMm: 0.3,
-    machine, fabric, stabilizer, density, hoop, maxStitchLen: 121
+    tatamiRow: 4, tatamiLen: 30, tatamiUl: 40, pull: 2,
+    machine, fabric, stabilizer, density, maxStitchLen: 121
   };
 
-  // ── Fabric presets ──────────────────────────────────────────
   const fabricMap = {
-    cotton:  { pull: 2, pullComp: 2, tatamiRow: 4, tatamiUl: 40, tatamiLen: 30 },
-    denim:   { pull: 4, pullComp: 3, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
-    fleece:  { pull: 5, pullComp: 4, tatamiRow: 3, tatamiUl: 25, tatamiLen: 25 },
-    pique:   { pull: 3, pullComp: 2, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
-    twill:   { pull: 4, pullComp: 3, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
-    satin:   { pull: 1, pullComp: 1, tatamiRow: 5, tatamiUl: 50, tatamiLen: 35 },
-    leather: { pull: 1, pullComp: 1, tatamiRow: 5, tatamiUl: 50, tatamiLen: 35 },
-    towel:   { pull: 6, pullComp: 5, tatamiRow: 2, tatamiUl: 20, tatamiLen: 20 },
-    canvas:  { pull: 4, pullComp: 3, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
-    knit:    { pull: 5, pullComp: 4, tatamiRow: 3, tatamiUl: 25, tatamiLen: 25 },
+    cotton:  { pull: 2, tatamiRow: 4, tatamiUl: 40, tatamiLen: 30 },
+    denim:   { pull: 4, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
+    fleece:  { pull: 5, tatamiRow: 3, tatamiUl: 25, tatamiLen: 25 },
+    pique:   { pull: 3, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
+    twill:   { pull: 4, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
+    satin:   { pull: 1, tatamiRow: 5, tatamiUl: 50, tatamiLen: 35 },
+    leather: { pull: 1, tatamiRow: 5, tatamiUl: 50, tatamiLen: 35 },
+    towel:   { pull: 6, tatamiRow: 2, tatamiUl: 20, tatamiLen: 20 },
+    canvas:  { pull: 4, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
+    knit:    { pull: 5, tatamiRow: 3, tatamiUl: 25, tatamiLen: 25 },
   };
-  Object.assign(p, fabricMap[fabric] || fabricMap.cotton);
+  const f = fabricMap[fabric] || fabricMap.cotton;
+  Object.assign(p, f);
 
-  // ── Density ─────────────────────────────────────────────────
   const densityMap = {
-    low:  { tatamiRow: 6, tatamiLen: 40, tatamiUl: 60 },
-    high: { tatamiRow: 2, tatamiLen: 20, tatamiUl: 25, pullComp: Math.max(1, p.pullComp - 1) },
+    low:    { tatamiRow: 6, tatamiLen: 40, tatamiUl: 60 },
+    medium: { },
+    high:   { tatamiRow: 2, tatamiLen: 20, tatamiUl: 25 },
   };
   if (densityMap[density]) Object.assign(p, densityMap[density]);
 
-  // ── Stabilizer ──────────────────────────────────────────────
   if (stabilizer === "none" || stabilizer === "hoop") {
     p.tatamiUl = Math.max(15, p.tatamiUl - 15);
-    p.pull     = Math.max(1,  p.pull - 1);
+    p.pull = Math.max(1, p.pull - 1);
   } else if (stabilizer === "washaway") {
     p.tatamiUl = Math.max(20, p.tatamiUl - 10);
   }
+
   if (fabric === "twill" && stabilizer !== "cutaway") {
     p.tatamiRow = Math.max(2, p.tatamiRow);
-    p.tatamiUl  = Math.max(20, p.tatamiUl);
+    p.tatamiUl = Math.max(20, p.tatamiUl);
   }
-
-  // ── Machine brand ────────────────────────────────────────────
-  // Each machine has different jump handling and stitch speed limits.
-  // These affect the optimizer thresholds and small-stitch filter.
-  const machineMap = {
-    tajima:  { maxJumpMm: 12.1, minStitchMm: 0.3, maxStitchLen: 121 },
-    brother: { maxJumpMm: 12.7, minStitchMm: 0.4, maxStitchLen: 127 },  // PE-series
-    barudan: { maxJumpMm: 12.1, minStitchMm: 0.3, maxStitchLen: 121 },
-    janome:  { maxJumpMm: 12.7, minStitchMm: 0.4, maxStitchLen: 127 },
-    singer:  { maxJumpMm: 10.0, minStitchMm: 0.5, maxStitchLen: 100 },
-    generic: { maxJumpMm: 12.0, minStitchMm: 0.4, maxStitchLen: 120 },
-  };
-  Object.assign(p, machineMap[machine] || machineMap.generic);
-
-  // ── Hoop size — clamp pull comp to avoid over-expansion ──────
-  // Larger hoops tolerate more pull; smaller hoops need tighter control
-  const hoopMap = {
-    "4x4":  { pullComp: Math.min(p.pullComp, 1) },   // tiny hoop — minimal expansion
-    "5x7":  { },                                       // default — no change
-    "6x10": { pullComp: Math.min(p.pullComp + 1, 5) },
-    "8x8":  { pullComp: Math.min(p.pullComp + 1, 5) },
-    "8x12": { pullComp: Math.min(p.pullComp + 1, 6) },
-  };
-  if (hoopMap[hoop]) Object.assign(p, hoopMap[hoop]);
 
   return p;
 }
@@ -632,7 +586,7 @@ Return ONLY valid JSON, no markdown.
 function getRunsInRow(pixMap,ci,y,x0,x1,canvasSize){
   const runs=[];let s=-1;
   for(let x=x0;x<=x1;x++){
-    const hit=y>=0&&y<canvasSize&&pixMap[y*canvasSize+x]===ci;
+    const hit=y>=0&&y<<canvasSize&&pixMap[y*canvasSize+x]===ci;
     if(hit&&s===-1)s=x;
     if(!hit&&s!==-1){runs.push({x1:s,x2:x-1});s=-1;}
   }
@@ -645,9 +599,9 @@ function extractRegions(pixMap, colors, canvasSize) {
   const visited  = new Uint8Array(canvasSize*canvasSize);
   const regions  = [];
 
-  for(let ci=0;ci<colors.length;ci++){
-    for(let sy=0;sy<canvasSize;sy++){
-      for(let sx=0;sx<canvasSize;sx++){
+  for(let ci=0;ci<<colors.length;ci++){
+    for(let sy=0;sy<<canvasSize;sy++){
+      for(let sx=0;sx<<canvasSize;sx++){
         const si = sy*canvasSize+sx;
         if(pixMap[si]!==ci||visited[si])continue;
 
@@ -655,22 +609,22 @@ function extractRegions(pixMap, colors, canvasSize) {
         visited[si]=1;
         let mnx=sx,mxx=sx,mny=sy,mxy=sy,area=0;
 
-        while(qp<q.length){
+        while(qp<<q.length){
           const idx=q[qp++]; area++;
           const x=idx%canvasSize, y=(idx/canvasSize)|0;
-          if(x<mnx)mnx=x;if(x>mxx)mxx=x;
+          if(x<<mnx)mnx=x;if(x>mxx)mxx=x;
           if(y<mny)mny=y;if(y>mxy)mxy=y;
 
           for(const[dx,dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]]){
             const nx=x+dx,ny=y+dy;
-            if(nx>=0&&nx<canvasSize&&ny>=0&&ny<canvasSize){
+            if(nx>=0&&nx<<canvasSize&&ny>=0&&ny<<canvasSize){
               const ni=ny*canvasSize+nx;
               if(!visited[ni]&&pixMap[ni]===ci){visited[ni]=1;q.push(ni);}
             }
           }
         }
 
-        if(area<MIN_AREA)continue;
+        if(area<<MIN_AREA)continue;
 
         const bw=mxx-mnx+1, bh=mxy-mny+1;
         const aspectRatio=bh/Math.max(bw,1);
@@ -704,7 +658,7 @@ function mergeAdjacentRegions(regions) {
   const merged = [];
   const used = new Set();
 
-  for(let i=0;i<regions.length;i++){
+  for(let i=0;i<<regions.length;i++){
     if(used.has(i)) continue;
     const base = regions[i];
     let mnx=base.mnx, mny=base.mny, mxx=base.mxx, mxy=base.mxy, area=base.area;
@@ -712,7 +666,7 @@ function mergeAdjacentRegions(regions) {
     let runCount = base.bh;
     used.add(i);
 
-    for(let j=i+1;j<regions.length;j++){
+    for(let j=i+1;j<<regions.length;j++){
       if(used.has(j)) continue;
       const other = regions[j];
       if(other.color !== base.color) continue;
@@ -837,10 +791,8 @@ function getRunsInCol(pixMap, ci, x, y0, y1, canvasSize) {
 
 /* ─── EDGE WALK UNDERLAY: trace perimeter at offset inward ─────── */
 function generateEdgeWalkUnderlay(pixMap, reg, ci, canvasSize, color, stepPx, insetPx) {
-  // Sample edge pixels around perimeter and order them as a walking path
   const {mnx, mny, mxx, mxy} = reg;
   const edges = [];
-  // Walk perimeter by raster-scanning rows, picking left+right edges per row
   for (let y = mny; y <= mxy; y += 2) {
     const runs = getRunsInRow(pixMap, ci, y, mnx, mxx, canvasSize);
     for (const {x1, x2} of runs) {
@@ -849,14 +801,12 @@ function generateEdgeWalkUnderlay(pixMap, reg, ci, canvasSize, color, stepPx, in
     }
   }
   if (edges.length === 0) return [];
-  // Order edges into a single walk path (top edge L->R, right edge T->B, bottom R->L, left B->T)
   const cx = (mnx + mxx) / 2, cy = (mny + mxy) / 2;
   const sorted = edges.slice().sort((a, b) => {
     const aa = Math.atan2(a.y - cy, a.x - cx);
     const ab = Math.atan2(b.y - cy, b.x - cx);
     return aa - ab;
   });
-  // Downsample so stitches are roughly stepPx apart
   const out = [];
   let prev = null;
   for (const p of sorted) {
@@ -880,15 +830,13 @@ function generateZigzagUnderlay(pixMap, reg, ci, canvasSize, color, rowSpacing, 
     const order = rev ? [...runs].reverse() : runs;
     for (const {x1, x2} of order) {
       const w = x2 - x1;
-      if (w < 6) continue;          // too narrow for useful underlay
+      if (w < 6) continue;
       const sx = rev ? x2 - 2 : x1 + 2;
       const ex = rev ? x1 + 2 : x2 - 2;
-      // Break long spans into stitches at stitchLen intervals
       const dist = Math.abs(ex - sx);
       const steps = Math.max(1, Math.round(dist / stitchLen));
       for (let s = 0; s <= steps; s++) {
         const fx = Math.round(sx + (ex - sx) * s / steps);
-        // Apply 45° zigzag (offset y by sin)
         const zy = y + ((s % 2) ? 2 : -2);
         out.push({x: fx, y: zy, color, type: "underlay"});
       }
@@ -901,8 +849,7 @@ function generateZigzagUnderlay(pixMap, reg, ci, canvasSize, color, rowSpacing, 
 /* ─── TIE-IN / TIE-OFF: 3 short anchor stitches ─────────────────── */
 function generateTieStitches(x, y, color, dirX, dirY) {
   const stitches = [];
-  // 3 short alternating stitches in the dir direction (forward / back / forward, ~1.5mm)
-  const off = 15;  // 1.5mm in 0.1mm units
+  const off = 15;
   stitches.push({x: x + dirX * off,     y: y + dirY * off,     color, type: "tie"});
   stitches.push({x: x - dirX * off / 2, y: y - dirY * off / 2, color, type: "tie"});
   stitches.push({x: x + dirX * off,     y: y + dirY * off,     color, type: "tie"});
@@ -910,12 +857,12 @@ function generateTieStitches(x, y, color, dirX, dirY) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   PROFESSIONAL STITCH GENERATOR  (v66)
-   • Edge walk underlay (running stitch around perimeter)
-   • Zigzag center-walk underlay at offset angle
-   • Pull compensation (expand fill bounds)
-   • Vertical fill for tall regions, horizontal for wide
-   • Tie-in / tie-off stitches at color changes
+   PROFESSIONAL STITCH GENERATOR  (v68)
+   FIXES:
+   • Color-first region ordering (finish one thread before next color)
+   • Trim jump to design start before first tie-in
+   • Trim instead of bridge when same-color regions >12mm apart
+   • Bridges encoded as stitches (not jumps)
    ═══════════════════════════════════════════════════════════════════ */
 function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize) {
   const stitches = [];
@@ -925,21 +872,17 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
   const pRow      = P.tatamiRow !== undefined ? P.tatamiRow : 4;
   const pLen      = P.tatamiLen !== undefined ? P.tatamiLen : 30;
   const pPull     = P.pull      !== undefined ? P.pull      : 2;
-  const pPullComp = P.pullComp  !== undefined ? P.pullComp  : 2;   // pull compensation in 0.1mm units
-  const pEdgeUL   = 18;  // edge walk underlay step (~1.8mm between stitches)
-  const pZigUL    = 28;  // zigzag underlay row spacing (~2.8mm)
-  const pZigLen   = 40;  // zigzag underlay stitch length (~4mm)
+  const pPullComp = P.pullComp  !== undefined ? P.pullComp  : 2;
+  const pEdgeUL   = 18;
+  const pZigUL    = 28;
+  const pZigLen   = 40;
 
-  // Precompute edge pixels per region for bridge logic
   const edgePixels = new Map();
   for (const reg of regions) {
     edgePixels.set(reg, getEdgePixels(pixMap, reg, canvasSize));
   }
 
-  // Group regions by COLOR first, then type within each color.
-  // Critical: machine must finish ALL regions of one color before switching thread.
-  // Wrong order forces operator to re-thread colors they already finished.
-  // Order within each color: fill → satin → running (underlay before detail work).
+  /* ─── FIX v68: Color-first ordering ───────────────────── */
   const byColor = new Map();
   for (const reg of regions) {
     const ck = normHex(reg.color);
@@ -947,7 +890,6 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
     byColor.get(ck).push(reg);
   }
   const ordered = [];
-  // Respect the user's color selection order from the UI
   const colorOrder = colors.map(c => normHex(c));
   for (const ck of colorOrder) {
     const regsForColor = byColor.get(ck);
@@ -957,7 +899,6 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
       if (grp.length) ordered.push(...sortRegionsNearestNeighbor(grp));
     }
   }
-  // Safety: catch any regions whose color wasn't in the palette
   for (const [ck, regs] of byColor) {
     if (!colorOrder.includes(ck)) {
       for (const type of ['fill', 'satin', 'running']) {
@@ -978,20 +919,23 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
     const {color, type, mnx, mny, mxx, mxy} = reg;
     const regW = mxx - mnx;
     const regH = mxy - mny;
-    const isColorChange = prevColor !== null && normHex(prevColor) !== normHex(color);
     let lastX = globalLastX, lastY = globalLastY;
 
     // ─── Move to entry point of region ─────────────────────────
     if (lastX !== -1 && ri > 0) {
       const prevReg = ordered[ri - 1];
       if (normHex(prevReg.color) === normHex(reg.color)) {
-        // Same color — bridge between closest edges
+        /* FIX v68: Trim if same-color regions are >12mm apart */
         const pair = findClosestPair(edgePixels.get(prevReg), edgePixels.get(reg));
-        const bridge = generateBridgeStitches(lastX, lastY, pair.to.x, pair.to.y, color);
-        stitches.push(...bridge);
+        const gap = Math.hypot(pair.to.x - lastX, pair.to.y - lastY);
+        if (gap > 120) {
+          stitches.push({x: lastX, y: lastY, color, type: "trim"});
+          stitches.push({x: pair.to.x, y: pair.to.y, color, type: "trim"});
+        } else {
+          stitches.push(...generateBridgeStitches(lastX, lastY, pair.to.x, pair.to.y, color));
+        }
         lastX = pair.to.x; lastY = pair.to.y;
       } else {
-        // Color change — TIE-OFF previous + trim + TIE-IN new
         stitches.push(...generateTieStitches(lastX, lastY, prevColor, -1, 0));
         stitches.push({x: lastX, y: lastY, color, type: "trim"});
         const entryEdge = edgePixels.get(reg);
@@ -999,7 +943,6 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
         const bridge = generateBridgeStitches(lastX, lastY, entry.x, entry.y, color);
         stitches.push(...bridge);
         lastX = entry.x; lastY = entry.y;
-        // TIE-IN at start of new color
         stitches.push(...generateTieStitches(lastX, lastY, color, 1, 0));
       }
     } else {
@@ -1007,17 +950,16 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
       const entry = entryEdge[Math.floor(entryEdge.length / 2)];
       lastX = entry.x; lastY = entry.y;
       if (ri === 0) {
-        // TIE-IN on first stitch of design
+        /* FIX v68: Jump to design start before tie-in */
+        stitches.push({x: lastX, y: lastY, color, type: "trim"});
         stitches.push(...generateTieStitches(lastX, lastY, color, 1, 0));
       }
     }
 
-    // ─── UNDERLAY for fill regions (edge walk + zigzag) ────────
+    // ─── UNDERLAY for fill regions ────────────────────────────
     if (type === "fill") {
-      // 1. Edge walk — outline runner
       const edgeWalk = generateEdgeWalkUnderlay(pixMap, reg, ci, canvasSize, color, pEdgeUL, Math.max(2, pPull));
       if (edgeWalk.length) {
-        // Bridge from current pos to start of edge walk
         const start = edgeWalk[0];
         if (Math.hypot(start.x - lastX, start.y - lastY) > 30) {
           stitches.push(...generateBridgeStitches(lastX, lastY, start.x, start.y, color));
@@ -1027,7 +969,6 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
         lastY = edgeWalk[edgeWalk.length - 1].y;
         colorCounts[ci].underlay += edgeWalk.length;
       }
-      // 2. Zigzag center walk
       const zig = generateZigzagUnderlay(pixMap, reg, ci, canvasSize, color, pZigUL, pZigLen);
       if (zig.length) {
         const zStart = zig[0];
@@ -1041,16 +982,10 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
       }
     }
 
-    // ─── DECIDE FILL DIRECTION based on region aspect ─────────
-    // Tall narrow region → scan vertically (90° fill angle)
-    // Wide region → scan horizontally (0° fill angle, default)
     const useVerticalScan = (type === "fill") && (regH > regW * 1.4);
-
-    // Reset lastX/lastY tracking so first stitch is the entry, not chained from underlay
     let lx = lastX, ly = lastY;
 
     if (useVerticalScan) {
-      // ─── VERTICAL FILL (column-by-column scan) ──────────────
       let colIdx = 0;
       for (let x = mnx; x <= mxx; x += pRow) {
         const runs = getRunsInCol(pixMap, ci, x, mny, mxy, canvasSize);
@@ -1058,7 +993,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
         const rev = colIdx % 2 === 1;
         const ord = rev ? [...runs].reverse() : runs;
         for (const {y1, y2} of ord) {
-          const ay1 = y1 + pPull - pPullComp;     // pull compensation: extend slightly
+          const ay1 = y1 + pPull - pPullComp;
           const ay2 = y2 - pPull + pPullComp;
           const brickOff = colIdx % 2 === 0 ? 0 : Math.round(pLen * 0.5);
           const ly1 = ay1 + brickOff;
@@ -1080,7 +1015,6 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
         colIdx++;
       }
     } else {
-      // ─── HORIZONTAL FILL / SATIN / RUNNING ─────────────────
       let rowIdx = 0;
       for (let y = mny; y <= mxy; y += pRow) {
         const runs = getRunsInRow(pixMap, ci, y, mnx, mxx, canvasSize);
@@ -1098,7 +1032,6 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
             lx = rx; ly = y;
 
           } else if (type === "satin") {
-            // Satin with pull compensation
             const sx = rev ? x2 - pPull + pPullComp : x1 + pPull - pPullComp;
             const ex = rev ? x1 + pPull - pPullComp : x2 - pPull + pPullComp;
             if (Math.abs(ex - sx) > 1) {
@@ -1114,7 +1047,6 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
             }
 
           } else {
-            // FILL with pull compensation and brick pattern
             const brickOff = rowIdx % 2 === 0 ? 0 : Math.round(pLen * 0.5);
             const lxF = x1 + pPull - pPullComp + brickOff;
             const rxF = x2 - pPull + pPullComp;
@@ -1143,7 +1075,6 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
     prevColor = color;
   }
 
-  // Final tie-off at end of design
   if (globalLastX !== -1 && prevColor !== null) {
     stitches.push(...generateTieStitches(globalLastX, globalLastY, prevColor, -1, 0));
   }
@@ -1154,371 +1085,6 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
   }).join(" | "));
 
   return {stitches, colorCounts};
-}
-/* ═══════════════════════════════════════════════════════════════════
-   POST-PROCESSING PASSES (v68)
-   • optimizeJumps     — convert short jumps to stitches, split long jumps
-   • filterSmallStitch — drop stitches < 3 DST units (0.3mm)
-   • addBastingBox     — running-stitch rectangle around design
-   ═══════════════════════════════════════════════════════════════════ */
-
-/* Small-stitch filter: drops consecutive stitches closer than minDist (in 0.1mm units).
-   Critical for Tajima — sub-0.3mm stitches cause needle bunching and thread breaks. */
-function filterSmallStitches(stitches, minDist) {
-  if (!minDist || minDist <= 0) return stitches;
-  const out = [];
-  let prev = null;
-  for (const s of stitches) {
-    // Always keep trims, color changes, and ties
-    if (s.type === "trim" || s.type === "tie" || s.type === "bridge" || s.type === "jump") {
-      out.push(s); prev = s; continue;
-    }
-    if (!prev) { out.push(s); prev = s; continue; }
-    // Different color = effectively a color-change boundary, keep it
-    if (s.color !== prev.color) { out.push(s); prev = s; continue; }
-    const d = Math.hypot(s.x - prev.x, s.y - prev.y);
-    if (d < minDist) continue;           // drop this stitch
-    out.push(s); prev = s;
-  }
-  return out;
-}
-
-/* Jump optimizer: classify every gap between consecutive same-color stitches.
-   • gap < shortMm  → convert any "trim/bridge/jump" to regular stitch (no thread cut)
-   • gap > longMm   → mark as explicit "trim" (machine cuts thread)
-   • intermediate gaps stay as-is. Different-color transitions always trim. */
-function optimizeJumps(stitches, shortMm, longMm) {
-  const shortPx = shortMm * 10;
-  const longPx  = longMm  * 10;
-  const out = [];
-  let prev = null;
-  for (const s of stitches) {
-    if (!prev) { out.push(s); prev = s; continue; }
-    const dx = s.x - prev.x, dy = s.y - prev.y;
-    const d  = Math.hypot(dx, dy);
-    const isColorChange = s.color !== prev.color;
-
-    if (isColorChange) {
-      // Color change always needs explicit trim
-      if (s.type !== "trim") out.push({...s, type: "trim"});
-      else out.push(s);
-      prev = s; continue;
-    }
-
-    // Same-color gap
-    if (d < shortPx) {
-      // Short hop — strip jump/trim/bridge flag, make it a normal stitch
-      if (s.type === "trim" || s.type === "bridge" || s.type === "jump") {
-        out.push({...s, type: "stitch"});
-      } else {
-        out.push(s);
-      }
-    } else if (d > longPx) {
-      // Long gap that wasn't already a trim — force a trim
-      if (s.type !== "trim") out.push({...s, type: "trim"});
-      else out.push(s);
-    } else {
-      out.push(s);
-    }
-    prev = s;
-  }
-  return out;
-}
-
-/* Basting box: running-stitch rectangle around the entire design extents.
-   Stitched FIRST, in the first color of the design, then trimmed before
-   real stitching starts. Allows operator to verify hoop placement & attach
-   stabilizer cleanly. Offset = 5mm outside the design bounds.
-   stepMm = stitch length along the perimeter (4mm default). */
-function addBastingBox(stitches, offsetMm, stepMm) {
-  if (!stitches.length) return stitches;
-  // Compute design bounds
-  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
-  for (const s of stitches) {
-    if (s.type === "trim") continue;
-    if (s.x < mnx) mnx = s.x;
-    if (s.x > mxx) mxx = s.x;
-    if (s.y < mny) mny = s.y;
-    if (s.y > mxy) mxy = s.y;
-  }
-  if (mnx === Infinity) return stitches;
-
-  const off  = offsetMm * 10;
-  const step = stepMm * 10;
-  const x1 = Math.round(mnx - off), y1 = Math.round(mny - off);
-  const x2 = Math.round(mxx + off), y2 = Math.round(mxy + off);
-  const color = stitches[0].color;
-
-  const box = [];
-  const seg = (sx, sy, ex, ey) => {
-    const dist = Math.hypot(ex - sx, ey - sy);
-    const n = Math.max(1, Math.round(dist / step));
-    for (let i = 0; i <= n; i++) {
-      box.push({
-        x: Math.round(sx + (ex - sx) * i / n),
-        y: Math.round(sy + (ey - sy) * i / n),
-        color, type: "basting"
-      });
-    }
-  };
-  // Move to start corner with a jump
-  box.push({x: x1, y: y1, color, type: "trim"});
-  seg(x1, y1, x2, y1);   // top
-  seg(x2, y1, x2, y2);   // right
-  seg(x2, y2, x1, y2);   // bottom
-  seg(x1, y2, x1, y1);   // left
-  // Trim before main design starts
-  box.push({x: x1, y: y1, color, type: "trim"});
-  return [...box, ...stitches];
-}
-
-/* ═══════════════════════════════════════════════════════════════════
-   PES ENCODER (Brother / Babylock)
-   Format spec: PES v6 wrapper around a PEC stitch block.
-   PEC uses the SAME bit layout idea as DST but with different opcodes:
-     • Each stitch = 2 bytes (one for X, one for Y) when |dx|,|dy| ≤ 63
-     • Otherwise 4 bytes with two flag bits in the high nibble
-   This implementation produces a minimal but valid v1 PES that all
-   modern Brother/Babylock machines (PE-Design, PE800, V3+) accept.
-   ═══════════════════════════════════════════════════════════════════ */
-
-// Brother 64-color thread palette (subset — closest match by RGB)
-const PEC_PALETTE = [
-  null, [0x14,0x16,0x21], [0x21,0x39,0x44], [0xff,0xff,0xff], [0xed,0xed,0xed],
-  [0xb4,0xb4,0xb4], [0x73,0x73,0x73], [0x33,0x33,0x33], [0xff,0xff,0xff],
-  [0xed,0xed,0xed], [0xb4,0xb4,0xb4], [0x73,0x73,0x73], [0x33,0x33,0x33],
-  [0xff,0x00,0x00], [0xc4,0x18,0x18], [0x77,0x14,0x18], [0xff,0xa0,0x00],
-  [0xff,0xee,0x00], [0xff,0xff,0x00], [0xe6,0xff,0x00], [0x99,0xcc,0x33],
-  [0x00,0x80,0x00], [0x00,0x40,0x00], [0x00,0xff,0x00], [0x33,0xee,0x33],
-  [0x00,0x99,0x66], [0x00,0xff,0xff], [0x00,0x99,0xff], [0x00,0x66,0xff],
-  [0x00,0x00,0xff], [0x00,0x00,0x99], [0x99,0x00,0xff], [0xff,0x00,0xff],
-  [0xff,0x66,0xcc], [0xcc,0x66,0x99], [0xff,0xcc,0xcc], [0x99,0x66,0x33],
-  [0x66,0x33,0x00], [0xcc,0x99,0x66], [0xff,0xcc,0x99],
-];
-function nearestPecColor(hex) {
-  const {r, g, b} = hexToRgb(hex);
-  let bi = 1, bd = Infinity;
-  for (let i = 1; i < PEC_PALETTE.length; i++) {
-    const c = PEC_PALETTE[i]; if (!c) continue;
-    const d = (r-c[0])**2 + (g-c[1])**2 + (b-c[2])**2;
-    if (d < bd) { bd = d; bi = i; }
-  }
-  return bi;
-}
-
-function encodePEC_stitches(stitches) {
-  // Compute bounds in image coords
-  let mnx=Infinity, mxx=-Infinity, mny=Infinity, mxy=-Infinity;
-  for (const s of stitches) {
-    if (s.x < mnx) mnx = s.x; if (s.x > mxx) mxx = s.x;
-    if (s.y < mny) mny = s.y; if (s.y > mxy) mxy = s.y;
-  }
-  if (mnx === Infinity) { mnx=mxx=mny=mxy=0; }
-  const cx = (mnx + mxx) / 2, cy = (mny + mxy) / 2;
-
-  const out = [];
-  let px = 0, py = 0;
-  let lastColor = null;
-
-  const emitMove = (dx, dy, isJump) => {
-    dx = Math.round(dx); dy = Math.round(dy);
-    if (dx >= -63 && dx <= 63 && dy >= -63 && dy <= 63 && !isJump) {
-      // Short form: 1 byte each
-      out.push(dx & 0x7F);
-      out.push(dy & 0x7F);
-    } else {
-      // Long form: 12-bit signed packed in 2 bytes each, with flag bit
-      const writeLong = (v, isJumpFlag) => {
-        v = Math.max(-2048, Math.min(2047, v));
-        const high = ((v >> 8) & 0x0F) | 0x80;     // high nibble + bit 7 set
-        const low  = v & 0xFF;
-        out.push(high | (isJumpFlag ? 0x20 : 0));
-        out.push(low);
-      };
-      writeLong(dx, isJump);
-      writeLong(dy, isJump);
-    }
-  };
-
-  for (const s of stitches) {
-    if (s.color !== lastColor && lastColor !== null) {
-      // Color change: 0xFE 0xB0 <palette_idx>
-      out.push(0xFE, 0xB0, 0x01);
-    }
-    lastColor = s.color;
-    const tx = Math.round(s.x - cx);
-    const ty = Math.round(-(s.y - cy));       // PEC y-axis inverted
-    const dx = tx - px;
-    const dy = ty - py;
-    const isJump = (s.type === "trim" || s.type === "jump" || s.type === "bridge");
-    emitMove(dx, dy, isJump);
-    px = tx; py = ty;
-  }
-  // End marker
-  out.push(0xFF, 0x00);
-  return { stitchBytes: Buffer.from(out), bounds: {mnx, mxx, mny, mxy} };
-}
-
-function encodePES(stitches) {
-  // Compute color list (unique colors in order they appear)
-  const colorList = [];
-  const seen = new Set();
-  for (const s of stitches) {
-    if (!seen.has(s.color)) { seen.add(s.color); colorList.push(s.color); }
-  }
-
-  const { stitchBytes, bounds } = encodePEC_stitches(stitches);
-  const width  = Math.round(bounds.mxx - bounds.mnx);
-  const height = Math.round(bounds.mxy - bounds.mny);
-
-  // ── PES header (v1 minimal) ───────────────────────────
-  const pesHdr = Buffer.alloc(48 + colorList.length);
-  pesHdr.write("#PES0001", 0, "ascii");
-  // PEC start offset — placeholder, will fix after we know section sizes
-  pesHdr.writeUInt32LE(0, 8);     // PEC start (filled later)
-  // Minimal section markers
-  pesHdr.writeUInt16LE(0x0001, 12);  // 1 hoop
-  pesHdr.writeUInt16LE(0x0001, 14);  // CSewSeg count
-  // Padding bytes (zeros are fine for minimal valid v1)
-
-  // ── PEC section ──────────────────────────────────────
-  const labelStr = "Stichai".padEnd(16, " ");
-  // PEC header is 512 bytes (palette + padding) + body offset structure (40 bytes)
-  const pecHdrSize = 540;
-
-  const pecHdr = Buffer.alloc(pecHdrSize, 0x20);
-  pecHdr.write("LA:" + labelStr, 0, "ascii");
-  pecHdr[19] = 0x0D;
-  // Bytes 48-49: color count, then list of palette indices
-  pecHdr.writeUInt8(colorList.length - 1, 48);
-  for (let i = 0; i < colorList.length && i < 462; i++) {
-    pecHdr.writeUInt8(nearestPecColor(colorList[i]), 49 + i);
-  }
-  // PEC body offset within PEC header section (relative to PEC start)
-  pecHdr.writeUInt16LE(0x0000, 520);
-  pecHdr.writeUInt16LE(0x0000, 522);
-  pecHdr.writeUInt16LE(0x07D0, 524);          // 2000 (placeholder)
-  pecHdr.writeUInt16LE(0x07D0, 526);
-  pecHdr.writeUInt16LE(width,  528);
-  pecHdr.writeUInt16LE(height, 530);
-  pecHdr.writeUInt16LE(0x01E0, 532);          // hoop W 480
-  pecHdr.writeUInt16LE(0x01B0, 534);          // hoop H 432
-  pecHdr.writeUInt16LE(0x9000, 536);
-  pecHdr.writeUInt16LE(0x9000, 538);
-
-  // ── Assemble ─────────────────────────────────────────
-  const pecStart = pesHdr.length;
-  pesHdr.writeUInt32LE(pecStart, 8);
-  return Buffer.concat([pesHdr, pecHdr, stitchBytes]);
-}
-
-/* ═══════════════════════════════════════════════════════════════════
-   JEF ENCODER (Janome)
-   Format: 116-byte header + thread palette + stitch records.
-   Each stitch = 2 signed bytes (dx, dy) in 0.1mm units.
-   Jump/trim/color use opcodes: 0x80 0x02 (jump), 0x80 0x01 (color change).
-   ═══════════════════════════════════════════════════════════════════ */
-
-// Janome 79-color thread palette (subset)
-const JEF_PALETTE = [
-  null, [0,0,0], [0,0,255], [51,204,102], [255,0,0], [0,255,0], [255,255,0],
-  [255,128,0], [255,255,255], [254,46,128], [255,153,204], [102,51,153],
-  [128,128,128], [192,192,192], [255,140,0], [255,215,0], [50,205,50],
-  [0,128,0], [0,255,255], [0,191,255], [70,130,180], [25,25,112],
-  [148,0,211], [255,20,147], [165,42,42], [139,69,19], [255,222,173],
-];
-function nearestJefColor(hex) {
-  const {r, g, b} = hexToRgb(hex);
-  let bi = 1, bd = Infinity;
-  for (let i = 1; i < JEF_PALETTE.length; i++) {
-    const c = JEF_PALETTE[i]; if (!c) continue;
-    const d = (r-c[0])**2 + (g-c[1])**2 + (b-c[2])**2;
-    if (d < bd) { bd = d; bi = i; }
-  }
-  return bi;
-}
-
-function encodeJEF(stitches) {
-  // Unique colors
-  const colorList = [];
-  const seen = new Set();
-  for (const s of stitches) {
-    if (!seen.has(s.color)) { seen.add(s.color); colorList.push(s.color); }
-  }
-  const colorCount = Math.max(1, colorList.length);
-
-  // Compute bounds & center
-  let mnx=Infinity, mxx=-Infinity, mny=Infinity, mxy=-Infinity;
-  for (const s of stitches) {
-    if (s.x < mnx) mnx = s.x; if (s.x > mxx) mxx = s.x;
-    if (s.y < mny) mny = s.y; if (s.y > mxy) mxy = s.y;
-  }
-  if (mnx === Infinity) { mnx=mxx=mny=mxy=0; }
-  const cx = (mnx + mxx) / 2, cy = (mny + mxy) / 2;
-
-  // ── Build stitch body ────────────────────────────────
-  const body = [];
-  let px = 0, py = 0, lastColor = null;
-  let stitchCount = 0;
-
-  const emit = (dx, dy, isJump) => {
-    dx = Math.max(-127, Math.min(127, Math.round(dx)));
-    dy = Math.max(-127, Math.min(127, Math.round(dy)));
-    if (isJump) body.push(0x80, 0x02);
-    body.push(dx & 0xFF, (-dy) & 0xFF);     // JEF y-axis inverted
-    stitchCount++;
-  };
-
-  for (const s of stitches) {
-    if (s.color !== lastColor && lastColor !== null) {
-      body.push(0x80, 0x01);
-      stitchCount++;
-    }
-    lastColor = s.color;
-    const tx = Math.round(s.x - cx);
-    const ty = Math.round(s.y - cy);
-    let dx = tx - px, dy = ty - py;
-    const isJump = (s.type === "trim" || s.type === "jump" || s.type === "bridge");
-    // Split if delta exceeds 127
-    while (Math.abs(dx) > 127 || Math.abs(dy) > 127) {
-      const step = Math.max(Math.abs(dx), Math.abs(dy));
-      const f = 127 / step;
-      const sx = dx * f, sy = dy * f;
-      emit(sx, sy, true);
-      dx -= sx; dy -= sy;
-    }
-    emit(dx, dy, isJump);
-    px = tx; py = ty;
-  }
-  // End marker
-  body.push(0x80, 0x10);
-
-  // ── JEF header (116 bytes + palette + thread types) ──
-  const headerSize = 116 + colorCount * 4 * 2;   // 4 bytes per color × 2 (palette + types)
-  const totalSize  = headerSize + body.length;
-  const hdr = Buffer.alloc(headerSize, 0);
-  hdr.writeInt32LE(headerSize, 0);          // offset to stitch data
-  hdr.writeInt32LE(0x14, 4);                // JEF version
-  hdr.writeInt32LE(1, 8);                   // hoop code (5x7 = 1)
-  hdr.writeInt32LE(stitchCount, 12);
-  hdr.writeInt32LE(colorCount, 16);
-  // Date string at offset 20 (14 chars)
-  const dateStr = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
-  hdr.write(dateStr, 20, "ascii");
-  // Bounds in 0.1mm signed at offsets 60-75 (left, top, right, bottom)
-  hdr.writeInt32LE(Math.round(mnx - cx), 60);
-  hdr.writeInt32LE(Math.round(mny - cy), 64);
-  hdr.writeInt32LE(Math.round(mxx - cx), 68);
-  hdr.writeInt32LE(Math.round(mxy - cy), 72);
-  // Color palette starting at byte 116
-  for (let i = 0; i < colorCount; i++) {
-    hdr.writeInt32LE(nearestJefColor(colorList[i]), 116 + i * 4);
-  }
-  for (let i = 0; i < colorCount; i++) {
-    hdr.writeInt32LE(0x0D, 116 + colorCount * 4 + i * 4);   // thread type
-  }
-
-  return Buffer.concat([hdr, Buffer.from(body)]);
 }
 
 /* ─── QUALITY VALIDATION ─────────────────────────────────*/
@@ -1724,126 +1290,69 @@ async function renderPreview(pixMap, colors, stitches, params, canvasSize) {
 }
 
 /* ─── DST ENCODER ─────────────────────────────────────────*/
-/* ============================================================
- *  DST ENCODER (Tajima specification)
- *  Bit assignments verified against a known-good hand-made DST file
- *  (KKK1111) — design header says 156.1mm × 488.3mm, decoded
- *  coordinates match EXACTLY.
- *
- *  BYTE 0 (1-unit and 9-unit range):
- *    0x01: x+1   0x02: x-1   0x04: x+9   0x08: x-9
- *    0x10: y-9   0x20: y+9   0x40: y-1   0x80: y+1
- *  BYTE 1 (3-unit and 27-unit range):
- *    0x01: x+3   0x02: x-3   0x04: x+27  0x08: x-27
- *    0x10: y-27  0x20: y+27  0x40: y-3   0x80: y+3
- *  BYTE 2 (81-unit range + flag bits):
- *    0x01: base  0x02: base  0x04: x+81  0x08: x-81
- *    0x10: y-81  0x20: y+81  0x40: COLOR-CHANGE  0x80: JUMP
- *
- *  HEADER format (also verified against KKK1111):
- *    "LA:<name padded with spaces to 16 chars>\r"   (20 bytes)
- *    "ST:%7d\r"      (stitch count, 7-digit right-aligned)
- *    "CO:%3d\r"      (color count, 3-digit right-aligned)
- *    "+X:%5d\r"      (extent, 2-digit minimum then padded to 5)
- *    "-X:%5d\r"
- *    "+Y:%5d\r"
- *    "-Y:%5d\r"
- *    "AX:+%5d\r" "AY:+%5d\r" "MX:+%5d\r" "MY:+%5d\r"
- *    "PD:******\r"
- *    0x1A                                    (EOF marker)
- *    spaces up to byte 511                  (header is 512 bytes total)
- * ============================================================ */
-
-// Encode (dx, dy) into 3 DST bytes. `isJump` true → set the JUMP flag.
-// dx, dy are in IMAGE COORDINATES (y increases downward).
-// DST machine coords have y UP positive, so we invert y here.
 function dstEncodeXY(dx, dy, isJump) {
   let x = dx;
-  let y = -dy;            // machine y is up-positive
-  let b0 = 0, b1 = 0, b2 = 0x03;   // base bits always set
+  let y = -dy;
+  let b0 = 0, b1 = 0, b2 = 0x03;
 
-  // Decompose into ±1, ±3, ±9, ±27, ±81 — greedy from largest
-  // X ±81
   if (x >  40) { b2 |= 0x04; x -= 81; }
   if (x < -40) { b2 |= 0x08; x += 81; }
-  // Y ±81  (note bit positions differ from X)
   if (y >  40) { b2 |= 0x20; y -= 81; }
   if (y < -40) { b2 |= 0x10; y += 81; }
 
-  // X ±27
   if (x >  13) { b1 |= 0x04; x -= 27; }
   if (x < -13) { b1 |= 0x08; x += 27; }
-  // Y ±27
   if (y >  13) { b1 |= 0x20; y -= 27; }
   if (y < -13) { b1 |= 0x10; y += 27; }
 
-  // X ±9
   if (x >   4) { b0 |= 0x04; x -=  9; }
   if (x <  -4) { b0 |= 0x08; x +=  9; }
-  // Y ±9
   if (y >   4) { b0 |= 0x20; y -=  9; }
   if (y <  -4) { b0 |= 0x10; y +=  9; }
 
-  // X ±3
   if (x >   1) { b1 |= 0x01; x -=  3; }
   if (x <  -1) { b1 |= 0x02; x +=  3; }
-  // Y ±3
   if (y >   1) { b1 |= 0x80; y -=  3; }
   if (y <  -1) { b1 |= 0x40; y +=  3; }
 
-  // X ±1
   if (x >   0) { b0 |= 0x01; }
   if (x <   0) { b0 |= 0x02; }
-  // Y ±1
   if (y >   0) { b0 |= 0x80; }
   if (y <   0) { b0 |= 0x40; }
 
-  if (isJump) b2 |= 0x80;          // JUMP flag, bit 7 of byte 2
+  if (isJump) b2 |= 0x80;
   return Buffer.from([b0, b1, b2]);
 }
 
-// Format a numeric extent: at least 2 digits, right-aligned in 5 chars
-// (matches Tajima reference: 0 → "   00", 1561 → " 1561")
 function fmtExtent(n) {
   const abs = Math.max(0, Math.round(Math.abs(n)));
   let digits = String(abs);
-  if (digits.length < 2) digits = "0" + digits;     // min 2 digits
+  if (digits.length < 2) digits = "0" + digits;
   return digits.padStart(5, " ");
 }
 
-// Build the 512-byte ASCII Tajima header
 function dstHeader(stitchCount, colorCount, minX, maxX, minY, maxY, name) {
   const buf = Buffer.alloc(512, 0x20);
   let off = 0;
   const write = (txt) => {
     buf.write(txt, off, "ascii");
     off += txt.length;
-    buf[off++] = 0x0D;          // CR after each field
+    buf[off++] = 0x0D;
   };
-  // LA:<name padded with spaces to 16 chars>
   const safeName = (name || "Stichai").substring(0, 16).padEnd(16, " ");
   write("LA:" + safeName);
-  // Stitch & color counts — right-aligned in their width
   write("ST:" + String(stitchCount).padStart(7, " "));
   write("CO:" + String(colorCount).padStart(3, " "));
-  // Extents in machine coords (y inverted from image coords):
-  //   image y range [minY, maxY] → machine y range [-maxY, -minY]
-  //   +X = max(machine x reached) = max(image x, 0)
-  //   -X = abs(min(machine x reached)) = abs(min(image x), 0)
-  //   +Y = max(machine y reached) = max(-image_y, 0) = max(0, -minY)
-  //   -Y = abs(min(machine y reached)) = abs(min(-image_y), 0) = max(0, maxY)
   write("+X:" + fmtExtent(Math.max(0,  maxX)));
   write("-X:" + fmtExtent(Math.max(0, -minX)));
   write("+Y:" + fmtExtent(Math.max(0, -minY)));
   write("-Y:" + fmtExtent(Math.max(0,  maxY)));
-  // Last-stitch and multi-volume offsets — all zero for single design
   write("AX:+" + String(0).padStart(5, " "));
   write("AY:+" + String(0).padStart(5, " "));
   write("MX:+" + String(0).padStart(5, " "));
   write("MY:+" + String(0).padStart(5, " "));
   write("PD:******");
-  buf[off++] = 0x1A;            // EOF marker
-  // Remainder already 0x20 (space)
+  buf[off++] = 0x1A;
   return buf;
 }
 
@@ -1853,10 +1362,8 @@ function encodeDST(stitches) {
   let px = 0, py = 0;
   let stitchCount = 0;
   let colorChanges = 0;
-  // Track image-coordinate extents
   let mnx =  Infinity, mxx = -Infinity, mny =  Infinity, mxy = -Infinity;
 
-  // Split a long move into multiple records of max ±121 each
   const emitLong = (dx, dy, isJump) => {
     const steps = Math.max(
       1,
@@ -1875,7 +1382,6 @@ function encodeDST(stitches) {
   };
 
   for (const s of stitches) {
-    // Color change: emit zero-motion COLOR record (0xC3 = bits 6+7+base)
     if (s.color !== lastColor && lastColor !== null) {
       recs.push(Buffer.from([0x00, 0x00, 0xC3]));
       colorChanges++;
@@ -1888,23 +1394,22 @@ function encodeDST(stitches) {
     px = s.x;
     py = s.y;
 
-    const isTrimOrBridge = s.type === "trim" || s.type === "bridge" || s.type === "jump";
+    /* FIX v68: Only trim/jump are jumps; bridge sews */
+    const isJump = s.type === "trim" || s.type === "jump";
 
     if (Math.abs(dx) > 121 || Math.abs(dy) > 121) {
-      emitLong(dx, dy, isTrimOrBridge);
+      emitLong(dx, dy, isJump);
     } else {
-      recs.push(dstEncodeXY(dx, dy, isTrimOrBridge));
+      recs.push(dstEncodeXY(dx, dy, isJump));
       stitchCount++;
     }
 
-    // Track extents based on actual positions reached
     if (s.x < mnx) mnx = s.x;
     if (s.x > mxx) mxx = s.x;
     if (s.y < mny) mny = s.y;
     if (s.y > mxy) mxy = s.y;
   }
 
-  // End-of-design marker: byte 2 = 0xF3 (jump+color+base = all flag bits set)
   recs.push(Buffer.from([0x00, 0x00, 0xF3]));
 
   if (mnx === Infinity) { mnx = mxx = mny = mxy = 0; }
@@ -1926,11 +1431,6 @@ setInterval(()=>{
 }, 60000);
 
 /* ─── ROUTES ─────────────────────────────────────────────*/
-/* ═══════════════════════════════════════════════════════════
-   AUTH & SUBSCRIPTION ROUTES
-   ═══════════════════════════════════════════════════════════ */
-
-/* GET /api/user/status */
 app.get("/api/user/status", requireAuth, (req, res) => {
   const user = req.userDoc;
   if (!user) return res.json({ auth:false });
@@ -1954,7 +1454,6 @@ app.get("/api/user/status", requireAuth, (req, res) => {
   });
 });
 
-/* POST /api/checkout — create Stripe checkout session */
 app.post("/api/checkout", requireAuth, async (req, res) => {
   if (!stripe) return res.status(503).json({ error:"payments_not_configured" });
   const { priceKey } = req.body;
@@ -1983,7 +1482,6 @@ app.post("/api/checkout", requireAuth, async (req, res) => {
   return res.json({ url: session.url });
 });
 
-/* POST /api/portal — Stripe customer portal */
 app.post("/api/portal", requireAuth, async (req, res) => {
   if (!stripe) return res.status(503).json({ error:"payments_not_configured" });
   const user = req.userDoc;
@@ -1995,8 +1493,6 @@ app.post("/api/portal", requireAuth, async (req, res) => {
   return res.json({ url: session.url });
 });
 
-/* POST /api/admin/grant — give any user any plan for free
-   Header: x-admin-secret: <ADMIN_SECRET env var> */
 app.post("/api/admin/grant", async (req, res) => {
   const secret = req.headers["x-admin-secret"];
   if (!secret || secret !== process.env.ADMIN_SECRET)
@@ -2158,56 +1654,7 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       }
     }catch(e){}
 
-    /* ─── COLOR MERGES (v68.1) ────────────────────────────────
-       Frontend sends colorMerges = {"#sourceHex":"#targetHex", ...}
-       For each merge, we remap pixMap indices from source CI to target CI,
-       and update regions to use the target color. Source colors are then
-       removed from the palette by the selectedColors filter below. */
-    let colorMerges = {};
-    try {
-      if (body.colorMerges) {
-        const parsed = typeof body.colorMerges === 'string' ? JSON.parse(body.colorMerges) : body.colorMerges;
-        if (parsed && typeof parsed === 'object') {
-          for (const k of Object.keys(parsed)) {
-            colorMerges[normHex(k)] = normHex(parsed[k]);
-          }
-        }
-      }
-    } catch(e){ console.warn("colorMerges parse:", e.message); }
-
-    if (Object.keys(colorMerges).length > 0) {
-      pixMap = new Int16Array(pixMap);   // clone before remapping
-      // Build CI-level merge map: sourceCi → targetCi
-      const ciMerges = {};
-      colors.forEach((c, ci) => {
-        const src = normHex(c);
-        if (colorMerges[src]) {
-          const targetHex = colorMerges[src];
-          const targetCi = colors.findIndex(tc => normHex(tc) === targetHex);
-          if (targetCi >= 0 && targetCi !== ci) ciMerges[ci] = targetCi;
-        }
-      });
-      if (Object.keys(ciMerges).length > 0) {
-        // Remap pixMap pixels
-        for (let i = 0; i < pixMap.length; i++) {
-          const v = pixMap[i];
-          if (v >= 0 && ciMerges[v] !== undefined) pixMap[i] = ciMerges[v];
-        }
-        // Remap region colors so they pass the selectedColors filter
-        filteredRegions = filteredRegions.map(r => {
-          const srcHex = normHex(r.color);
-          if (colorMerges[srcHex]) {
-            return { ...r, color: colorMerges[srcHex] };
-          }
-          return r;
-        });
-        console.log(`Merged ${Object.keys(ciMerges).length} color(s):`, colorMerges);
-      }
-    }
-
     if(selectedColors.length < colors.length){
-      // FIX v49: Clone pixMap so we don't corrupt the detection cache,
-      // AND remap remaining color indices to match the new selectedColors array.
       pixMap = new Int16Array(pixMap);
 
       const oldToNew = {};
@@ -2239,22 +1686,9 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       return res.status(400).json({error:"No regions left after selection — select more colors/shapes"});
     }
 
-    const{stitches:rawStitches,colorCounts}=generateStitchesFromRegions(pixMap,filteredRegions,selectedColors,params,canvasSize);
-
-    // ── POST-PROCESSING PASSES (v68) ─────────────────────────
-    // 1. Filter sub-minStitchMm stitches — threshold per machine brand
-    const minStitchPx = (params.minStitchMm || 0.3) * 10;
-    let stitches = filterSmallStitches(rawStitches, minStitchPx);
-
-    // 2. Optimize jumps — thresholds per machine brand
-    stitches = optimizeJumps(stitches, 2, params.maxJumpMm || 12);
-
-    // 3. Optional basting box (frontend sends bastingBox=1)
-    if (req.body.bastingBox === '1' || req.body.bastingBox === 'true') {
-      stitches = addBastingBox(stitches, 5, 4);
-    }
+    const{stitches,colorCounts}=generateStitchesFromRegions(pixMap,filteredRegions,selectedColors,params,canvasSize);
     const coverCount=stitches.filter(s=>s.type!=="trim"&&s.type!=="underlay").length;
-    if(coverCount<5){
+    if(coverCount<<5){
       return res.status(500).json({error:"Not enough stitches — select more shapes or check contrast"});
     }
 
@@ -2327,30 +1761,15 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
   const d=jobs.get(req.params.id);
   if(!d)return res.status(404).json({error:"Not found"});
   if(req.firebaseUser) await recordDownload(req.firebaseUser.uid);
-
-  // Format from query (?fmt=pes|jef|dst), defaults to dst
-  const fmt = (req.query.fmt || "dst").toLowerCase();
-  let buf, ext, mime = "application/octet-stream";
-  try {
-    if (fmt === "pes") {
-      buf = encodePES(d.stitches);  ext = "pes";
-    } else if (fmt === "jef") {
-      buf = encodeJEF(d.stitches);  ext = "jef";
-    } else {
-      buf = encodeDST(d.stitches);  ext = "dst";
-    }
-  } catch (e) {
-    console.error(`Encoder error (${fmt}):`, e.message);
-    return res.status(500).json({error:`Failed to encode ${fmt.toUpperCase()}: ${e.message}`});
-  }
-  res.setHeader("Content-Type", mime);
-  res.setHeader("Content-Disposition", `attachment; filename="design.${ext}"`);
+  const buf=encodeDST(d.stitches);
+  res.setHeader("Content-Type","application/octet-stream");
+  res.setHeader("Content-Disposition",`attachment; filename="design.dst"`);
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"68.2",features:"machine-aware+hoop+merges+pes+jef"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"68.0",features:"color-first-ordering,origin-trim,bridge-limits,sew-jumps"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v68 | :${PORT} | PES+JEF+Optimizer`));
+const server=app.listen(PORT,()=>console.log(`Stichai v68 | :${PORT} | Color-first + Origin trim + Bridge limits`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
