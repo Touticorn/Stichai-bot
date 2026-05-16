@@ -1100,7 +1100,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
   const colorCounts = colors.map(() => ({fill:0, satin:0, running:0, underlay:0}));
   const pxScale  = canvasSize / 800;
   const P = params || {};
-  const pRow      = Math.max(3, Math.round((P.tatamiRow || 5) * pxScale));
+  const pRow      = Math.max(3, Math.round((P.tatamiRow || 4) * pxScale));
   const pLen      = Math.max(15, Math.round((P.tatamiLen || 30) * pxScale));
   const pPullComp = Math.round((P.pullComp || 2) * pxScale);
   const pOutline  = Math.round(15 * pxScale);
