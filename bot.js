@@ -256,7 +256,7 @@ const GEMINI_MODELS = [
 
 /* ─── CONSTANTS ───────────────────────────────────────────*/
 const SMART_TRIM   = 30;
-const MIN_AREA     = 25;
+const MIN_AREA     = 60;  /* px² minimum at 800px canvas (~0.6mm²); scales with canvas */
 const PREVIEW_MAX  = 1200;
 
 const MACHINE_LIMITS = {
@@ -292,7 +292,12 @@ function normHex(h){const m=(h||"").match(/^#?([0-9a-fA-F]{6})$/i);return m?`#${
 function isNearWhite(hex){const {r,g,b}=hexToRgb(hex);return r>230&&g>230&&b>230;}
 function isNearBlack(hex){const {r,g,b}=hexToRgb(hex);return r<40&&g<40&&b<40;}
 
-/* ─── SPEC TUNING ─────────────────────────────────────────*/
+/* ─── SPEC TUNING ─────────────────────────────────────────
+   All length values are in pixels at 800px canvas = 10 px/mm.
+   These are calibrated against industry-standard professional digitizing:
+   - Stitch length: 4-5mm (= 40-50 px) — matches Tajima/Brother defaults
+   - Tatami row pitch: 3.5-4.5mm (= 35-45 px) — standard for filled embroidery
+   - Underlay pitch: 6-10mm — coarser foundation pass                  */
 function getStitchParams(specs) {
   const s = specs || {};
   const fabric = (s.fabric || "cotton").toLowerCase();
@@ -304,31 +309,31 @@ function getStitchParams(specs) {
   const limits = MACHINE_LIMITS[machine] || MACHINE_LIMITS.generic;
 
   const p = {
-    tatamiRow: 4, tatamiLen: 30, tatamiUl: 40, pull: 2,
+    tatamiRow: 40, tatamiLen: 47, tatamiUl: 80, pull: 2,
     pullComp: HOOP_PULL[hoop] || 2,
     machineLimits: limits,
     machine, fabric, stabilizer, density, maxStitchLen: limits.maxJump, hoop
   };
 
   const fabricMap = {
-    cotton:  { pull: 2, tatamiRow: 4, tatamiUl: 40, tatamiLen: 30 },
-    denim:   { pull: 4, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
-    fleece:  { pull: 5, tatamiRow: 3, tatamiUl: 25, tatamiLen: 25 },
-    pique:   { pull: 3, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
-    twill:   { pull: 4, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
-    satin:   { pull: 1, tatamiRow: 5, tatamiUl: 50, tatamiLen: 35 },
-    leather: { pull: 1, tatamiRow: 5, tatamiUl: 50, tatamiLen: 35 },
-    towel:   { pull: 6, tatamiRow: 2, tatamiUl: 20, tatamiLen: 20 },
-    canvas:  { pull: 4, tatamiRow: 3, tatamiUl: 30, tatamiLen: 25 },
-    knit:    { pull: 5, tatamiRow: 3, tatamiUl: 25, tatamiLen: 25 },
+    cotton:  { pull: 2, tatamiRow: 40, tatamiUl: 80, tatamiLen: 47 },
+    denim:   { pull: 4, tatamiRow: 35, tatamiUl: 70, tatamiLen: 42 },
+    fleece:  { pull: 5, tatamiRow: 35, tatamiUl: 60, tatamiLen: 42 },
+    pique:   { pull: 3, tatamiRow: 38, tatamiUl: 70, tatamiLen: 45 },
+    twill:   { pull: 4, tatamiRow: 35, tatamiUl: 70, tatamiLen: 42 },
+    satin:   { pull: 1, tatamiRow: 45, tatamiUl: 90, tatamiLen: 50 },
+    leather: { pull: 1, tatamiRow: 50, tatamiUl: 100, tatamiLen: 55 },
+    towel:   { pull: 6, tatamiRow: 30, tatamiUl: 50, tatamiLen: 38 },
+    canvas:  { pull: 4, tatamiRow: 35, tatamiUl: 70, tatamiLen: 42 },
+    knit:    { pull: 5, tatamiRow: 35, tatamiUl: 60, tatamiLen: 42 },
   };
   const f = fabricMap[fabric] || fabricMap.cotton;
   Object.assign(p, f);
 
   const densityMap = {
-    low:    { tatamiRow: 6, tatamiLen: 40, tatamiUl: 60 },
-    medium: { },
-    high:   { tatamiRow: 2, tatamiLen: 20, tatamiUl: 25 },
+    low:    { tatamiRow: 50, tatamiLen: 55, tatamiUl: 100 },  /* 5.0mm row, sparse */
+    medium: { },                                                /* 4.0mm row (default) */
+    high:   { tatamiRow: 32, tatamiLen: 40, tatamiUl: 60 },   /* 3.2mm row, dense */
   };
   if (densityMap[density]) Object.assign(p, densityMap[density]);
 
@@ -951,7 +956,7 @@ function v70_scanRuns(mask, w, h, offX, offY, angle, rowSpacing) {
    Inserts trim commands between segments separated by negative space
    (so the machine pen-ups instead of bridging across).
    ───────────────────────────────────────────────────────────────────────── */
-function v70_runsToStitches(scan, color, brickAmt, pullComp, maxBridgePx) {
+function v70_runsToStitches(scan, color, brickAmt, pullComp, maxBridgePx, maxStitchLen) {
   const { rows, cos, sin, offX, offY } = scan;
   const stitches = [];
   let reversed = false;
@@ -971,17 +976,28 @@ function v70_runsToStitches(scan, color, brickAmt, pullComp, maxBridgePx) {
       const ex = offX + endU   * cos - (t + brick) * sin;
       const ey = offY + endU   * sin + (t + brick) * cos;
       if (lastX !== null) {
-        /* Within-row jumps to next segment of the SAME row are always trimmed:
-           they cross negative space (between fronds, around holes) and would
-           otherwise create long diagonal "escape" lines outside the shape.
-           Row-to-row transitions are small (rowSpacing) and stay as stitches. */
         const isSameRow = (i > 0);
         const travel = Math.hypot(sx - lastX, sy - lastY);
         if (isSameRow || travel > maxBridgePx) {
           stitches.push({ x: lastX, y: lastY, color, type: "trim" });
         }
       }
+      /* Emit start point, then subdivide along the row if longer than maxStitchLen.
+         Industry standard: 4-5mm per stitch maximum. A long row segment becomes
+         multiple consecutive stitches along the same line. */
       stitches.push({ x: sx, y: sy, color, type: "fill" });
+      const dx = ex - sx, dy = ey - sy;
+      const len = Math.hypot(dx, dy);
+      if (maxStitchLen > 0 && len > maxStitchLen) {
+        const n = Math.ceil(len / maxStitchLen);
+        for (let k = 1; k < n; k++) {
+          stitches.push({
+            x: sx + dx * k / n,
+            y: sy + dy * k / n,
+            color, type: "fill"
+          });
+        }
+      }
       stitches.push({ x: ex, y: ey, color, type: "fill" });
       lastX = ex; lastY = ey;
     }
@@ -1100,10 +1116,10 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
   const colorCounts = colors.map(() => ({fill:0, satin:0, running:0, underlay:0}));
   const pxScale  = canvasSize / 800;
   const P = params || {};
-  const pRow      = Math.max(3, Math.round((P.tatamiRow || 4) * pxScale));
-  const pLen      = Math.max(15, Math.round((P.tatamiLen || 30) * pxScale));
+  const pRow      = Math.max(20, Math.round((P.tatamiRow || 40) * pxScale));  /* 4mm default */
+  const pLen      = Math.max(20, Math.round((P.tatamiLen || 47) * pxScale));  /* 4.7mm default */
   const pPullComp = Math.round((P.pullComp || 2) * pxScale);
-  const pOutline  = Math.round(15 * pxScale);
+  const pOutline  = Math.round((P.tatamiLen || 47) * pxScale);  /* outline step = stitch length */
   /* Brick offset: stagger alternate rows by a fraction of ROW pitch (not stitch length).
      Setting this >= rowSpacing causes rows to overlap going backwards — the
      chaos pattern in v70.0. Half a row pitch is the maximum safe value. */
@@ -1162,7 +1178,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
       if (sh.type === "fill" || (sh.type === "satin" && sh.widthMm > 3.5)) {
         const scan = v70_scanRuns(sh.mask, sh.w, sh.h, sh.offX, sh.offY,
                                   stitchAngle, pRow);
-        const fs = v70_runsToStitches(scan, color, pBrick, pPullComp, pMaxBridge);
+        const fs = v70_runsToStitches(scan, color, pBrick, pPullComp, pMaxBridge, pLen);
         /* Trim between outline-end and fill-start if they're far apart */
         if (fs.length > 0 && lastX !== null) {
           const dx = fs[0].x - lastX, dy = fs[0].y - lastY;
@@ -1179,7 +1195,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
         /* For genuine satin (thin), use a denser scan at smaller row pitch */
         const scan = v70_scanRuns(sh.mask, sh.w, sh.h, sh.offX, sh.offY,
                                   stitchAngle, Math.max(2, Math.round(2.5 * pxScale)));
-        const fs = v70_runsToStitches(scan, color, 0, pPullComp, pMaxBridge);
+        const fs = v70_runsToStitches(scan, color, 0, pPullComp, pMaxBridge, pLen);
         for (const s of fs) {
           out.push(s);
           colorCounts[ci].satin++;
