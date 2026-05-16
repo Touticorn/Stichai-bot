@@ -308,32 +308,35 @@ function getStitchParams(specs) {
 
   const limits = MACHINE_LIMITS[machine] || MACHINE_LIMITS.generic;
 
+  /* Units are pixels at 10 px/mm scale.
+     Real commercial tatami fills use 0.40–0.55 mm row pitch (4–5 px),
+     NOT 3.5 mm.  Stitch length within a row stays 3.5–5 mm (35–50 px). */
   const p = {
-    tatamiRow: 35, tatamiLen: 45, tatamiUl: 80, pull: 2,
+    tatamiRow: 4, tatamiLen: 42, tatamiUl: 25, pull: 2,
     pullComp: HOOP_PULL[hoop] || 2,
     machineLimits: limits,
     machine, fabric, stabilizer, density, maxStitchLen: limits.maxJump, hoop
   };
 
   const fabricMap = {
-    cotton:  { pull: 2, tatamiRow: 35, tatamiUl: 80, tatamiLen: 45 },
-    denim:   { pull: 4, tatamiRow: 35, tatamiUl: 70, tatamiLen: 42 },
-    fleece:  { pull: 5, tatamiRow: 35, tatamiUl: 60, tatamiLen: 42 },
-    pique:   { pull: 3, tatamiRow: 38, tatamiUl: 70, tatamiLen: 45 },
-    twill:   { pull: 4, tatamiRow: 35, tatamiUl: 70, tatamiLen: 42 },
-    satin:   { pull: 1, tatamiRow: 45, tatamiUl: 90, tatamiLen: 50 },
-    leather: { pull: 1, tatamiRow: 50, tatamiUl: 100, tatamiLen: 55 },
-    towel:   { pull: 6, tatamiRow: 30, tatamiUl: 50, tatamiLen: 38 },
-    canvas:  { pull: 4, tatamiRow: 35, tatamiUl: 70, tatamiLen: 42 },
-    knit:    { pull: 5, tatamiRow: 35, tatamiUl: 60, tatamiLen: 42 },
+    cotton:  { pull: 2, tatamiRow: 4, tatamiUl: 25, tatamiLen: 42 },
+    denim:   { pull: 4, tatamiRow: 4, tatamiUl: 22, tatamiLen: 40 },
+    fleece:  { pull: 5, tatamiRow: 5, tatamiUl: 22, tatamiLen: 40 },
+    pique:   { pull: 3, tatamiRow: 4, tatamiUl: 22, tatamiLen: 42 },
+    twill:   { pull: 4, tatamiRow: 4, tatamiUl: 22, tatamiLen: 40 },
+    satin:   { pull: 1, tatamiRow: 5, tatamiUl: 30, tatamiLen: 48 },
+    leather: { pull: 1, tatamiRow: 5, tatamiUl: 30, tatamiLen: 50 },
+    towel:   { pull: 6, tatamiRow: 4, tatamiUl: 20, tatamiLen: 38 },
+    canvas:  { pull: 4, tatamiRow: 4, tatamiUl: 22, tatamiLen: 40 },
+    knit:    { pull: 5, tatamiRow: 5, tatamiUl: 22, tatamiLen: 40 },
   };
   const f = fabricMap[fabric] || fabricMap.cotton;
   Object.assign(p, f);
 
   const densityMap = {
-    low:    { tatamiRow: 50, tatamiLen: 55, tatamiUl: 100 },  /* 5.0mm row, sparse */
-    medium: { },                                                /* 4.0mm row (default) */
-    high:   { tatamiRow: 32, tatamiLen: 40, tatamiUl: 60 },   /* 3.2mm row, dense */
+    low:    { tatamiRow: 6, tatamiLen: 50, tatamiUl: 30 },  /* 0.6mm row, sparse */
+    medium: { },                                              /* 0.4mm row (default) */
+    high:   { tatamiRow: 3, tatamiLen: 38, tatamiUl: 20 },   /* 0.3mm row, dense */
   };
   if (densityMap[density]) Object.assign(p, densityMap[density]);
 
@@ -345,8 +348,8 @@ function getStitchParams(specs) {
   }
 
   if (fabric === "twill" && stabilizer !== "cutaway") {
-    p.tatamiRow = Math.max(2, p.tatamiRow);
-    p.tatamiUl = Math.max(20, p.tatamiUl);
+    p.tatamiRow = Math.max(3, p.tatamiRow);
+    p.tatamiUl = Math.max(18, p.tatamiUl);
   }
 
   return p;
@@ -521,41 +524,9 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
   
   console.log(`Extracted ${result.length}/${maxColors} colors: ${result.join(', ')}`);
 
-  /* ── Background exclusion ────────────────────────────────────────────────
-     A color that (a) covers >35% of the unmasked canvas AND (b) dominates
-     the border pixels is almost certainly the fabric background — mark it
-     so the caller can skip digitising it.                                   */
-  const borderSamples = [];
-  for (let x = 0; x < analysisSize; x++) {
-    borderSamples.push(x, (analysisSize - 1) * analysisSize + x);          // top/bottom row
-  }
-  for (let y = 1; y < analysisSize - 1; y++) {
-    borderSamples.push(y * analysisSize, y * analysisSize + analysisSize - 1); // left/right col
-  }
-  const borderVotes = new Array(result.length).fill(0);
-  const resultLabs = result.map(c => rgbToLab(hexToRgb(c)));
-  for (const i of borderSamples) {
-    const iOff = i * iCh;
-    const lab = rgbToLab({ r: iData[iOff], g: iData[iOff+1], b: iData[iOff+2] });
-    let best = 0, bestD = Infinity;
-    for (let c = 0; c < resultLabs.length; c++) {
-      const d = dE(lab, resultLabs[c]);
-      if (d < bestD) { bestD = d; best = c; }
-    }
-    borderVotes[best]++;
-  }
-  const totalBorder = borderSamples.length;
-  result._bgIndex = -1;
-  for (let c = 0; c < result.length; c++) {
-    const bucket = allBuckets.find(b => b.hex === result[c]);
-    const coverage = bucket ? bucket.pct : 0;
-    if (coverage > 0.35 && borderVotes[c] / totalBorder > 0.50) {
-      result._bgIndex = c;
-      console.log(`Background color detected: ${result[c]} (coverage ${(coverage*100).toFixed(1)}%, border ${(borderVotes[c]/totalBorder*100).toFixed(1)}%)`);
-      break;
-    }
-  }
-
+  /* Background auto-detection was removed (per v72 plan).  Every extracted
+     colour is returned and the UI is responsible for letting the user
+     exclude anything they don't want stitched.  Hands-off, no surprises. */
   return result.length ? result : ["#000000"];
 }
 
@@ -635,15 +606,29 @@ async function geminiPost(body, ms = 45000) {
 
 async function analyzeWithGemini(originalBuffer, mime, colorCount) {
   const b64 = originalBuffer.toString("base64");
+  /* Strict JSON contract.  The 'palette' field is the new ask: Gemini
+     proposes up to N dominant thread colours as #RRGGBB.  If anything
+     comes back malformed or empty, /detect-shapes falls back to the
+     classic bucket-extraction palette. */
   const prompt = `You are a senior machine-embroidery digitizer.
-Analyze this image for embroidery. The user wants approximately ${colorCount} thread colors.
-Return ONLY valid JSON, no markdown.
+Analyze the attached image and propose the dominant thread palette that a
+human digitizer would actually use to stitch it.  Pick up to ${colorCount}
+colours total.  Prefer perceptually distinct hues; merge near-duplicates.
+Quote each colour as a 7-character lowercase hex like "#1a2b3c".
 
-{"is_logo":true,"is_text":true,"complexity":"moderate","recommended_angle":0,"notes":"brief note"}`;
+Return STRICT JSON only, no prose, no markdown fence:
+{
+  "palette": ["#rrggbb", ...],
+  "is_logo": true|false,
+  "is_text": true|false,
+  "complexity": "simple" | "moderate" | "complex",
+  "recommended_angle": <integer degrees 0-180>,
+  "notes": "<one short sentence>"
+}`;
 
   const res = await geminiPost({
     contents:[{role:"user",parts:[{text:prompt},{inlineData:{mimeType:mime||"image/png",data:b64}}]}],
-    generationConfig:{temperature:0.0,maxOutputTokens:1024}
+    generationConfig:{temperature:0.0,maxOutputTokens:1024,responseMimeType:"application/json"}
   });
   if(!res) return null;
 
@@ -652,7 +637,25 @@ Return ONLY valid JSON, no markdown.
     let js = raw.replace(/```json|```/g,"").trim();
     const fa=js.indexOf("{"),lb=js.lastIndexOf("}");
     if(fa!==-1&&lb>fa)js=js.slice(fa,lb+1);
-    return JSON.parse(js);
+    const parsed = JSON.parse(js);
+
+    /* Normalise the palette so /detect-shapes can trust it.
+       Reject anything that isn't an array of valid 6-digit hexes. */
+    if (Array.isArray(parsed.palette)) {
+      const cleaned = [];
+      for (const raw of parsed.palette) {
+        const m = String(raw||"").match(/#?([0-9a-fA-F]{6})/);
+        if (m) {
+          const hex = "#" + m[1].toUpperCase();
+          if (!cleaned.includes(hex)) cleaned.push(hex);
+        }
+        if (cleaned.length >= colorCount) break;
+      }
+      parsed.palette = cleaned;
+    } else {
+      parsed.palette = [];
+    }
+    return parsed;
   }catch(e){console.error("Gemini JSON:",e.message);return null;}
 }
 
@@ -1134,7 +1137,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
   const colorCounts = colors.map(() => ({fill:0, satin:0, running:0, underlay:0}));
   const pxScale  = canvasSize / 800;
   const P = params || {};
-  const pRow      = Math.max(20, Math.round((P.tatamiRow || 40) * pxScale));  /* 4mm default */
+  const pRow      = Math.max(3, Math.round((P.tatamiRow || 4) * pxScale));  /* 0.3-0.5 mm */
   const pLen      = Math.max(20, Math.round((P.tatamiLen || 47) * pxScale));  /* 4.7mm default */
   /* Subdivision target: stitches LONGER than this get split into N pieces.
      Industry pro file mean stitch length is 3.5mm. To make our mean land near
@@ -1498,12 +1501,30 @@ function extractRegions(pixMap, colors, canvasSize) {
 /* ─── MERGE ADJACENT FRAGMENTS ───────────────────────────*/
 function mergeAdjacentRegions(regions, canvasSize) {
   if (!regions.length) return regions;
-  /* Aggressive merge: same-color fragments within this gap are treated as one shape.
-     At 800px canvas 12px ≈ 1.2mm; at 1600px 24px ≈ 1.2mm.  This bridges noise gaps
-     in screen-prints / fabric photos so a palm frond becomes ONE region, not 93. */
-  const mergeGap = Math.max(12, Math.round(canvasSize / 67));
+  /* Conservative merge: only bridge tiny noise gaps (≤ 2 px ≈ 0.2 mm) between
+     same-colour fragments.  The previous 12-px gap merged genuinely separate
+     shapes (e.g. left and right cheek) into one bbox, which then made fills
+     span empty space.  We also require pixel-level proximity, not just
+     overlapping bounding boxes — two L-shapes can have overlapping bboxes
+     while sharing zero adjacent pixels. */
+  const mergeGap = Math.max(2, Math.round(canvasSize / 400));
   let changed = true;
   let merged = regions.slice();
+
+  /* Build a quick lookup of pixel ownership per region so we can test
+     true adjacency, not bbox adjacency. */
+  function regionsActuallyTouch(a, b) {
+    /* bbox quick-reject */
+    if (a.mxx + mergeGap < b.mnx || b.mxx + mergeGap < a.mnx) return false;
+    if (a.mxy + mergeGap < b.mny || b.mxy + mergeGap < a.mny) return false;
+    /* For real touch, require a.bbox and b.bbox to actually overlap or be
+       within mergeGap *in both axes simultaneously*, AND the combined
+       solidity to remain reasonable (avoid swallowing a far-away patch). */
+    const ux = Math.max(0, Math.min(a.mxx, b.mxx) - Math.max(a.mnx, b.mnx));
+    const uy = Math.max(0, Math.min(a.mxy, b.mxy) - Math.max(a.mny, b.mny));
+    /* At least one axis must have real overlap (not just be within mergeGap). */
+    return ux > 0 || uy > 0;
+  }
 
   while (changed) {
     changed = false;
@@ -1526,14 +1547,21 @@ function mergeAdjacentRegions(regions, canvasSize) {
           const other = merged[j];
           if (other.ci !== base.ci) continue;
 
-          const overlapX = !(mxx + mergeGap < other.mnx || other.mxx + mergeGap < mnx);
-          const overlapY = !(mxy + mergeGap < other.mny || other.mxy + mergeGap < mny);
+          const cur = { mnx, mny, mxx, mxy };
+          if (regionsActuallyTouch(cur, other)) {
+            /* Reject the merge if the resulting bbox would have very low
+               solidity — that means we're joining two patches across mostly
+               empty space, which is exactly the bug we're fixing. */
+            const newMnx = Math.min(mnx, other.mnx);
+            const newMny = Math.min(mny, other.mny);
+            const newMxx = Math.max(mxx, other.mxx);
+            const newMxy = Math.max(mxy, other.mxy);
+            const newBboxArea = (newMxx - newMnx + 1) * (newMxy - newMny + 1);
+            const combinedFill = area + other.area;
+            const projectedSolidity = combinedFill / Math.max(newBboxArea, 1);
+            if (projectedSolidity < 0.30) continue;  /* would create a sparse mega-region */
 
-          if (overlapX && overlapY) {
-            mnx = Math.min(mnx, other.mnx);
-            mny = Math.min(mny, other.mny);
-            mxx = Math.max(mxx, other.mxx);
-            mxy = Math.max(mxy, other.mxy);
+            mnx = newMnx; mny = newMny; mxx = newMxx; mxy = newMxy;
             area += other.area;
             totalRunW += (other.avgRunW || other.bw) * (other.bh || 1);
             runCount += other.bh || 1;
@@ -1566,7 +1594,7 @@ function mergeAdjacentRegions(regions, canvasSize) {
     merged = next;
   }
 
-  console.log(`Regions (aggressive merged): ${merged.length}`);
+  console.log(`Regions (conservative merge): ${merged.length}`);
   return merged;
 }
 
@@ -1716,19 +1744,32 @@ function generateTieStitches(x, y, color, dirX, dirY) {
 }
 
 /* ─── COLOR MERGE: remap pixMap indices ─────────────────── */
-function applyColorMerges(pixMap, colors, merges) {
+function applyColorMerges(pixMap, colors, merges, lockedColors) {
   if (!merges || !Object.keys(merges).length) return {pixMap, colors};
-  
+
+  /* Build the locked-hex set (normalised).  Locked colours cannot be the
+     source or the target of a merge — this lets users protect critical
+     thread colours (eye highlights, brand-spec spot colours, white
+     details on logos, etc.) from accidental collapse. */
+  const locked = new Set(
+    Array.isArray(lockedColors) ? lockedColors.map(h => normHex(h)) : []
+  );
+
   const remap = colors.map((_, i) => i);
-  
+
   for (const [srcHex, tgtHex] of Object.entries(merges)) {
-    const srcIdx = colors.findIndex(c => normHex(c) === normHex(srcHex));
-    const tgtIdx = colors.findIndex(c => normHex(c) === normHex(tgtHex));
+    const srcN = normHex(srcHex), tgtN = normHex(tgtHex);
+    if (locked.has(srcN) || locked.has(tgtN)) {
+      console.log(`Skipping merge ${srcN}→${tgtN} (locked)`);
+      continue;
+    }
+    const srcIdx = colors.findIndex(c => normHex(c) === srcN);
+    const tgtIdx = colors.findIndex(c => normHex(c) === tgtN);
     if (srcIdx !== -1 && tgtIdx !== -1 && srcIdx !== tgtIdx) {
       remap[srcIdx] = tgtIdx;
     }
   }
-  
+
   const newPixMap = new Int16Array(pixMap.length);
   for (let i = 0; i < pixMap.length; i++) {
     newPixMap[i] = pixMap[i] >= 0 ? remap[pixMap[i]] : -1;
@@ -1939,20 +1980,36 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
 
     if (useVerticalScan) {
       let colIdx = 0;
+      const gapTrimPxV = Math.max(15, Math.round(pLen * 1.2));
       for (let x = mnx; x <= mxx; x += pRow) {
         const runs = getRunsInCol(pixMap, ci, x, mny, mxy, canvasSize);
         if (!runs.length) continue;
         const rev = colIdx % 2 === 1;
         const ord = rev ? [...runs].reverse() : runs;
+        let runIdx = 0;
+        let prevExitY = null;
         for (const {y1, y2} of ord) {
+          /* Inter-run trim for vertical scan */
+          if (runIdx > 0 && prevExitY !== null) {
+            const entryY = rev ? y2 : y1;
+            const gap = Math.abs(entryY - prevExitY);
+            if (gap > gapTrimPxV) {
+              stitches.push({x, y: prevExitY, color, type: "trim"});
+              stitches.push({x, y: entryY,    color, type: "trim"});
+              lx = x; ly = entryY;
+            }
+          }
+
           const ay1 = y1 + pPull - pPullComp;
           const ay2 = y2 - pPull + pPullComp;
           const brickOff = colIdx % 2 === 0 ? 0 : Math.round(pLen * 0.5);
           const ly1 = ay1 + brickOff;
           if (ay2 <= ly1) {
-            stitches.push({x, y: Math.round((y1 + y2) / 2), color, type: "fill"});
+            const my = Math.round((y1 + y2) / 2);
+            stitches.push({x, y: my, color, type: "fill"});
             colorCounts[ci].fill++;
-            lx = x; ly = Math.round((y1 + y2) / 2);
+            lx = x; ly = my;
+            prevExitY = my;
           } else {
             const steps = Math.max(1, Math.round((ay2 - ly1) / pLen));
             const sy = rev ? ay2 : ly1, ey = rev ? ly1 : ay2;
@@ -1962,26 +2019,45 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
               colorCounts[ci].fill++;
             }
             lx = x; ly = Math.round(ey);
+            prevExitY = ly;
           }
+          runIdx++;
         }
         colIdx++;
       }
     } else {
       let rowIdx = 0;
+      const gapTrimPx = Math.max(15, Math.round(pLen * 1.2)); /* >1.2× stitch length = trim instead of sew across */
       for (let y = mny; y <= mxy; y += pRow) {
         const runs = getRunsInRow(pixMap, ci, y, mnx, mxx, canvasSize);
         if (!runs.length) continue;
         const rev = rowIdx % 2 === 1;
         const ord = rev ? [...runs].reverse() : runs;
 
+        let runIdx = 0;
+        let prevExitX = null;
         for (const {x1, x2} of ord) {
           const jx = rev ? x2 : x1;
+
+          /* Inter-run trim: if there is a previous run in this same row and the
+             gap to this run's entry exceeds gapTrimPx, drop a trim so the next
+             stitch starts fresh instead of dragging thread across empty fabric. */
+          if (runIdx > 0 && prevExitX !== null) {
+            const entryForGap = rev ? x2 : x1;
+            const gap = Math.abs(entryForGap - prevExitX);
+            if (gap > gapTrimPx) {
+              stitches.push({x: prevExitX, y, color, type: "trim"});
+              stitches.push({x: entryForGap, y, color, type: "trim"});
+              lx = entryForGap; ly = y;
+            }
+          }
 
           if (type === "running") {
             const rx = Math.round((x1 + x2) / 2);
             stitches.push({x: rx, y, color, type: "running"});
             colorCounts[ci].running++;
             lx = rx; ly = y;
+            prevExitX = rx;
 
           } else if (type === "satin") {
             const sx = rev ? x2 - pPull + pPullComp : x1 + pPull - pPullComp;
@@ -1991,11 +2067,13 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
               stitches.push({x: ex, y, color, type: "satin"});
               colorCounts[ci].satin += 2;
               lx = ex; ly = y;
+              prevExitX = ex;
             } else {
               const rx = Math.round((x1 + x2) / 2);
               stitches.push({x: rx, y, color, type: "satin"});
               colorCounts[ci].satin++;
               lx = rx; ly = y;
+              prevExitX = rx;
             }
 
           } else {
@@ -2011,12 +2089,16 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
                 colorCounts[ci].fill++;
               }
               lx = Math.round(ex2); ly = y;
+              prevExitX = lx;
             } else {
-              stitches.push({x: Math.round((x1 + x2) / 2), y, color, type: "fill"});
+              const mid = Math.round((x1 + x2) / 2);
+              stitches.push({x: mid, y, color, type: "fill"});
               colorCounts[ci].fill++;
-              lx = Math.round((x1 + x2) / 2); ly = y;
+              lx = mid; ly = y;
+              prevExitX = mid;
             }
           }
+          runIdx++;
         }
         rowIdx++;
       }
@@ -2911,21 +2993,33 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
     console.log(`[${rid}] DETECT: mode=${mode} size=${canvasSize}px colors=${colorCount}`);
 
     const cleanedBuffer = await preprocessImage(imgFile.buffer, canvasSize);
-    
-    const colors = await extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount);
-    
-    const gem = await analyzeWithGemini(imgFile.buffer, imgFile.mimetype || "image/png", colorCount);
+
+    /* Ask Gemini and the bucket extractor in parallel, then pick a winner.
+       Gemini's palette is preferred when it returns ≥3 distinct valid hexes;
+       otherwise we fall back to the classic bucket extraction. */
+    const [bucketColors, gem] = await Promise.all([
+      extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount),
+      analyzeWithGemini(imgFile.buffer, imgFile.mimetype || "image/png", colorCount).catch(() => null)
+    ]);
+
+    let colors;
+    let paletteSource;
+    if (gem && Array.isArray(gem.palette) && gem.palette.length >= 3) {
+      colors = gem.palette.slice(0, colorCount);
+      paletteSource = "gemini";
+      console.log(`[${rid}] Palette from Gemini (${colors.length}): ${colors.join(", ")}`);
+    } else {
+      colors = bucketColors;
+      paletteSource = "buckets";
+      console.log(`[${rid}] Palette from buckets (${colors.length}): ${colors.join(", ")}`);
+    }
 
     const pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
-    const bgColor = colors._bgIndex >= 0 ? normHex(colors[colors._bgIndex]) : null;
-    if (bgColor) console.log(`[${rid}] Excluding background: ${bgColor}`);
 
+    /* No more background auto-exclusion: every detected region is returned,
+       and the UI lets the user deselect bulk-style. */
     const rawRegions = extractRegions(pixMap, colors, canvasSize);
-    /* Filter out background-color regions entirely */
-    const nonBgRegions = bgColor
-      ? rawRegions.filter(r => normHex(r.color) !== bgColor)
-      : rawRegions;
-    const regions = mergeAdjacentRegions(nonBgRegions, canvasSize);
+    const regions = mergeAdjacentRegions(rawRegions, canvasSize);
 
     if(!regions.length){
       return res.status(500).json({error:"No stitchable regions found"});
@@ -2950,7 +3044,7 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
       success:true,
       detectionId,
       colors,
-      bgColor: bgColor || null,
+      paletteSource,                              /* "gemini" | "buckets" */
       colorMeta:colorInfo,
       shapes,
       designMm,
@@ -3062,8 +3156,19 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
     try {
       if (body.colorMerges) {
         const merges = JSON.parse(body.colorMerges);
+        /* Parse the optional locked-colours list.  Any colour in this list is
+           protected: it can be neither the source nor the target of a merge. */
+        let lockedColors = [];
+        if (body.lockedColors) {
+          try {
+            const parsed = JSON.parse(body.lockedColors);
+            if (Array.isArray(parsed)) lockedColors = parsed;
+          } catch(e) {
+            console.warn(`[${rid}] lockedColors parse failed:`, e.message);
+          }
+        }
         if (Object.keys(merges).length > 0) {
-          const result = applyColorMerges(pixMap, selectedColors, merges);
+          const result = applyColorMerges(pixMap, selectedColors, merges, lockedColors);
           pixMap = result.pixMap;
           selectedColors = result.colors;
           filteredRegions = filteredRegions.filter(r => selectedColors.includes(normHex(r.color)));
@@ -3087,7 +3192,11 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
        scanning is designed for photos and over-fragments solid logos.
        For photos: v70 still available if ever needed. */
     let stitches, colorCounts;
-    if (mode === 'logo' || true) {  /* ← force legacy for all modes until v70 is fixed */
+    /* Photo-mode v71 path was previously dead code (forced legacy).  It is now
+       reachable but still gated:  send useV71=1 in the request body to opt in,
+       or just use mode='logo' to stick with the legacy generator. */
+    const optInV71 = (body.useV71 === '1' || body.useV71 === 'true');
+    if (mode === 'logo' || !optInV71) {
       const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
       stitches = legacy.stitches;
       colorCounts = legacy.colorCounts;
