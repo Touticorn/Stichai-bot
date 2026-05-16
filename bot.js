@@ -970,10 +970,14 @@ function v70_runsToStitches(scan, color, brickAmt, pullComp, maxBridgePx) {
       const sy = offY + startU * sin + t * cos;
       const ex = offX + endU   * cos - (t + brick) * sin;
       const ey = offY + endU   * sin + (t + brick) * cos;
-      /* Insert trim if travelling across negative space to reach this segment */
       if (lastX !== null) {
+        /* Within-row jumps to next segment of the SAME row are always trimmed:
+           they cross negative space (between fronds, around holes) and would
+           otherwise create long diagonal "escape" lines outside the shape.
+           Row-to-row transitions are small (rowSpacing) and stay as stitches. */
+        const isSameRow = (i > 0);
         const travel = Math.hypot(sx - lastX, sy - lastY);
-        if (travel > maxBridgePx) {
+        if (isSameRow || travel > maxBridgePx) {
           stitches.push({ x: lastX, y: lastY, color, type: "trim" });
         }
       }
@@ -1040,9 +1044,12 @@ function v70_classify(pts, pca, pxPerMm) {
 
 /* ── Top-level: build all shapes from the pixMap ────────────────────────── */
 function v70_buildShapes(pixMap, colors, canvasSize, pxPerMm) {
-  const minAreaPx = Math.max(25, Math.round(0.25 * pxPerMm * pxPerMm));
+  /* 1mm² minimum — below this, detail is smaller than a typical stitch and
+     becomes noise speckles in the output. Real embroidery needles can't
+     resolve features under ~0.5mm anyway. */
+  const minAreaPx = Math.max(50, Math.round(1.0 * pxPerMm * pxPerMm));
   const rawRegions = v70_findRegions(pixMap, canvasSize, canvasSize, minAreaPx);
-  console.log(`[v70] Raw regions: ${rawRegions.length}`);
+  console.log(`[v70] Raw regions: ${rawRegions.length} (minArea=${minAreaPx}px)`);
 
   /* Splitting is disabled by default — distance-transform based splitting
      works well on compound shapes (2-3 distinct lobes) but fails on
@@ -1156,6 +1163,13 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
         const scan = v70_scanRuns(sh.mask, sh.w, sh.h, sh.offX, sh.offY,
                                   stitchAngle, pRow);
         const fs = v70_runsToStitches(scan, color, pBrick, pPullComp, pMaxBridge);
+        /* Trim between outline-end and fill-start if they're far apart */
+        if (fs.length > 0 && lastX !== null) {
+          const dx = fs[0].x - lastX, dy = fs[0].y - lastY;
+          if (Math.hypot(dx, dy) > 12 * pxScale) {
+            out.push({ x: lastX, y: lastY, color, type: "trim" });
+          }
+        }
         for (const s of fs) {
           out.push(s);
           colorCounts[ci].fill++;
