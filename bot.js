@@ -1093,7 +1093,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
   const colorCounts = colors.map(() => ({fill:0, satin:0, running:0, underlay:0}));
   const pxScale  = canvasSize / 800;
   const P = params || {};
-  const pRow      = Math.max(3, Math.round((P.tatamiRow || 5) * pxScale));
+  const pRow      = Math.max(3, Math.round((P.tatamiRow || 4) * pxScale));
   const pLen      = Math.max(15, Math.round((P.tatamiLen || 30) * pxScale));
   const pPullComp = Math.round((P.pullComp || 2) * pxScale);
   const pOutline  = Math.round(15 * pxScale);
@@ -1133,18 +1133,28 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
         out.push({ x: lastX, y: lastY, color, type: "trim" });
       }
 
-      /* OUTLINE pass — running stitches around the actual mask boundary */
-      const ol = v70_outlineStitches(path, sh.offX, sh.offY, color, pOutline);
-      for (const s of ol) {
-        out.push(s);
-        colorCounts[ci].running++;
-        lastX = s.x; lastY = s.y;
+      /* OUTLINE pass — running stitches around the boundary.
+         For FILLS the outline duplicates the natural edge, creating a "double
+         traced" look. Only emit outline for satin and running shapes, where
+         it crisps thin features that the fill alone wouldn't define. */
+      if (sh.type !== "fill") {
+        const ol = v70_outlineStitches(path, sh.offX, sh.offY, color, pOutline);
+        for (const s of ol) {
+          out.push(s);
+          colorCounts[ci].running++;
+          lastX = s.x; lastY = s.y;
+        }
       }
+
+      /* Stitch angle: if shape is near-round (low aspect), use a fixed vertical
+         angle (90°) instead of unreliable PCA. Vertical fills look natural and
+         the slight pull on horizontal threads helps the shape sit flat. */
+      const stitchAngle = (sh.pca.aspect < 1.3) ? Math.PI / 2 : sh.pca.angle;
 
       /* MAIN STITCHING */
       if (sh.type === "fill" || (sh.type === "satin" && sh.widthMm > 3.5)) {
         const scan = v70_scanRuns(sh.mask, sh.w, sh.h, sh.offX, sh.offY,
-                                  sh.pca.angle, pRow);
+                                  stitchAngle, pRow);
         const fs = v70_runsToStitches(scan, color, pBrick, pPullComp, pMaxBridge);
         for (const s of fs) {
           out.push(s);
@@ -1154,7 +1164,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
       } else if (sh.type === "satin") {
         /* For genuine satin (thin), use a denser scan at smaller row pitch */
         const scan = v70_scanRuns(sh.mask, sh.w, sh.h, sh.offX, sh.offY,
-                                  sh.pca.angle, Math.max(2, Math.round(2.5 * pxScale)));
+                                  stitchAngle, Math.max(2, Math.round(2.5 * pxScale)));
         const fs = v70_runsToStitches(scan, color, 0, pPullComp, pMaxBridge);
         for (const s of fs) {
           out.push(s);
