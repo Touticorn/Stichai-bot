@@ -309,14 +309,14 @@ function getStitchParams(specs) {
   const limits = MACHINE_LIMITS[machine] || MACHINE_LIMITS.generic;
 
   const p = {
-    tatamiRow: 40, tatamiLen: 47, tatamiUl: 80, pull: 2,
+    tatamiRow: 35, tatamiLen: 45, tatamiUl: 80, pull: 2,
     pullComp: HOOP_PULL[hoop] || 2,
     machineLimits: limits,
     machine, fabric, stabilizer, density, maxStitchLen: limits.maxJump, hoop
   };
 
   const fabricMap = {
-    cotton:  { pull: 2, tatamiRow: 40, tatamiUl: 80, tatamiLen: 47 },
+    cotton:  { pull: 2, tatamiRow: 35, tatamiUl: 80, tatamiLen: 45 },
     denim:   { pull: 4, tatamiRow: 35, tatamiUl: 70, tatamiLen: 42 },
     fleece:  { pull: 5, tatamiRow: 35, tatamiUl: 60, tatamiLen: 42 },
     pique:   { pull: 3, tatamiRow: 38, tatamiUl: 70, tatamiLen: 45 },
@@ -428,7 +428,7 @@ async function extractColorsFromUnmasked(imageBuffer, maskBuffer, canvasSize, ma
   
   allBuckets.sort((a, b) => b.freq - a.freq);
   
-  const MIN_DIST = 15;
+  const MIN_DIST = 22;
   const selected = [];
   
   for (const bucket of allBuckets) {
@@ -1273,60 +1273,77 @@ function extractRegions(pixMap, colors, canvasSize) {
 }
 
 /* ─── MERGE ADJACENT FRAGMENTS ───────────────────────────*/
-function mergeAdjacentRegions(regions) {
-  if(!regions.length) return regions;
-  const merged = [];
-  const used = new Set();
+function mergeAdjacentRegions(regions, canvasSize) {
+  if (!regions.length) return regions;
+  /* Aggressive merge: same-color fragments within this gap are treated as one shape.
+     At 800px canvas 12px ≈ 1.2mm; at 1600px 24px ≈ 1.2mm.  This bridges noise gaps
+     in screen-prints / fabric photos so a palm frond becomes ONE region, not 93. */
+  const mergeGap = Math.max(12, Math.round(canvasSize / 67));
+  let changed = true;
+  let merged = regions.slice();
 
-  for(let i=0;i<regions.length;i++){
-    if(used.has(i)) continue;
-    const base = regions[i];
-    let mnx=base.mnx, mny=base.mny, mxx=base.mxx, mxy=base.mxy, area=base.area;
-    let totalRunW = base.avgRunW * base.bh;
-    let runCount = base.bh;
-    used.add(i);
+  while (changed) {
+    changed = false;
+    const next = [];
+    const used = new Set();
 
-    for(let j=i+1;j<regions.length;j++){
-      if(used.has(j)) continue;
-      const other = regions[j];
-      if(other.color !== base.color) continue;
+    for (let i = 0; i < merged.length; i++) {
+      if (used.has(i)) continue;
+      const base = merged[i];
+      let mnx = base.mnx, mny = base.mny, mxx = base.mxx, mxy = base.mxy, area = base.area;
+      let totalRunW = (base.avgRunW || base.bw) * (base.bh || 1);
+      let runCount = base.bh || 1;
+      used.add(i);
 
-      const gap = 1;
-      const overlapX = !(mxx + gap < other.mnx || other.mxx + gap < mnx);
-      const overlapY = !(mxy + gap < other.mny || other.mxy + gap < mny);
+      let innerChanged = true;
+      while (innerChanged) {
+        innerChanged = false;
+        for (let j = 0; j < merged.length; j++) {
+          if (used.has(j) || i === j) continue;
+          const other = merged[j];
+          if (other.ci !== base.ci) continue;
 
-      if(overlapX && overlapY){
-        mnx = Math.min(mnx, other.mnx);
-        mny = Math.min(mny, other.mny);
-        mxx = Math.max(mxx, other.mxx);
-        mxy = Math.max(mxy, other.mxy);
-        area += other.area;
-        totalRunW += other.avgRunW * other.bh;
-        runCount += other.bh;
-        used.add(j);
+          const overlapX = !(mxx + mergeGap < other.mnx || other.mxx + mergeGap < mnx);
+          const overlapY = !(mxy + mergeGap < other.mny || other.mxy + mergeGap < mny);
+
+          if (overlapX && overlapY) {
+            mnx = Math.min(mnx, other.mnx);
+            mny = Math.min(mny, other.mny);
+            mxx = Math.max(mxx, other.mxx);
+            mxy = Math.max(mxy, other.mxy);
+            area += other.area;
+            totalRunW += (other.avgRunW || other.bw) * (other.bh || 1);
+            runCount += other.bh || 1;
+            used.add(j);
+            innerChanged = true;
+            changed = true;
+          }
+        }
       }
+
+      const newBw = mxx - mnx + 1, newBh = mxy - mny + 1;
+      const newAvgRunW = runCount > 0 ? totalRunW / runCount : newBw;
+      const newAspect = newBh / Math.max(newBw, 1);
+      const newSolidity = area / Math.max(newBw * newBh, 1);
+
+      let newType;
+      const scaledMin3 = MIN_AREA * 3 * Math.pow(canvasSize / 800, 2);
+      if (area < scaledMin3) newType = "running";
+      else if (newAspect > 2.5 && newAvgRunW <= Math.max(14, canvasSize / 57) && newSolidity > 0.35) newType = "satin";
+      else if (newAvgRunW > 3 && newAvgRunW <= Math.max(12, canvasSize / 67) && newSolidity > 0.45 && newAspect > 1.4) newType = "satin";
+      else newType = "fill";
+
+      next.push({
+        ci: base.ci, color: base.color, type: newType,
+        mnx, mny, mxx, mxy,
+        bw: newBw, bh: newBh, area,
+        aspectRatio: newAspect, solidity: newSolidity, avgRunW: newAvgRunW
+      });
     }
-
-    const newBw = mxx-mnx+1, newBh = mxy-mny+1;
-    const newAvgRunW = runCount > 0 ? totalRunW / runCount : newBw;
-    const newAspect = newBh / Math.max(newBw, 1);
-    const newSolidity = area / (newBw * newBh);
-
-    let newType;
-    if(area < MIN_AREA * 3) newType = "running";
-    else if(newAspect > 2.5 && newAvgRunW <= 18 && newSolidity > 0.4) newType = "satin";
-    else if(newAvgRunW > 3 && newAvgRunW <= 14 && newSolidity > 0.5 && newAspect > 1.5) newType = "satin";
-    else newType = "fill";
-
-    merged.push({
-      ci: base.ci, color: base.color, type: newType,
-      mnx, mny, mxx, mxy,
-      bw: newBw, bh: newBh, area,
-      aspectRatio: newAspect, solidity: newSolidity, avgRunW: newAvgRunW
-    });
+    merged = next;
   }
 
-  console.log(`Regions (merged): ${merged.length}`);
+  console.log(`Regions (aggressive merged): ${merged.length}`);
   return merged;
 }
 
@@ -1539,6 +1556,31 @@ function generateBastingBox(regions, colors, spacing = 20) {
 /* ═══════════════════════════════════════════════════════════════════
    PROFESSIONAL STITCH GENERATOR  (v68.2)
    ═══════════════════════════════════════════════════════════════════ */
+/* ─── OUTLINE RUNNING STITCH (crisp edges) ─────────────────────────────── */
+function generateOutline(pixMap, reg, ci, canvasSize, color, stepPx) {
+  const {mnx, mny, mxx, mxy} = reg;
+  const edge = [];
+  for (let y = mny; y <= mxy; y += 2) {
+    const runs = getRunsInRow(pixMap, ci, y, mnx, mxx, canvasSize);
+    if (runs.length) {
+      edge.push({x: runs[0].x1, y});
+      if (runs[runs.length - 1].x2 > runs[0].x1) edge.push({x: runs[runs.length - 1].x2, y});
+    }
+  }
+  if (edge.length < 3) return [];
+  const cx = (mnx + mxx) / 2, cy = (mny + mxy) / 2;
+  edge.sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
+  const out = [];
+  let prev = null;
+  for (const p of edge) {
+    if (!prev || Math.hypot(p.x - prev.x, p.y - prev.y) >= stepPx) {
+      out.push({x: p.x, y: p.y, color, type: "running"});
+      prev = p;
+    }
+  }
+  return out;
+}
+
 function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize) {
   const stitches = [];
   const colorCounts = colors.map(() => ({fill: 0, satin: 0, running: 0, underlay: 0}));
@@ -1627,6 +1669,20 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
         stitches.push({x: lastX, y: lastY, color, type: "trim"});
         stitches.push(...generateTieStitches(lastX, lastY, color, 1, 0));
       }
+    }
+
+    /* Outline pass for crisp edges */
+    const outlineStep = Math.max(6, Math.round(pLen * 0.5));
+    const outline = generateOutline(pixMap, reg, ci, canvasSize, color, outlineStep);
+    if (outline.length) {
+      const oStart = outline[0];
+      if (Math.hypot(oStart.x - lastX, oStart.y - lastY) > 30) {
+        stitches.push(...generateBridgeStitches(lastX, lastY, oStart.x, oStart.y, color));
+      }
+      stitches.push(...outline);
+      lastX = outline[outline.length - 1].x;
+      lastY = outline[outline.length - 1].y;
+      colorCounts[ci].running += outline.length;
     }
 
     /* Underlay */
@@ -2646,7 +2702,7 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
     const nonBgRegions = bgColor
       ? rawRegions.filter(r => normHex(r.color) !== bgColor)
       : rawRegions;
-    const regions = nonBgRegions; // v69 needs raw connected components, not merged bounds
+    const regions = mergeAdjacentRegions(nonBgRegions, canvasSize);
 
     if(!regions.length){
       return res.status(500).json({error:"No stitchable regions found"});
@@ -2726,7 +2782,7 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       
       pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
       const rawRegions = extractRegions(pixMap, colors, canvasSize);
-      regions = mergeAdjacentRegions(rawRegions);
+      regions = mergeAdjacentRegions(rawRegions, canvasSize);
     }
 
     if(!regions || !regions.length){
@@ -2802,35 +2858,42 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       return res.status(400).json({error:"No regions left after selection — select more colors/shapes"});
     }
 
-    /* ─── V70 MASK-BASED ORIENTED STITCH GENERATION ────────────────────
-       Build a filtered pixMap that contains ONLY the selected regions,
-       then let v70 do connected-component analysis + erosion-based blob
-       splitting + per-shape PCA + oriented mask scanning. */
-    const filteredPixMap = new Int16Array(canvasSize * canvasSize).fill(-1);
-    for (const reg of filteredRegions) {
-      const newCi = selectedColors.findIndex(c => normHex(c) === normHex(reg.color));
-      if (newCi < 0) continue;
-      for (let y = reg.mny; y <= reg.mxy; y++) {
-        for (let x = reg.mnx; x <= reg.mxx; x++) {
-          if (pixMap[y * canvasSize + x] === reg.ci) {
-            filteredPixMap[y * canvasSize + x] = newCi;
+    /* ─── STITCH GENERATION ────────────────────────────────────────────
+       For logos: use legacy generator (predictable horizontal fills,
+       proper underlay, crisp outlines). v70's per-shape PCA + oriented
+       scanning is designed for photos and over-fragments solid logos.
+       For photos: v70 still available if ever needed. */
+    let stitches, colorCounts;
+    if (mode === 'logo' || true) {  /* ← force legacy for all modes until v70 is fixed */
+      const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
+      stitches = legacy.stitches;
+      colorCounts = legacy.colorCounts;
+      console.log(`[${rid}] Legacy generator: ${stitches.length} raw stitches`);
+    } else {
+      const filteredPixMap = new Int16Array(canvasSize * canvasSize).fill(-1);
+      for (const reg of filteredRegions) {
+        const newCi = selectedColors.findIndex(c => normHex(c) === normHex(reg.color));
+        if (newCi < 0) continue;
+        for (let y = reg.mny; y <= reg.mxy; y++) {
+          for (let x = reg.mnx; x <= reg.mxx; x++) {
+            if (pixMap[y * canvasSize + x] === reg.ci) {
+              filteredPixMap[y * canvasSize + x] = newCi;
+            }
           }
         }
       }
-    }
-    const pxPerMm_gen = 10;  /* 800px canvas = 80mm → 10 px per mm */
-    const v70Shapes = v70_buildShapes(filteredPixMap, selectedColors, canvasSize, pxPerMm_gen);
-    console.log(`[${rid}] v70 produced ${v70Shapes.length} shapes`);
-
-    let stitches, colorCounts;
-    if (v70Shapes.length > 0) {
-      const result = v70_generateStitches(v70Shapes, selectedColors, params, canvasSize);
-      stitches = result.stitches;
-      colorCounts = result.colorCounts;
-    } else {
-      console.warn(`[${rid}] v70 produced no shapes; using legacy generator`);
-      const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
-      stitches = legacy.stitches; colorCounts = legacy.colorCounts;
+      const pxPerMm_gen = 10;
+      const v70Shapes = v70_buildShapes(filteredPixMap, selectedColors, canvasSize, pxPerMm_gen);
+      console.log(`[${rid}] v70 produced ${v70Shapes.length} shapes`);
+      if (v70Shapes.length > 0) {
+        const result = v70_generateStitches(v70Shapes, selectedColors, params, canvasSize);
+        stitches = result.stitches;
+        colorCounts = result.colorCounts;
+      } else {
+        console.warn(`[${rid}] v70 produced no shapes; falling back to legacy`);
+        const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
+        stitches = legacy.stitches; colorCounts = legacy.colorCounts;
+      }
     }
 
     /* ─── ADD BASTING BOX ──────────────────────────────── */
