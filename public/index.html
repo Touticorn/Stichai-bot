@@ -178,16 +178,23 @@ section{padding:88px clamp(20px,5vw,80px)}.sec{max-width:1200px;margin:0 auto}
 .c-item{padding:10px;background:var(--warm);border-radius:8px;border:2px solid transparent;cursor:pointer}
 .c-item.on{border-color:var(--red);background:rgba(233,69,96,.05)}
 .c-item.merged{border-color:#27ae60!important;background:#f0faf2!important;opacity:.7}
+.c-item.locked{border-color:#f39c12!important;background:#fff8e7!important}
+.c-item.locked.on{box-shadow:inset 0 0 0 1px #f39c12}
 .c-item-top{display:flex;align-items:center;gap:10px}
 .c-box{width:36px;height:36px;border-radius:6px;border:2px solid var(--brd);flex-shrink:0}
 .c-name{font-weight:700;font-size:14px}.c-hex{font-size:12px;color:var(--muted2)}
-.c-merge-dot{width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.25);flex-shrink:0;margin-left:auto;display:none}
+.c-merge-dot{width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.25);flex-shrink:0;display:none}
 .c-item.merged .c-merge-dot{display:block}
+.c-lock-btn{margin-left:auto;background:transparent;border:1.5px solid var(--brd);border-radius:6px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;line-height:1;padding:0;flex-shrink:0;color:#888;transition:all .15s}
+.c-lock-btn:hover{border-color:#f39c12;color:#f39c12}
+.c-lock-btn.on{background:#f39c12;border-color:#f39c12;color:#fff}
+body[dir=rtl] .c-lock-btn{margin-left:0;margin-right:auto}
 .c-actions{display:none;gap:6px;margin-top:8px}
 .c-item.pending .c-actions{display:flex}
 .c-act-btn{flex:1;padding:6px 8px;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s;font-family:var(--fb)}
 .c-act-remove{background:#fdecea;color:#c0392b}.c-act-remove:hover{background:#c0392b;color:#fff}
 .c-act-merge{background:#e8f5e9;color:#1a7a45}.c-act-merge:hover{background:#1a7a45;color:#fff}
+.c-act-merge:disabled,.c-act-remove:disabled{opacity:.45;cursor:not-allowed;background:#eee;color:#888}
 .shape-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin:10px 0;max-height:340px;overflow-y:auto}
 .s-item{display:flex;align-items:center;gap:8px;padding:8px;background:var(--warm);border-radius:8px;border:1px solid var(--brd)}
 .s-item.off{opacity:.4;background:#e8e5de}
@@ -196,7 +203,12 @@ section{padding:88px clamp(20px,5vw,80px)}.sec{max-width:1200px;margin:0 auto}
 .s-tag{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:800;text-transform:uppercase}
 .tag-f{background:#d4edda;color:#155724}.tag-s{background:#cce5ff;color:#004085}.tag-r{background:#fff3cd;color:#856404}
 .s-item input[type=checkbox]:disabled{opacity:.3;cursor:not-allowed}
-.btns{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap}
+.btns{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap;align-items:center}
+.bulk-count{font-size:12px;color:var(--muted);margin-left:auto;font-weight:600}
+body[dir=rtl] .bulk-count{margin-left:0;margin-right:auto}
+.palette-source{display:inline-block;font-size:10px;font-weight:800;padding:2px 8px;border-radius:4px;margin-left:6px;letter-spacing:.05em}
+.palette-source.gemini{background:#e8f4fd;color:#1565c0}
+.palette-source.buckets{background:#f3e8ff;color:#6a1b9a}
 select{padding:10px 12px;border-radius:6px;border:1.5px solid var(--brd);font-size:14px;background:#fff;width:100%;font-family:var(--fb)}
 .meta{font-size:13px;color:var(--muted);margin-top:8px}.sew-time{font-size:14px;color:var(--txt);margin-top:6px;font-weight:700}
 .error{color:#c0392b;background:#fdecea;padding:10px;border-radius:6px;margin-top:8px;font-size:13px}.ok{color:#27ae60;font-weight:600}
@@ -439,17 +451,22 @@ footer{background:var(--navy);padding:52px clamp(20px,5vw,80px) 36px}
       </div>
       <div class="card" id="sc" style="display:none">
         <div class="stage-label" data-t="step3">Step 3: Select colors &amp; shapes</div>
-        <p style="font-size:12px;color:var(--muted);margin:0 0 8px" data-t="selectHint">Tap a color to remove or merge it</p>
-        <strong style="font-size:13px" data-t="colorsLabel">Colors</strong>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 8px" data-t="selectHint">Tap a color to remove or merge it · tap the 🔒 to protect a colour from merging</p>
+        <strong style="font-size:13px"><span data-t="colorsLabel">Colors</span><span id="paletteSourceBadge"></span></strong>
         <div class="btns">
           <button class="btn btn-secondary btn-sm" onclick="allC(1)" data-t="all">All</button>
           <button class="btn btn-secondary btn-sm" onclick="allC(0)" data-t="none">None</button>
+          <button class="btn btn-secondary btn-sm" onclick="invC()" data-t="invert">Invert</button>
+          <span class="bulk-count" id="cCount"></span>
         </div>
         <div class="color-grid" id="cg"></div>
         <strong style="font-size:13px;display:block;margin-top:12px"><span data-t="shapesLabel">Shapes</span> (<span id="sn">0</span>)</strong>
         <div class="btns">
           <button class="btn btn-secondary btn-sm" onclick="allS(1)" data-t="all">All</button>
           <button class="btn btn-secondary btn-sm" onclick="allS(0)" data-t="none">None</button>
+          <button class="btn btn-secondary btn-sm" onclick="invS()" data-t="invert">Invert</button>
+          <button class="btn btn-secondary btn-sm" onclick="selectShapesForActiveColors()" data-t="matchColors">Match colors</button>
+          <span class="bulk-count" id="sCount"></span>
         </div>
         <div class="shape-grid" id="sg"></div>
         <div style="margin-top:12px;padding:12px;background:var(--warm);border-radius:8px">
@@ -574,8 +591,12 @@ var T = {
     sizeWarn:"\u26A0\uFE0F X-Large designs take 1\u20133 hours to sew.",
     step2:"Step 2: Remove areas (optional)", maskHint:"Paint RED over what you don't want stitched",
     toolRemove:"\uD83D\uDD8C\uFE0F Remove", toolUndo:"\u274C Undo", toolClear:"\uD83D\uDDD1\uFE0F Clear", analyze:"Analyze",
-    step3:"Step 3: Select colors & shapes", selectHint:"Tap a color to remove or merge it",
-    colorsLabel:"Colors", all:"All", none:"None", shapesLabel:"Shapes",
+    step3:"Step 3: Select colors & shapes", selectHint:"Tap a color to remove or merge it · tap 🔒 to protect a color from merging",
+    colorsLabel:"Colors", all:"All", none:"None", invert:"Invert", matchColors:"Match colors", shapesLabel:"Shapes",
+    colorCountLabel:"{on} active · {removed} removed · {merged} merged · {locked} locked",
+    shapeCountLabel:"{on}/{total} shapes selected",
+    lockTitle:"Protect this color from merging", unlockTitle:"Allow this color to merge",
+    paletteSrcGemini:"AI", paletteSrcBuckets:"BUCKETS",
     machineSpecs:"Machine Specs", fabCotton:"Cotton",
     denLow:"Low", denMedium:"Medium", denHigh:"High", generate:"Generate",
     bastingLabel:"\uD83E\uDDF7 Add basting box (hoop alignment guide)",
@@ -643,8 +664,12 @@ var T = {
     sizeWarn:"\u26A0\uFE0F Les tr\u00e8s grands designs prennent 1\u20133h \u00e0 broder.",
     step2:"\u00c9tape 2\u00a0: Supprimer des zones (facultatif)", maskHint:"Peignez en ROUGE ce que vous ne voulez pas broder",
     toolRemove:"\uD83D\uDD8C\uFE0F Supprimer", toolUndo:"\u274C Annuler", toolClear:"\uD83D\uDDD1\uFE0F Effacer", analyze:"Analyser",
-    step3:"\u00c9tape 3\u00a0: S\u00e9lectionner couleurs & formes", selectHint:"Touchez une couleur pour la supprimer ou fusionner",
-    colorsLabel:"Couleurs", all:"Tout", none:"Aucun", shapesLabel:"Formes",
+    step3:"\u00c9tape 3\u00a0: S\u00e9lectionner couleurs & formes", selectHint:"Touchez une couleur pour la supprimer ou fusionner · 🔒 pour la prot\u00e9ger",
+    colorsLabel:"Couleurs", all:"Tout", none:"Aucun", invert:"Inverser", matchColors:"Selon couleurs", shapesLabel:"Formes",
+    colorCountLabel:"{on} actives · {removed} supprim\u00e9es · {merged} fusionn\u00e9es · {locked} verrouill\u00e9es",
+    shapeCountLabel:"{on}/{total} formes s\u00e9lectionn\u00e9es",
+    lockTitle:"Prot\u00e9ger cette couleur de la fusion", unlockTitle:"Autoriser la fusion de cette couleur",
+    paletteSrcGemini:"IA", paletteSrcBuckets:"AUTO",
     machineSpecs:"Sp\u00e9cifications machine", fabCotton:"Coton",
     denLow:"Faible", denMedium:"Moyen", denHigh:"\u00c9lev\u00e9", generate:"G\u00e9n\u00e9rer",
     bastingLabel:"\uD83E\uDDF7 Ajouter un cadre de b\u00e2ti",
@@ -716,8 +741,12 @@ var T = {
     maskHint:"\u0627\u0631\u0633\u0645 \u0628\u0627\u0644\u0623\u062d\u0645\u0631 \u0641\u0648\u0642 \u0645\u0627 \u0644\u0627 \u062a\u0631\u064a\u062f \u062a\u0637\u0631\u064a\u0632\u0647",
     toolRemove:"\uD83D\uDD8C\uFE0F \u0625\u0632\u0627\u0644\u0629", toolUndo:"\u274C \u062a\u0631\u0627\u062c\u0639", toolClear:"\uD83D\uDDD1\uFE0F \u0645\u0633\u062d", analyze:"\u062a\u062d\u0644\u064a\u0644",
     step3:"\u0627\u0644\u062e\u0637\u0648\u0629 \u0663: \u0627\u062e\u062a\u064a\u0627\u0631 \u0627\u0644\u0623\u0644\u0648\u0627\u0646 \u0648\u0627\u0644\u0623\u0634\u0643\u0627\u0644",
-    selectHint:"\u0627\u0636\u063a\u0637 \u0639\u0644\u0649 \u0644\u0648\u0646 \u0644\u062d\u0630\u0641\u0647 \u0623\u0648 \u062f\u0645\u062c\u0647",
-    colorsLabel:"\u0627\u0644\u0623\u0644\u0648\u0627\u0646", all:"\u0627\u0644\u0643\u0644", none:"\u0644\u0627 \u0634\u064a\u0621",
+    selectHint:"\u0627\u0636\u063a\u0637 \u0639\u0644\u0649 \u0644\u0648\u0646 \u0644\u062d\u0630\u0641\u0647 \u0623\u0648 \u062f\u0645\u062c\u0647 \u00b7 \ud83d\udd12 \u0644\u0644\u062d\u0645\u0627\u064a\u0629",
+    colorsLabel:"\u0627\u0644\u0623\u0644\u0648\u0627\u0646", all:"\u0627\u0644\u0643\u0644", none:"\u0644\u0627 \u0634\u064a\u0621", invert:"\u0639\u0643\u0633", matchColors:"\u062d\u0633\u0628 \u0627\u0644\u0623\u0644\u0648\u0627\u0646",
+    colorCountLabel:"\u0646\u0634\u0637 {on} \u00b7 \u0645\u062d\u0630\u0648\u0641 {removed} \u00b7 \u0645\u062f\u0645\u062c {merged} \u00b7 \u0645\u0642\u0641\u0644 {locked}",
+    shapeCountLabel:"{on}/{total} \u0623\u0634\u0643\u0627\u0644 \u0645\u062d\u062f\u062f\u0629",
+    lockTitle:"\u062d\u0645\u0627\u064a\u0629 \u0647\u0630\u0627 \u0627\u0644\u0644\u0648\u0646 \u0645\u0646 \u0627\u0644\u062f\u0645\u062c", unlockTitle:"\u0627\u0644\u0633\u0645\u0627\u062d \u0628\u062f\u0645\u062c \u0647\u0630\u0627 \u0627\u0644\u0644\u0648\u0646",
+    paletteSrcGemini:"\u0630\u0643\u0627\u0621", paletteSrcBuckets:"\u062a\u0644\u0642\u0627\u0626\u064a",
     shapesLabel:"\u0627\u0644\u0623\u0634\u0643\u0627\u0644", machineSpecs:"\u0645\u0648\u0627\u0635\u0641\u0627\u062a \u0627\u0644\u0645\u0627\u0643\u064a\u0646\u0629",
     fabCotton:"\u0642\u0637\u0646", denLow:"\u0645\u0646\u062e\u0641\u0636", denMedium:"\u0645\u062a\u0648\u0633\u0637", denHigh:"\u0639\u0627\u0644\u064a",
     generate:"\u0625\u0646\u0634\u0627\u0621",
@@ -1070,29 +1099,43 @@ function doAnalyze(fd){
     dd=d;ci=d.detectionId;
     initColorState();
 
-    if(d.bgColor){
-      var bgIdx=d.colors.findIndex(function(c){return c.toLowerCase()===d.bgColor.toLowerCase();});
-      if(bgIdx>=0){colorState[bgIdx]='removed';syncShapesForColor(d.colors[bgIdx],false);}
+    /* Palette-source badge ("AI" or "BUCKETS") so the user knows where the
+       suggestion came from. */
+    var psb = document.getElementById('paletteSourceBadge');
+    if (psb) {
+      if (d.paletteSource === 'gemini') {
+        psb.innerHTML = ' <span class="palette-source gemini">' + t('paletteSrcGemini') + '</span>';
+      } else if (d.paletteSource === 'buckets') {
+        psb.innerHTML = ' <span class="palette-source buckets">' + t('paletteSrcBuckets') + '</span>';
+      } else {
+        psb.innerHTML = '';
+      }
     }
+
+    /* Background auto-exclusion was removed: every detected colour starts as
+       active.  The user is responsible for excluding what they don't want
+       stitched, with help from the bulk-action buttons (All / None / Invert /
+       Match colours) and the 🔒 lock toggle. */
 
     var cg=document.getElementById('cg');
     cg.innerHTML='';
     for(var i=0;i<d.colors.length;i++){
       var c=d.colors[i];
-      var isBg=(d.bgColor&&c.toLowerCase()===d.bgColor.toLowerCase());
       cg.innerHTML+=
-        '<div class="c-item'+(isBg?' off':' on')+'" id="ci-'+i+'" onclick="tC('+i+')">'+
+        '<div class="c-item on" id="ci-'+i+'" onclick="tC('+i+')">'+
           '<div class="c-item-top">'+
             '<div class="c-box" style="background:'+c+'"></div>'+
-            '<div style="flex:1">'+
-              '<div class="c-name">'+gN(c)+(isBg?' <span style="font-size:10px;background:#fdecea;color:#c0392b;padding:2px 6px;border-radius:4px;font-weight:800">BG</span>':'')+'</div>'+
+            '<div style="flex:1;min-width:0">'+
+              '<div class="c-name">'+gN(c)+'</div>'+
               '<div class="c-hex">'+c+'</div>'+
             '</div>'+
-            '<div class="c-merge-dot" id="cmt-'+i+'" style="display:none"></div>'+
+            '<div class="c-merge-dot" id="cmt-'+i+'"></div>'+
+            '<button class="c-lock-btn" id="cl-'+i+'" title="'+t('lockTitle')+'" '+
+              'onclick="event.stopPropagation();tLock('+i+')">\ud83d\udd13</button>'+
           '</div>'+
           '<div class="c-actions" style="display:none">'+
-            '<button class="c-act-btn c-act-remove" onclick="event.stopPropagation();doRemoveColor('+i+')">✕ '+t('removeColor')+'</button>'+
-            '<button class="c-act-btn c-act-merge" onclick="event.stopPropagation();doMergeColor('+i+')">⇒ '+t('mergeColor')+'</button>'+
+            '<button class="c-act-btn c-act-remove" onclick="event.stopPropagation();doRemoveColor('+i+')">\u2715 '+t('removeColor')+'</button>'+
+            '<button class="c-act-btn c-act-merge" onclick="event.stopPropagation();doMergeColor('+i+')">\u21d2 '+t('mergeColor')+'</button>'+
           '</div>'+
         '</div>';
     }
@@ -1106,9 +1149,11 @@ function doAnalyze(fd){
       sg.innerHTML+='<div class="s-item" id="si-'+i+'" data-c="'+s.color+'">'+
         '<input type="checkbox" id="cb-'+i+'" checked onchange="tS('+i+')">'+
         '<div class="s-box" style="background:'+s.color+'"></div>'+
-        '<div class="s-info"><strong>#'+(i+1)+'</strong> '+gN(s.color)+' — '+w+'×'+h+'px</div>'+
+        '<div class="s-info"><strong>#'+(i+1)+'</strong> '+gN(s.color)+' \u2014 '+w+'\u00d7'+h+'px</div>'+
         '<span class="s-tag tag-'+s.type[0]+'">'+s.type+'</span></div>';
     }
+
+    updateBulkCounts();
 
     document.getElementById('sc').style.display='block';
     document.getElementById('sc').scrollIntoView({behavior:'smooth'});
@@ -1122,11 +1167,13 @@ function doAnalyze(fd){
 /* ── COLOR STATE MACHINE (merge / remove / on / pending) ── */
 var colorState=[];
 var colorMerges={};
+var colorLocked=[];   /* parallel array of booleans; true = protected from merges */
 
 function initColorState(){
   if(!dd)return;
   colorState=dd.colors.map(function(){return'on';});
   colorMerges={};
+  colorLocked=dd.colors.map(function(){return false;});
 }
 
 function syncShapesForColor(hex,enabled){
@@ -1143,26 +1190,53 @@ function renderColorItem(i){
   var el=document.getElementById('ci-'+i);
   if(!el)return;
   var st=colorState[i]||'on';
+  var locked=!!colorLocked[i];
   /* Base classes */
   el.className='c-item';
   if(st==='on')el.classList.add('on');
   if(st==='pending')el.classList.add('on','pending');
   if(st.indexOf('merged:')===0)el.classList.add('merged');
+  if(locked)el.classList.add('locked');
   /* Sync shapes */
-  var active=(st==='on'||st==='pending'||st.indexOf('merged:')===0);
-  var isSourceOfMerge=st.indexOf('merged:')===0;
   syncShapesForColor(dd.colors[i], st==='on'||st==='pending');
   /* Merge dot */
   var dot=el.querySelector('.c-merge-dot');
   if(dot){
-    if(isSourceOfMerge){
+    if(st.indexOf('merged:')===0){
       var tgt=st.replace('merged:','');
-      dot.style.background=tgt;dot.title='→ '+tgt;dot.style.display='block';
+      dot.style.background=tgt;dot.title='\u2192 '+tgt;dot.style.display='block';
     }else{dot.style.display='none';}
   }
-  /* Action buttons */
+  /* Lock button */
+  var lockBtn=document.getElementById('cl-'+i);
+  if(lockBtn){
+    lockBtn.textContent = locked ? '\ud83d\udd12' : '\ud83d\udd13';
+    lockBtn.title = locked ? t('unlockTitle') : t('lockTitle');
+    lockBtn.classList.toggle('on', locked);
+  }
+  /* Action buttons — disable Merge when locked */
   var acts=el.querySelector('.c-actions');
-  if(acts)acts.style.display=(st==='pending')?'flex':'none';
+  if(acts){
+    acts.style.display=(st==='pending')?'flex':'none';
+    var mb=acts.querySelector('.c-act-merge');
+    if(mb)mb.disabled=locked;
+  }
+  updateBulkCounts();
+}
+
+function tLock(i){
+  /* Toggle protection on this colour.  If we're locking a colour that was
+     previously the source of a pending merge, drop that merge too. */
+  colorLocked[i]=!colorLocked[i];
+  if(colorLocked[i]){
+    var st=colorState[i]||'on';
+    if(st.indexOf('merged:')===0){
+      delete colorMerges[dd.colors[i]];
+      colorState[i]='on';
+      syncShapesForColor(dd.colors[i], true);
+    }
+  }
+  renderColorItem(i);
 }
 
 function tC(i){
@@ -1189,16 +1263,21 @@ function doRemoveColor(i){
 }
 
 function doMergeColor(i){
-  /* Find nearest ON color by Lab ΔE */
+  /* Locked colours can't be merged */
+  if(colorLocked[i]){
+    alert(t('lockTitle'));
+    return;
+  }
+  /* Find nearest ON, UN-LOCKED color by Lab ΔE */
   var src=dd.colors[i];
   var srcL=hexToLabSimple(src);
   var bestJ=-1,bestD=Infinity;
   for(var j=0;j<dd.colors.length;j++){
-    if(j===i||(colorState[j]||'on')!=='on')continue;
+    if(j===i||(colorState[j]||'on')!=='on'||colorLocked[j])continue;
     var d=labDist(srcL,hexToLabSimple(dd.colors[j]));
     if(d<bestD){bestD=d;bestJ=j;}
   }
-  if(bestJ<0){alert(t('noOtherColor')||'No other active color to merge into.');return;}
+  if(bestJ<0){alert(t('noOtherColor')||'No other active unlocked color to merge into.');return;}
   colorMerges[src]=dd.colors[bestJ];
   colorState[i]='merged:'+dd.colors[bestJ];
   syncShapesForColor(src,false);
@@ -1219,8 +1298,9 @@ function hexToLabSimple(hex){
 }
 function labDist(a,b){return Math.sqrt(Math.pow(a.l-b.l,2)+Math.pow(a.a-b.a,2)+Math.pow(a.b-b.b,2));}
 
-function tS(i){var cb=document.getElementById('cb-'+i);document.getElementById('si-'+i).classList.toggle('off',!cb.checked)}
+function tS(i){var cb=document.getElementById('cb-'+i);document.getElementById('si-'+i).classList.toggle('off',!cb.checked);updateBulkCounts();}
 
+/* ── BULK ACTIONS ────────────────────────────────────────────────────── */
 function allC(on){
   if(!dd)return;
   if(on){
@@ -1230,18 +1310,122 @@ function allC(on){
       renderColorItem(i);
     }
   }else{
-    var onCount=colorState.filter(function(s){return s==='on';}).length;
-    if(onCount<=1){alert(t('keepColor'));return;}
+    /* Bulk-remove every active colour except one (we always need at least
+       one to stitch).  Locked colours are NEVER removed by bulk None. */
+    var keepIdx=-1;
     for(var i=0;i<dd.colors.length;i++){
+      if(colorLocked[i]&&(colorState[i]||'on')==='on'){ keepIdx=i; break; }
+    }
+    if(keepIdx===-1){
+      for(var i=0;i<dd.colors.length;i++){
+        if((colorState[i]||'on')==='on'){ keepIdx=i; break; }
+      }
+    }
+    if(keepIdx===-1){alert(t('keepColor'));return;}
+    for(var i=0;i<dd.colors.length;i++){
+      if(i===keepIdx) continue;
+      if(colorLocked[i]) continue;          /* never auto-remove a locked colour */
       if((colorState[i]||'on')==='on'){
-        var others=colorState.filter(function(s,j){return j!==i&&s==='on';}).length;
-        if(others>0){colorState[i]='removed';syncShapesForColor(dd.colors[i],false);renderColorItem(i);}
+        colorState[i]='removed';
+        syncShapesForColor(dd.colors[i],false);
+        renderColorItem(i);
       }
     }
   }
 }
 
-function allS(on){var rows=document.querySelectorAll('.s-item');for(var i=0;i<rows.length;i++){rows[i].querySelector('input[type=checkbox]').checked=on;rows[i].classList.toggle('off',!on)}}
+function invC(){
+  /* Invert each colour's on/off state.  Locked colours are skipped (their
+     state is preserved — that's the whole point of locking). */
+  if(!dd)return;
+  /* First pass: collect what the inverted set would be */
+  var willBeOn=[];
+  for(var i=0;i<dd.colors.length;i++){
+    if(colorLocked[i]){ if((colorState[i]||'on')==='on') willBeOn.push(i); continue; }
+    var st=colorState[i]||'on';
+    if(st==='removed') willBeOn.push(i);   /* will flip to on */
+    /* on / pending / merged: will flip to off, so not added */
+  }
+  if(willBeOn.length===0){alert(t('keepColor'));return;}
+  for(var i=0;i<dd.colors.length;i++){
+    if(colorLocked[i]) continue;
+    var st=colorState[i]||'on';
+    if(st==='removed'){
+      colorState[i]='on';
+    }else{
+      delete colorMerges[dd.colors[i]];
+      colorState[i]='removed';
+      syncShapesForColor(dd.colors[i],false);
+    }
+    renderColorItem(i);
+  }
+}
+
+function allS(on){
+  var rows=document.querySelectorAll('.s-item');
+  for(var i=0;i<rows.length;i++){
+    var cb=rows[i].querySelector('input[type=checkbox]');
+    if(cb.disabled) continue;             /* shape's colour is removed/merged — leave it alone */
+    cb.checked=on;
+    rows[i].classList.toggle('off',!on);
+  }
+  updateBulkCounts();
+}
+
+function invS(){
+  var rows=document.querySelectorAll('.s-item');
+  for(var i=0;i<rows.length;i++){
+    var cb=rows[i].querySelector('input[type=checkbox]');
+    if(cb.disabled) continue;
+    cb.checked=!cb.checked;
+    rows[i].classList.toggle('off',!cb.checked);
+  }
+  updateBulkCounts();
+}
+
+function selectShapesForActiveColors(){
+  /* Convenience: re-check every shape whose colour is currently 'on'.
+     Useful after the user has been clicking around and wants to start fresh
+     from "everything that's still active". */
+  if(!dd)return;
+  var activeHex={};
+  for(var i=0;i<dd.colors.length;i++){
+    if((colorState[i]||'on')==='on') activeHex[dd.colors[i].toLowerCase()]=1;
+  }
+  var rows=document.querySelectorAll('.s-item');
+  for(var i=0;i<rows.length;i++){
+    var c=(rows[i].dataset.c||'').toLowerCase();
+    var cb=rows[i].querySelector('input[type=checkbox]');
+    var should=!!activeHex[c];
+    cb.checked=should;
+    cb.disabled=!should;
+    rows[i].classList.toggle('off',!should);
+  }
+  updateBulkCounts();
+}
+
+function updateBulkCounts(){
+  if(!dd) return;
+  var on=0,removed=0,merged=0,locked=0;
+  for(var i=0;i<dd.colors.length;i++){
+    var st=colorState[i]||'on';
+    if(st==='on'||st==='pending') on++;
+    else if(st==='removed') removed++;
+    else if(st.indexOf('merged:')===0) merged++;
+    if(colorLocked[i]) locked++;
+  }
+  var cc=document.getElementById('cCount');
+  if(cc) cc.textContent=t('colorCountLabel',{on:on,removed:removed,merged:merged,locked:locked});
+
+  var sRows=document.querySelectorAll('.s-item');
+  var sOn=0;
+  for(var i=0;i<sRows.length;i++){
+    var cb=sRows[i].querySelector('input[type=checkbox]');
+    if(cb&&cb.checked&&!cb.disabled) sOn++;
+  }
+  var sc=document.getElementById('sCount');
+  if(sc) sc.textContent=t('shapeCountLabel',{on:sOn,total:sRows.length});
+}
 
 function generate(){
   if(!ci||!dd)return;
@@ -1290,6 +1474,13 @@ function generate(){
   var bBox=document.getElementById('bastingBox');
   if(bBox&&bBox.checked)fd.append('bastingBox','1');
   if(Object.keys(colorMerges).length>0)fd.append('colorMerges',JSON.stringify(colorMerges));
+
+  /* Protected colours — backend skips any merge involving a locked hex. */
+  var locked=[];
+  for(var i=0;i<dd.colors.length;i++){
+    if(colorLocked[i]) locked.push(dd.colors[i]);
+  }
+  if(locked.length>0) fd.append('lockedColors',JSON.stringify(locked));
   if(hm){
     c2.toBlob(function(b){
       if(b)fd.append('mask',b,'mask.png');
