@@ -1,5 +1,5 @@
 /**
- * Stichai v70.0 — Mask-oriented + blob splitting
+ * Stichai v71.0 — Photo-stitch + Logo-stitch
  * ═══════════════════════════════════════════════════════════════════════════════
  *  v69 CHANGES (vs v68.3)
  *  ─────────────────────────────────────────────────────────────────────────────
@@ -1145,7 +1145,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
   const pOutline  = pSubdiv;  /* outline step = same target */
   /* Brick offset: stagger alternate rows by a fraction of ROW pitch (not stitch length).
      Setting this >= rowSpacing causes rows to overlap going backwards — the
-     chaos pattern in v70.0. Half a row pitch is the maximum safe value. */
+     chaos pattern in v71.0. Half a row pitch is the maximum safe value. */
   const pBrick    = Math.round(pRow * 0.4);
   /* Max bridge distance: stitches longer than this become trims.
      Set high enough (25mm) that adjacent shape parts of the same color stay
@@ -1231,6 +1231,206 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
   return { stitches: out, colorCounts };
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════════
+   V71 — PHOTO-STITCH (thread painting)
+   ═══════════════════════════════════════════════════════════════════════
+
+   Used when mode === 'photo'. Industry "thread painting" approach:
+
+   For each color band (quantized luminance level):
+     1. Build a mask of pixels matching this band
+     2. Cross-hatch at the band's assigned angle
+     3. Use row spacing inversely proportional to luminance:
+        - Dark bands → dense rows (0.5mm pitch) → solid coverage
+        - Mid bands  → medium rows (1.0mm pitch)
+        - Light bands → sparse rows (2.0mm pitch) → fabric shows through
+
+   Layers stack: darkest color first (foundation), then progressively
+   lighter colors on top. Each color uses a different angle (0°, 45°,
+   90°, 135°) so they cross-hatch instead of overlaying.
+
+   The result simulates tonal range using thread density and color
+   stacking — like real hand-embroidered thread painting.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Convert RGB to perceptual luminance (Rec. 709) ─────────────────────── */
+function v71_luminance(r, g, b) {
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/* ── Build a mask of pixels assigned to one color in the palette,
+   plus a "fade" mask indicating how strongly each pixel matches that
+   color (used for density variation within the band). ───────────────────── */
+function v71_colorMaskWithStrength(pixMap, ci, w, h) {
+  const mask = new Uint8Array(w * h);
+  let count = 0;
+  for (let i = 0; i < pixMap.length; i++) {
+    if (pixMap[i] === ci) { mask[i] = 1; count++; }
+  }
+  return { mask, count };
+}
+
+/* ── Cross-hatch fill: walk rows at the given angle through the mask,
+   emit stitches where mask is set. Row pitch and stitch length both
+   scale with the band's "tone weight" (darker = denser = shorter stitches).
+   ───────────────────────────────────────────────────────────────────────── */
+function v71_crossHatch(mask, w, h, angle, rowPitch, stitchLen, color, pullComp, maxStitchLen) {
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  /* Find bounds of mask pixels rotated into u-t space */
+  let minT = Infinity, maxT = -Infinity, minU = Infinity, maxU = -Infinity;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!mask[y * w + x]) continue;
+      const u = x * cos + y * sin;
+      const t = -x * sin + y * cos;
+      if (u < minU) minU = u; if (u > maxU) maxU = u;
+      if (t < minT) minT = t; if (t > maxT) maxT = t;
+    }
+  }
+  if (minT === Infinity) return [];
+
+  const stitches = [];
+  let reversed = false;
+  let lastX = null, lastY = null;
+  const sampleStep = 0.7;  /* sub-pixel sampling along the row */
+
+  for (let t = minT; t <= maxT; t += rowPitch) {
+    /* Walk this row, find inside-runs */
+    const runs = [];
+    let runStart = null;
+    for (let u = minU; u <= maxU; u += sampleStep) {
+      const ix = Math.round(u * cos - t * sin);
+      const iy = Math.round(u * sin + t * cos);
+      const inside = ix >= 0 && iy >= 0 && ix < w && iy < h && mask[iy * w + ix];
+      if (inside) {
+        if (runStart === null) runStart = u;
+      } else if (runStart !== null) {
+        runs.push([runStart, u - sampleStep]);
+        runStart = null;
+      }
+    }
+    if (runStart !== null) runs.push([runStart, maxU]);
+    if (!runs.length) { reversed = !reversed; continue; }
+
+    const ordered = reversed ? runs.slice().reverse() : runs;
+    for (let i = 0; i < ordered.length; i++) {
+      let [u1, u2] = ordered[i];
+      u1 += pullComp; u2 -= pullComp;
+      if (u2 - u1 < 0.5) continue;
+      const startU = reversed ? u2 : u1;
+      const endU   = reversed ? u1 : u2;
+      const sx = startU * cos - t * sin;
+      const sy = startU * sin + t * cos;
+      const ex = endU   * cos - t * sin;
+      const ey = endU   * sin + t * cos;
+      /* Trim within row if jumping across gap (multi-segment row) */
+      if (lastX !== null) {
+        const travel = Math.hypot(sx - lastX, sy - lastY);
+        if (i > 0 && travel > maxStitchLen * 1.5) {
+          stitches.push({ x: lastX, y: lastY, color, type: "trim" });
+        } else if (travel > maxStitchLen) {
+          /* Subdivide bridge */
+          const n = Math.ceil(travel / maxStitchLen);
+          for (let k = 1; k < n; k++) {
+            stitches.push({
+              x: lastX + (sx - lastX) * k / n,
+              y: lastY + (sy - lastY) * k / n,
+              color, type: "fill"
+            });
+          }
+        }
+      }
+      /* Start */
+      stitches.push({ x: sx, y: sy, color, type: "fill" });
+      /* Subdivide within row if longer than max */
+      const len = Math.hypot(ex - sx, ey - sy);
+      if (len > maxStitchLen) {
+        const n = Math.ceil(len / maxStitchLen);
+        for (let k = 1; k < n; k++) {
+          stitches.push({
+            x: sx + (ex - sx) * k / n,
+            y: sy + (ey - sy) * k / n,
+            color, type: "fill"
+          });
+        }
+      }
+      stitches.push({ x: ex, y: ey, color, type: "fill" });
+      lastX = ex; lastY = ey;
+    }
+    reversed = !reversed;
+  }
+  return stitches;
+}
+
+/* ── Top-level photo-stitch generator ─────────────────────────────────────
+   pixMap: quantized palette indices (already extracted with N tones)
+   colors: array of hex colors, ORDERED DARK → LIGHT
+   ───────────────────────────────────────────────────────────────────────── */
+function v71_generatePhotoStitch(pixMap, colors, canvasSize, params) {
+  const pxScale = canvasSize / 800;
+  const P = params || {};
+  const pPullComp = Math.round((P.pullComp || 2) * pxScale);
+  const pSubdiv = Math.max(20, Math.round(35 * pxScale * 0.75));  /* ~3.5mm */
+
+  /* Sort colors dark-to-light by luminance, remember original index for output */
+  const indexed = colors.map((hex, i) => {
+    const rgb = hexToRgb(hex);
+    return { hex, ci: i, lum: v71_luminance(rgb.r, rgb.g, rgb.b) };
+  });
+  indexed.sort((a, b) => a.lum - b.lum);
+
+  /* Assign angles by index — cycle through 4 directions for cross-hatching */
+  const angleBank = [
+    Math.PI / 4,           /*  45° */
+    -Math.PI / 4,          /* -45° */
+    0,                     /*   0° (horizontal) */
+    Math.PI / 2,           /*  90° (vertical) */
+  ];
+
+  /* Compute row pitch per band based on luminance:
+     darkest (lum 0)    → 0.5mm = 5px @ 800px = densest
+     lightest (lum 255) → 2.5mm = 25px @ 800px = sparsest
+     We map linearly. */
+  function rowPitchForLum(lum) {
+    const t = lum / 255;  /* 0=dark, 1=light */
+    const mmPitch = 0.5 + t * 2.0;  /* 0.5mm to 2.5mm */
+    return Math.max(4, Math.round(mmPitch * 10 * pxScale));
+  }
+
+  const out = [];
+  const colorCounts = colors.map(() => ({fill: 0, satin: 0, running: 0, underlay: 0}));
+  let lastX = 0, lastY = 0;
+
+  for (let bandIdx = 0; bandIdx < indexed.length; bandIdx++) {
+    const band = indexed[bandIdx];
+    const { mask, count } = v71_colorMaskWithStrength(pixMap, band.ci, canvasSize, canvasSize);
+    if (count < 100) continue;  /* skip near-empty bands */
+
+    const angle = angleBank[bandIdx % angleBank.length];
+    const rowPitch = rowPitchForLum(band.lum);
+
+    /* Trim before band if needed (cross from previous band's endpoint) */
+    if (out.length > 0) {
+      out.push({ x: lastX, y: lastY, color: band.hex, type: "trim" });
+    }
+
+    const stitches = v71_crossHatch(
+      mask, canvasSize, canvasSize,
+      angle, rowPitch, pSubdiv, band.hex, pPullComp, pSubdiv
+    );
+    for (const s of stitches) {
+      out.push(s);
+      if (s.type === "fill") colorCounts[band.ci].fill++;
+      else if (s.type === "trim") {}
+      lastX = s.x; lastY = s.y;
+    }
+
+    console.log(`[v71] Band ${bandIdx} (lum=${band.lum.toFixed(0)}, hex=${band.hex}): ${count}px → ${stitches.length} stitches at ${(angle*180/Math.PI).toFixed(0)}°, rowPitch=${rowPitch}px`);
+  }
+
+  return { stitches: out, colorCounts };
+}
 
 /* ─── REGION EXTRACTION ──────────────────────────────────*/
 function extractRegions(pixMap, colors, canvasSize) {
@@ -2906,17 +3106,33 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
         }
       }
       const pxPerMm_gen = 10;
-      const v70Shapes = v70_buildShapes(filteredPixMap, selectedColors, canvasSize, pxPerMm_gen);
-      console.log(`[${rid}] v70 produced ${v70Shapes.length} shapes`);
-      if (v70Shapes.length > 0) {
-        const result = v70_generateStitches(v70Shapes, selectedColors, params, canvasSize);
-        stitches = result.stitches;
-        colorCounts = result.colorCounts;
+
+      let stitches_inner, colorCounts_inner;
+      if (mode === 'photo') {
+        /* ─── V71 PHOTO-STITCH ───────────────────────────────
+           Continuous-tone multi-angle cross-hatching with luminance-modulated
+           density. Optimized for photos and portraits where smooth gradation
+           matters more than crisp edges. */
+        console.log(`[${rid}] Photo mode — using v71 cross-hatch generator`);
+        const result = v71_generatePhotoStitch(filteredPixMap, selectedColors, canvasSize, params);
+        stitches_inner = result.stitches;
+        colorCounts_inner = result.colorCounts;
       } else {
-        console.warn(`[${rid}] v70 produced no shapes; falling back to legacy`);
-        const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
-        stitches = legacy.stitches; colorCounts = legacy.colorCounts;
+        /* ─── V70 LOGO-STITCH ──────────────────────────────── */
+        const v70Shapes = v70_buildShapes(filteredPixMap, selectedColors, canvasSize, pxPerMm_gen);
+        console.log(`[${rid}] v70 produced ${v70Shapes.length} shapes`);
+        if (v70Shapes.length > 0) {
+          const result = v70_generateStitches(v70Shapes, selectedColors, params, canvasSize);
+          stitches_inner = result.stitches;
+          colorCounts_inner = result.colorCounts;
+        } else {
+          console.warn(`[${rid}] v70 produced no shapes; falling back to legacy`);
+          const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
+          stitches_inner = legacy.stitches; colorCounts_inner = legacy.colorCounts;
+        }
       }
+      stitches = stitches_inner;
+      colorCounts = colorCounts_inner;
     }
 
     /* ─── ADD BASTING BOX ──────────────────────────────── */
@@ -3124,6 +3340,6 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
 app.get("/health",(_,res)=>res.json({status:"ok",version:"69.0",features:"v70-mask-oriented,blob-split,erosion-recon,pca-angles,satin-columns,outline-pass,bg-detect,zip-inf,scale-aware"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v70.0 | :${PORT} | Mask-oriented + blob splitting`));
+const server=app.listen(PORT,()=>console.log(`Stichai v71.0 | :${PORT} | Photo-stitch + Logo-stitch`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
