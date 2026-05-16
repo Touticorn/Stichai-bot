@@ -1093,7 +1093,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
   const colorCounts = colors.map(() => ({fill:0, satin:0, running:0, underlay:0}));
   const pxScale  = canvasSize / 800;
   const P = params || {};
-  const pRow      = Math.max(3, Math.round((P.tatamiRow || 4) * pxScale));
+  const pRow      = Math.max(3, Math.round((P.tatamiRow || 5) * pxScale));
   const pLen      = Math.max(15, Math.round((P.tatamiLen || 30) * pxScale));
   const pPullComp = Math.round((P.pullComp || 2) * pxScale);
   const pOutline  = Math.round(15 * pxScale);
@@ -1101,9 +1101,11 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
      Setting this >= rowSpacing causes rows to overlap going backwards — the
      chaos pattern in v70.0. Half a row pitch is the maximum safe value. */
   const pBrick    = Math.round(pRow * 0.4);
-  /* Max bridge distance: stitches longer than this within a row become trims
-     instead of bridge stitches. 12mm = 120px at 800px canvas. */
-  const pMaxBridge = Math.round(80 * pxScale);  /* ~8mm */
+  /* Max bridge distance: stitches longer than this become trims.
+     Set high enough (25mm) that adjacent shape parts of the same color stay
+     connected by bridge stitches — keeps fronds from fragmenting into
+     individual zigzag bits. Only true cross-design jumps will trim. */
+  const pMaxBridge = Math.round(250 * pxScale);  /* ~25mm */
 
   /* Group by color, sort within color: largest fills first */
   const byCi = new Map();
@@ -1134,16 +1136,14 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
       }
 
       /* OUTLINE pass — running stitches around the boundary.
-         For FILLS the outline duplicates the natural edge, creating a "double
-         traced" look. Only emit outline for satin and running shapes, where
-         it crisps thin features that the fill alone wouldn't define. */
-      if (sh.type !== "fill") {
-        const ol = v70_outlineStitches(path, sh.offX, sh.offY, color, pOutline);
-        for (const s of ol) {
-          out.push(s);
-          colorCounts[ci].running++;
-          lastX = s.x; lastY = s.y;
-        }
+         Outline before fill is standard practice: it defines a crisp edge
+         that the fill can register against, and helps prevent the fill
+         from looking ragged. */
+      const ol = v70_outlineStitches(path, sh.offX, sh.offY, color, pOutline);
+      for (const s of ol) {
+        out.push(s);
+        colorCounts[ci].running++;
+        lastX = s.x; lastY = s.y;
       }
 
       /* Stitch angle: if shape is near-round (low aspect), use a fixed vertical
