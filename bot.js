@@ -948,29 +948,38 @@ function v70_scanRuns(mask, w, h, offX, offY, angle, rowSpacing) {
 
 /* ── Convert scanned runs into stitch pairs and rotate back to image space.
    Adds brick offset and reverses every other row to minimize jumps.
+   Inserts trim commands between segments separated by negative space
+   (so the machine pen-ups instead of bridging across).
    ───────────────────────────────────────────────────────────────────────── */
-function v70_runsToStitches(scan, color, brickAmt, pullComp) {
+function v70_runsToStitches(scan, color, brickAmt, pullComp, maxBridgePx) {
   const { rows, cos, sin, offX, offY } = scan;
   const stitches = [];
   let reversed = false;
+  let lastX = null, lastY = null;
   for (let r = 0; r < rows.length; r++) {
     const { t, runs } = rows[r];
     const ordered = reversed ? [...runs].reverse() : runs;
     const brick = (r % 2 === 0) ? 0 : brickAmt;
     for (let i = 0; i < ordered.length; i++) {
       let [u1, u2] = ordered[i];
-      /* Apply pull compensation: trim segment ends */
       u1 += pullComp; u2 -= pullComp;
       if (u2 - u1 < 0.5) continue;
       const startU = reversed ? u2 : u1;
       const endU   = reversed ? u1 : u2;
-      /* Convert (u, t) back to image space: imageX = offX + u*cos - t*sin */
       const sx = offX + startU * cos - t * sin;
       const sy = offY + startU * sin + t * cos;
       const ex = offX + endU   * cos - (t + brick) * sin;
       const ey = offY + endU   * sin + (t + brick) * cos;
+      /* Insert trim if travelling across negative space to reach this segment */
+      if (lastX !== null) {
+        const travel = Math.hypot(sx - lastX, sy - lastY);
+        if (travel > maxBridgePx) {
+          stitches.push({ x: lastX, y: lastY, color, type: "trim" });
+        }
+      }
       stitches.push({ x: sx, y: sy, color, type: "fill" });
       stitches.push({ x: ex, y: ey, color, type: "fill" });
+      lastX = ex; lastY = ey;
     }
     reversed = !reversed;
   }
@@ -1088,7 +1097,13 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
   const pLen      = Math.max(15, Math.round((P.tatamiLen || 30) * pxScale));
   const pPullComp = Math.round((P.pullComp || 2) * pxScale);
   const pOutline  = Math.round(15 * pxScale);
-  const pBrick    = Math.round(pLen * 0.5);
+  /* Brick offset: stagger alternate rows by a fraction of ROW pitch (not stitch length).
+     Setting this >= rowSpacing causes rows to overlap going backwards — the
+     chaos pattern in v70.0. Half a row pitch is the maximum safe value. */
+  const pBrick    = Math.round(pRow * 0.4);
+  /* Max bridge distance: stitches longer than this within a row become trims
+     instead of bridge stitches. 12mm = 120px at 800px canvas. */
+  const pMaxBridge = Math.round(80 * pxScale);  /* ~8mm */
 
   /* Group by color, sort within color: largest fills first */
   const byCi = new Map();
@@ -1130,7 +1145,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
       if (sh.type === "fill" || (sh.type === "satin" && sh.widthMm > 3.5)) {
         const scan = v70_scanRuns(sh.mask, sh.w, sh.h, sh.offX, sh.offY,
                                   sh.pca.angle, pRow);
-        const fs = v70_runsToStitches(scan, color, pBrick, pPullComp);
+        const fs = v70_runsToStitches(scan, color, pBrick, pPullComp, pMaxBridge);
         for (const s of fs) {
           out.push(s);
           colorCounts[ci].fill++;
@@ -1140,7 +1155,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
         /* For genuine satin (thin), use a denser scan at smaller row pitch */
         const scan = v70_scanRuns(sh.mask, sh.w, sh.h, sh.offX, sh.offY,
                                   sh.pca.angle, Math.max(2, Math.round(2.5 * pxScale)));
-        const fs = v70_runsToStitches(scan, color, 0, pPullComp);
+        const fs = v70_runsToStitches(scan, color, 0, pPullComp, pMaxBridge);
         for (const s of fs) {
           out.push(s);
           colorCounts[ci].satin++;
