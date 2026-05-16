@@ -1,5 +1,5 @@
 /**
- * Stichai v69.0 — Vectorized stitch generation
+ * Stichai v70.0 — Mask-oriented + blob splitting
  * ═══════════════════════════════════════════════════════════════════════════════
  *  v69 CHANGES (vs v68.3)
  *  ─────────────────────────────────────────────────────────────────────────────
@@ -664,28 +664,225 @@ function getRunsInRow(pixMap,ci,y,x0,x1,canvasSize){
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   V69 VECTORIZATION + SHAPE-AWARE STITCH GENERATION
+   V70 — MASK-BASED ORIENTED STITCH GENERATION
    ═══════════════════════════════════════════════════════════════════════
-   Replaces the dumb pixel-row scanner with proper shape tracing:
-     • Moore-neighbour boundary tracing → ordered outlines + holes
-     • Douglas-Peucker simplification → clean polygons
-     • PCA on region pixels → per-shape stitch angle
-     • Tatami fill at the computed angle (rotated coords)
-     • Satin column for elongated shapes (along medial axis)
-     • Running-stitch outline pass before fills (crisp edges)
 
-   Potrace is detected at runtime for higher-quality outlines but the
-   code works without it.
+   Key insight from v69 failure: polygon simplification destroys shape detail
+   on complex regions. We must scan the actual pixel mask, not a simplified
+   outline.
+
+   Pipeline per color:
+     1. Connected-components on the pixMap → raw regions
+     2. Split giant blobs: erode by N pixels, re-CC, then dilate labels back
+        This separates fronds that connect at thin junctions.
+     3. For each sub-region:
+        a. Compute PCA angle from interior pixels
+        b. Generate oriented row scan: for each row perpendicular to long axis,
+           walk the mask along the row direction and emit stitch pairs at the
+           start/end of each inside-run.
+        c. Outline pass: walk the boundary (Moore tracing) and emit running
+           stitches around it.
    ═══════════════════════════════════════════════════════════════════════ */
-let _potrace = null;
-try { _potrace = require("potrace"); } catch(e) { console.log("potrace not installed, using built-in tracer"); }
 
-function v69_traceBoundary(mask, w, h, startIdx) {
+/* ── PCA on a list of (x,y) pixel coords ───────────────────────────────── */
+function v70_pca(pts) {
+  const n = pts.length;
+  if (n < 4) return { angle: 0, aspect: 1, cx: 0, cy: 0 };
+  let sx = 0, sy = 0;
+  for (const [x, y] of pts) { sx += x; sy += y; }
+  const cx = sx / n, cy = sy / n;
+  let sxx = 0, syy = 0, sxy = 0;
+  for (const [x, y] of pts) {
+    const dx = x - cx, dy = y - cy;
+    sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+  }
+  sxx /= n; syy /= n; sxy /= n;
+  const tr = sxx + syy;
+  const det = sxx * syy - sxy * sxy;
+  const disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
+  const lam1 = tr / 2 + disc, lam2 = tr / 2 - disc;
+  /* eigenvector for largest eigenvalue (long axis) */
+  const longAngle = Math.atan2(lam1 - sxx, sxy || 1e-9);
+  /* stitches run PERPENDICULAR to the long axis (across the narrow dimension) */
+  const stitchAngle = longAngle + Math.PI / 2;
+  const aspect = lam2 > 0.01 ? Math.sqrt(lam1 / lam2) : 999;
+  return { angle: stitchAngle, longAngle, aspect, cx, cy };
+}
+
+/* ── BFS connected components on a pixMap, with optional label filter ──── */
+function v70_findRegions(pixMap, w, h, minArea) {
+  const visited = new Uint8Array(w * h);
+  const regions = [];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const ci = pixMap[i];
+      if (ci < 0 || visited[i]) continue;
+      const pts = [];
+      const stack = [i];
+      visited[i] = 1;
+      let mnx = x, mxx = x, mny = y, mxy = y;
+      while (stack.length) {
+        const idx = stack.pop();
+        const xx = idx % w, yy = (idx / w) | 0;
+        pts.push([xx, yy]);
+        if (xx < mnx) mnx = xx; if (xx > mxx) mxx = xx;
+        if (yy < mny) mny = yy; if (yy > mxy) mxy = yy;
+        for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+          const nx = xx + dx, ny = yy + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const ni = ny * w + nx;
+          if (visited[ni]) continue;
+          if (pixMap[ni] === ci) { visited[ni] = 1; stack.push(ni); }
+        }
+      }
+      if (pts.length >= minArea) {
+        regions.push({ ci, pts, mnx, mny, mxx, mxy });
+      }
+    }
+  }
+  return regions;
+}
+
+/* ── Distance transform (Chamfer 3-4): for each pixel, distance to nearest 0
+   Used to find "ridge" pixels where shape is widest — these are sub-shape centres.
+   ───────────────────────────────────────────────────────────────────────── */
+function v70_distanceTransform(mask, w, h) {
+  const INF = 65535;
+  const d = new Uint16Array(w * h);
+  for (let i = 0; i < w * h; i++) d[i] = mask[i] ? INF : 0;
+  /* forward pass */
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!mask[i]) continue;
+      let v = d[i];
+      if (x > 0)         v = Math.min(v, d[i-1] + 3);
+      if (y > 0)         v = Math.min(v, d[i-w] + 3);
+      if (x > 0 && y > 0) v = Math.min(v, d[i-w-1] + 4);
+      if (x < w-1 && y > 0) v = Math.min(v, d[i-w+1] + 4);
+      d[i] = v;
+    }
+  }
+  /* backward pass */
+  for (let y = h-1; y >= 0; y--) {
+    for (let x = w-1; x >= 0; x--) {
+      const i = y * w + x;
+      if (!mask[i]) continue;
+      let v = d[i];
+      if (x < w-1)       v = Math.min(v, d[i+1] + 3);
+      if (y < h-1)       v = Math.min(v, d[i+w] + 3);
+      if (x < w-1 && y < h-1) v = Math.min(v, d[i+w+1] + 4);
+      if (x > 0 && y < h-1) v = Math.min(v, d[i+w-1] + 4);
+      d[i] = v;
+    }
+  }
+  return d;
+}
+
+/* ── Find local maxima of distance transform: pixels with DT ≥ all 8 neighbours.
+   These are "skeleton tips" — natural centers of distinct sub-shapes.
+   Returns array of {x, y, dt} grouped into clusters (each cluster = one seed).
+   ───────────────────────────────────────────────────────────────────────── */
+function v70_findDtMaxima(dt, w, h, minDt) {
+  const maxima = [];
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const v = dt[i];
+      if (v < minDt) continue;
+      let isMax = true;
+      for (let dy = -1; dy <= 1 && isMax; dy++) {
+        for (let dx = -1; dx <= 1 && isMax; dx++) {
+          if (!dx && !dy) continue;
+          if (dt[(y+dy) * w + (x+dx)] > v) isMax = false;
+        }
+      }
+      if (isMax) maxima.push([x, y, v]);
+    }
+  }
+  /* Cluster nearby maxima (within minDt/3) into single seeds */
+  const clusterRadius = Math.max(3, minDt / 3 / 3);  /* /3 because Chamfer units */
+  const used = new Uint8Array(maxima.length);
+  const clusters = [];
+  for (let i = 0; i < maxima.length; i++) {
+    if (used[i]) continue;
+    used[i] = 1;
+    const cluster = [maxima[i]];
+    for (let j = i + 1; j < maxima.length; j++) {
+      if (used[j]) continue;
+      const dx = maxima[i][0] - maxima[j][0], dy = maxima[i][1] - maxima[j][1];
+      if (dx*dx + dy*dy < clusterRadius * clusterRadius) {
+        cluster.push(maxima[j]);
+        used[j] = 1;
+      }
+    }
+    /* Cluster centroid weighted by dt */
+    let sx = 0, sy = 0, sw = 0;
+    for (const [x, y, v] of cluster) { sx += x * v; sy += y * v; sw += v; }
+    clusters.push([sx / sw, sy / sw]);
+  }
+  return clusters;
+}
+
+/* ── Watershed-style splitting: every pixel goes to its nearest DT maximum
+   measured by Euclidean distance. Each maximum = one sub-shape seed.
+   ───────────────────────────────────────────────────────────────────────── */
+function v70_splitRegion(reg, canvasSize, junctionPx) {
+  const rw = reg.mxx - reg.mnx + 1;
+  const rh = reg.mxy - reg.mny + 1;
+  const origMask = new Uint8Array(rw * rh);
+  for (const [x, y] of reg.pts) {
+    origMask[(y - reg.mny) * rw + (x - reg.mnx)] = 1;
+  }
+  const dt = v70_distanceTransform(origMask, rw, rh);
+  /* Chamfer 3-4: orthogonal = 3 per pixel. So junctionPx pixels = junctionPx*3 DT units */
+  const minDt = junctionPx * 3;
+  const seeds = v70_findDtMaxima(dt, rw, rh, minDt);
+  if (seeds.length <= 1) return [reg.pts];
+
+  /* Assign each pixel to nearest seed by Euclidean distance */
+  const subRegions = seeds.map(() => []);
+  for (const [x, y] of reg.pts) {
+    const lx = x - reg.mnx, ly = y - reg.mny;
+    let best = 0, bestD = Infinity;
+    for (let k = 0; k < seeds.length; k++) {
+      const dx = lx - seeds[k][0], dy = ly - seeds[k][1];
+      const d = dx*dx + dy*dy;
+      if (d < bestD) { bestD = d; best = k; }
+    }
+    subRegions[best].push([x, y]);
+  }
+  return subRegions.filter(s => s.length >= 25);
+}
+
+/* ── Build an oriented mask: for each pixel of the region, store 1 ─────────
+   Stored as a packed object: { mask, w, h, offX, offY }
+   ───────────────────────────────────────────────────────────────────────── */
+function v70_buildMask(pts) {
+  let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity;
+  for (const [x, y] of pts) {
+    if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+    if (y < mny) mny = y; if (y > mxy) mxy = y;
+  }
+  const w = mxx - mnx + 1, h = mxy - mny + 1;
+  const mask = new Uint8Array(w * h);
+  for (const [x, y] of pts) mask[(y - mny) * w + (x - mnx)] = 1;
+  return { mask, w, h, offX: mnx, offY: mny };
+}
+
+/* ── Moore-neighbour boundary trace on a binary mask ─────────────────────── */
+function v70_traceOutline(mask, w, h) {
   const dirs = [[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]];
-  const path = [];
+  /* Find first interior pixel */
+  let startIdx = -1;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) { startIdx = i; break; }
+  if (startIdx < 0) return [];
   const sx = startIdx % w, sy = (startIdx / w) | 0;
-  let cx = sx, cy = sy, backDir = 4, steps = 0;
-  const maxSteps = (w + h) * 4 + 1000;
+  let cx = sx, cy = sy, backDir = 4;
+  const path = [];
+  let steps = 0;
+  const maxSteps = (w + h) * 8 + 1000;
   do {
     path.push([cx, cy]);
     let found = false;
@@ -706,377 +903,253 @@ function v69_traceBoundary(mask, w, h, startIdx) {
   return path;
 }
 
-function v69_simplify(points, epsilon) {
-  if (points.length < 3) return points.slice();
-  const keep = new Uint8Array(points.length);
-  keep[0] = 1; keep[points.length - 1] = 1;
-  const stack = [[0, points.length - 1]];
-  while (stack.length) {
-    const [lo, hi] = stack.pop();
-    if (hi - lo < 2) continue;
-    const [ax, ay] = points[lo];
-    const [bx, by] = points[hi];
-    const dx = bx - ax, dy = by - ay;
-    const segLen2 = dx * dx + dy * dy;
-    let maxD = 0, maxI = lo;
-    for (let i = lo + 1; i < hi; i++) {
-      const [px, py] = points[i];
-      const d2 = segLen2 === 0
-        ? (px - ax) ** 2 + (py - ay) ** 2
-        : (((px - ax) * dy - (py - ay) * dx) ** 2) / segLen2;
-      if (d2 > maxD) { maxD = d2; maxI = i; }
-    }
-    if (maxD > epsilon * epsilon) {
-      keep[maxI] = 1;
-      stack.push([lo, maxI], [maxI, hi]);
-    }
+/* ── Oriented row scan: for each row perpendicular to the long axis,
+   walk the mask along the row direction and find inside-runs.
+   This is the KEY function — it preserves shape detail because it samples
+   the actual mask pixels, not a simplified polygon outline.
+   ───────────────────────────────────────────────────────────────────────── */
+function v70_scanRuns(mask, w, h, offX, offY, angle, rowSpacing) {
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  /* Row direction is +angle. Long axis perpendicular = (-sin, cos). */
+  /* Project all corner points to find row range and column range */
+  const corners = [[0,0],[w-1,0],[0,h-1],[w-1,h-1]];
+  let minT = Infinity, maxT = -Infinity, minU = Infinity, maxU = -Infinity;
+  for (const [lx, ly] of corners) {
+    const u = lx * cos + ly * sin;        /* along row direction */
+    const t = -lx * sin + ly * cos;       /* along long axis (perpendicular) */
+    if (u < minU) minU = u; if (u > maxU) maxU = u;
+    if (t < minT) minT = t; if (t > maxT) maxT = t;
   }
-  const out = [];
-  for (let i = 0; i < points.length; i++) if (keep[i]) out.push(points[i]);
-  return out;
-}
-
-function v69_principalAngle(pixMap, canvasSize, mnx, mny, mxx, mxy, ciValue) {
-  let n = 0, sx = 0, sy = 0;
-  for (let y = mny; y <= mxy; y++) {
-    for (let x = mnx; x <= mxx; x++) {
-      if (pixMap[y * canvasSize + x] === ciValue) { sx += x; sy += y; n++; }
-    }
-  }
-  if (n < 4) return { angle: 0, aspect: 1, area: n, cx: (mnx+mxx)/2, cy: (mny+mxy)/2 };
-  const cx = sx / n, cy = sy / n;
-  let sxx = 0, syy = 0, sxy = 0;
-  for (let y = mny; y <= mxy; y++) {
-    for (let x = mnx; x <= mxx; x++) {
-      if (pixMap[y * canvasSize + x] === ciValue) {
-        const dx = x - cx, dy = y - cy;
-        sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+  const stepAlongRow = 0.5;  /* sub-pixel sampling along the row */
+  const rows = [];
+  for (let t = minT; t <= maxT; t += rowSpacing) {
+    /* For each sample along the row, check if mask is hit at (round(u*cos - t*sin), round(u*sin + t*cos)) */
+    const runs = [];
+    let runStart = null;
+    for (let u = minU; u <= maxU; u += stepAlongRow) {
+      const lx = u * cos - t * sin;
+      const ly = u * sin + t * cos;
+      const ix = Math.round(lx), iy = Math.round(ly);
+      const inside = (ix >= 0 && iy >= 0 && ix < w && iy < h) && mask[iy * w + ix];
+      if (inside) {
+        if (runStart === null) runStart = u;
+      } else {
+        if (runStart !== null) {
+          runs.push([runStart, u - stepAlongRow]);
+          runStart = null;
+        }
       }
     }
+    if (runStart !== null) runs.push([runStart, maxU]);
+    if (runs.length) rows.push({ t, runs });
   }
-  sxx /= n; syy /= n; sxy /= n;
-  const tr = sxx + syy;
-  const det = sxx * syy - sxy * sxy;
-  const disc = Math.sqrt(Math.max(0, tr * tr / 4 - det));
-  const lam1 = tr / 2 + disc;
-  const lam2 = tr / 2 - disc;
-  const longAngle = Math.atan2(lam1 - sxx, sxy || 1e-9);
-  const stitchAngle = longAngle + Math.PI / 2;
-  const aspect = lam2 > 0.01 ? Math.sqrt(lam1 / lam2) : 999;
-  return { angle: stitchAngle, aspect, area: n, cx, cy };
+  return { rows, cos, sin, offX, offY };
 }
 
-function v69_regionMask(pixMap, reg, canvasSize) {
-  const w = reg.mxx - reg.mnx + 1;
-  const h = reg.mxy - reg.mny + 1;
-  const mask = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (pixMap[(reg.mny + y) * canvasSize + (reg.mnx + x)] === reg.ci) {
-        mask[y * w + x] = 1;
-      }
+/* ── Convert scanned runs into stitch pairs and rotate back to image space.
+   Adds brick offset and reverses every other row to minimize jumps.
+   ───────────────────────────────────────────────────────────────────────── */
+function v70_runsToStitches(scan, color, brickAmt, pullComp) {
+  const { rows, cos, sin, offX, offY } = scan;
+  const stitches = [];
+  let reversed = false;
+  for (let r = 0; r < rows.length; r++) {
+    const { t, runs } = rows[r];
+    const ordered = reversed ? [...runs].reverse() : runs;
+    const brick = (r % 2 === 0) ? 0 : brickAmt;
+    for (let i = 0; i < ordered.length; i++) {
+      let [u1, u2] = ordered[i];
+      /* Apply pull compensation: trim segment ends */
+      u1 += pullComp; u2 -= pullComp;
+      if (u2 - u1 < 0.5) continue;
+      const startU = reversed ? u2 : u1;
+      const endU   = reversed ? u1 : u2;
+      /* Convert (u, t) back to image space: imageX = offX + u*cos - t*sin */
+      const sx = offX + startU * cos - t * sin;
+      const sy = offY + startU * sin + t * cos;
+      const ex = offX + endU   * cos - (t + brick) * sin;
+      const ey = offY + endU   * sin + (t + brick) * cos;
+      stitches.push({ x: sx, y: sy, color, type: "fill" });
+      stitches.push({ x: ex, y: ey, color, type: "fill" });
     }
+    reversed = !reversed;
   }
-  return { mask, w, h, offX: reg.mnx, offY: reg.mny };
+  return stitches;
 }
 
-function v69_findContours(mask, w, h) {
-  const seen = new Uint8Array(w * h);
-  const contours = [];
-  for (let y = 0; y < h; y++) {
-    let prev = 0;
-    for (let x = 0; x < w; x++) {
-      const v = mask[y * w + x];
-      if (v && !prev && !seen[y * w + x]) {
-        const path = v69_traceBoundary(mask, w, h, y * w + x);
-        for (const [px, py] of path) seen[py * w + px] = 1;
-        if (path.length >= 4) contours.push(path);
-      }
-      prev = v;
-    }
-  }
-  return contours;
-}
-
-function v69_buildShapeDescriptor(pixMap, reg, canvasSize, pxPerMm) {
-  const { mask, w, h, offX, offY } = v69_regionMask(pixMap, reg, canvasSize);
-  const contoursLocal = v69_findContours(mask, w, h);
-  if (!contoursLocal.length) return null;
-  if (contoursLocal[0].length < 4) return null; // too small to form a polygon
-  contoursLocal.sort((a, b) => b.length - a.length);
-  const outerLocal = contoursLocal[0];
-  const holesLocal = contoursLocal.slice(1).filter(c => c.length >= 12);
-  const eps = Math.max(1.0, pxPerMm * 0.15);
-  const outer = v69_simplify(outerLocal, eps).map(([x, y]) => [x + offX, y + offY]);
-  const holes = holesLocal.map(c =>
-    v69_simplify(c, eps).map(([x, y]) => [x + offX, y + offY])
-  );
-
-  const pca = v69_principalAngle(pixMap, canvasSize, reg.mnx, reg.mny, reg.mxx, reg.mxy, reg.ci);
-
-  const bw = reg.mxx - reg.mnx + 1, bh = reg.mxy - reg.mny + 1;
-  /* Average width perpendicular to long axis = area / long-axis length.
-     This is more accurate than bbox/aspect because it handles diagonal shapes. */
-  const longAxisPx = Math.max(bw, bh);
-  const shortAxisPx = pca.area / Math.max(1, longAxisPx);
-  const widthMm = shortAxisPx / pxPerMm;
-  const areaMm2 = pca.area / (pxPerMm * pxPerMm);
-
-  let type;
-  if (areaMm2 < 1.5)                              type = "running";
-  else if (widthMm < 0.6)                         type = "running";
-  else if (widthMm <= 7.0 && pca.aspect > 2.5)    type = "satin";
-  else                                            type = "fill";
-
-  return {
-    ci: reg.ci, color: reg.color, type, outer, holes,
-    angle: pca.angle, aspect: pca.aspect, cx: pca.cx, cy: pca.cy,
-    bounds: { mnx: reg.mnx, mny: reg.mny, mxx: reg.mxx, mxy: reg.mxy },
-    area: pca.area, areaMm2, widthMm
-  };
-}
-
-/* ── STITCH GENERATOR (operates on shape descriptors) ─────────────────── */
-
-function v69_rotatePoint(x, y, cx, cy, c, s) {
-  const dx = x - cx, dy = y - cy;
-  return [cx + dx * c - dy * s, cy + dx * s + dy * c];
-}
-
-function v69_rayIntersectsX(outer, holes, Y) {
-  const xs = [];
-  function scan(poly) {
-    const n = poly.length;
-    for (let i = 0, j = n - 1; i < n; j = i++) {
-      const yi = poly[i][1], yj = poly[j][1];
-      if ((yi <= Y && yj > Y) || (yj <= Y && yi > Y)) {
-        const x = poly[i][0] + (Y - yi) * (poly[j][0] - poly[i][0]) / ((yj - yi) || 1e-9);
-        xs.push(x);
-      }
-    }
-  }
-  scan(outer);
-  for (const h of holes) scan(h);
-  xs.sort((a, b) => a - b);
-  return xs;
-}
-
-function v69_outlinePath(path, color, stepPx) {
+/* ── Outline as running stitches with step length ────────────────────────── */
+function v70_outlineStitches(path, offX, offY, color, stepPx) {
   const out = [];
   if (path.length < 2) return out;
   let acc = 0;
-  let [px, py] = path[0];
+  let [pxL, pyL] = path[0];
+  let px = pxL + offX, py = pyL + offY;
   out.push({ x: px, y: py, color, type: "running" });
   for (let i = 1; i < path.length; i++) {
-    const [nx, ny] = path[i];
-    const dx = nx - px, dy = ny - py;
+    const [qxL, qyL] = path[i];
+    const qx = qxL + offX, qy = qyL + offY;
+    const dx = qx - px, dy = qy - py;
     const seg = Math.hypot(dx, dy);
     if (seg < 0.01) continue;
     let t = 0;
     while (acc + (seg - t) >= stepPx) {
-      const remain = stepPx - acc;
-      const tt = t + remain;
+      const want = stepPx - acc;
+      const tt = t + want;
       const sx = px + dx * tt / seg;
       const sy = py + dy * tt / seg;
       out.push({ x: sx, y: sy, color, type: "running" });
       t = tt; acc = 0;
     }
     acc += seg - t;
-    px = nx; py = ny;
+    px = qx; py = qy;
   }
   out.push({ x: px, y: py, color, type: "running" });
   return out;
 }
 
-function v69_fillAtAngle(shape, color, pRow, pLen, pPullComp, brickAmt) {
-  const { angle, cx, cy } = shape;
-  const cosNeg = Math.cos(-angle), sinNeg = Math.sin(-angle);
-  const cosA = Math.cos(angle), sinA = Math.sin(angle);
-
-  const rOuter = shape.outer.map(([x,y]) => v69_rotatePoint(x, y, cx, cy, cosNeg, sinNeg));
-  const rHoles = shape.holes.map(h => h.map(([x,y]) => v69_rotatePoint(x, y, cx, cy, cosNeg, sinNeg)));
-
-  let mny = Infinity, mxy = -Infinity;
-  for (const [, y] of rOuter) { if (y < mny) mny = y; if (y > mxy) mxy = y; }
-
-  const stitches = [];
-  let rowIdx = 0;
-  let reversed = false;
-
-  for (let yLine = mny; yLine <= mxy; yLine += pRow) {
-    const xs = v69_rayIntersectsX(rOuter, rHoles, yLine);
-    if (xs.length < 2 || xs.length % 2 !== 0) { rowIdx++; reversed = !reversed; continue; }
-    const segs = [];
-    for (let i = 0; i + 1 < xs.length; i += 2) {
-      segs.push([xs[i] + pPullComp, xs[i+1] - pPullComp]);
-    }
-    if (reversed) segs.reverse();
-    const brickOff = (rowIdx % 2 === 0) ? 0 : brickAmt;
-
-    for (const [x1, x2] of segs) {
-      if (x2 - x1 < 0.5) continue;
-      const startX = reversed ? x2 : x1;
-      const endX   = reversed ? x1 : x2;
-      const [sx, sy] = v69_rotatePoint(startX, yLine,            cx, cy, cosA, sinA);
-      const [ex, ey] = v69_rotatePoint(endX,   yLine + brickOff, cx, cy, cosA, sinA);
-      stitches.push({ x: sx, y: sy, color, type: "fill" });
-      stitches.push({ x: ex, y: ey, color, type: "fill" });
-    }
-    reversed = !reversed;
-    rowIdx++;
+/* ── Decide stitch type from PCA & physical width ────────────────────────── */
+function v70_classify(pts, pca, pxPerMm) {
+  const areaMm2 = pts.length / (pxPerMm * pxPerMm);
+  /* width along short axis ≈ area / long-axis-extent */
+  let minP = Infinity, maxP = -Infinity;
+  const longCos = Math.cos(pca.longAngle), longSin = Math.sin(pca.longAngle);
+  for (const [x, y] of pts) {
+    const u = (x - pca.cx) * longCos + (y - pca.cy) * longSin;
+    if (u < minP) minP = u; if (u > maxP) maxP = u;
   }
-  return stitches;
+  const longAxisPx = Math.max(1, maxP - minP);
+  const widthPx = pts.length / longAxisPx;
+  const widthMm = widthPx / pxPerMm;
+
+  let type;
+  if (areaMm2 < 1.5)                              type = "running";
+  else if (widthMm < 0.6)                         type = "running";
+  else if (widthMm <= 5.0 && pca.aspect > 3.5)    type = "satin";
+  else                                            type = "fill";
+  return { type, areaMm2, widthMm };
 }
 
-function v69_satinColumn(shape, color, pLen) {
-  const { angle, cx, cy } = shape;
-  const cosA = Math.cos(angle), sinA = Math.sin(angle);
-  const longCos = -sinA, longSin = cosA;
+/* ── Top-level: build all shapes from the pixMap ────────────────────────── */
+function v70_buildShapes(pixMap, colors, canvasSize, pxPerMm) {
+  const minAreaPx = Math.max(25, Math.round(0.25 * pxPerMm * pxPerMm));
+  const rawRegions = v70_findRegions(pixMap, canvasSize, canvasSize, minAreaPx);
+  console.log(`[v70] Raw regions: ${rawRegions.length}`);
 
-  let minT = Infinity, maxT = -Infinity;
-  for (const [x, y] of shape.outer) {
-    const t = (x - cx) * longCos + (y - cy) * longSin;
-    if (t < minT) minT = t;
-    if (t > maxT) maxT = t;
-  }
-  const step = Math.max(2, pLen * 0.5);
-  const stitches = [];
-  let zigzag = 0;
+  /* Splitting is disabled by default — distance-transform based splitting
+     works well on compound shapes (2-3 distinct lobes) but fails on
+     star-shaped multi-frond clusters where it either over-splits or
+     produces wrong seeds. For most embroidery the per-shape PCA angle is
+     sufficient. Enable via env var V70_SPLIT=1 if you want experimental
+     blob splitting. */
+  const enableSplit = process.env.V70_SPLIT === "1";
+  const junctionPx = Math.max(4, Math.round(6 * (canvasSize / 800)));
 
-  for (let t = minT; t <= maxT; t += step) {
-    let minP = Infinity, maxP = -Infinity;
-    for (const [x, y] of shape.outer) {
-      const tt = (x - cx) * longCos + (y - cy) * longSin;
-      if (Math.abs(tt - t) > step) continue;
-      const pp = (x - cx) * cosA + (y - cy) * sinA;
-      if (pp < minP) minP = pp;
-      if (pp > maxP) maxP = pp;
-    }
-    if (minP === Infinity) continue;
-
-    const axCenterX = cx + t * longCos;
-    const axCenterY = cy + t * longSin;
-    const leftX  = axCenterX + minP * cosA;
-    const leftY  = axCenterY + minP * sinA;
-    const rightX = axCenterX + maxP * cosA;
-    const rightY = axCenterY + maxP * sinA;
-
-    if (zigzag % 2 === 0) {
-      stitches.push({ x: leftX,  y: leftY,  color, type: "satin" });
-      stitches.push({ x: rightX, y: rightY, color, type: "satin" });
+  const shapes = [];
+  for (const reg of rawRegions) {
+    let subPtsList;
+    if (enableSplit && reg.pts.length > 500) {
+      subPtsList = v70_splitRegion(reg, canvasSize, junctionPx);
+      if (subPtsList.length > 1) {
+        console.log(`[v70] Split region (color ${colors[reg.ci]}, ${reg.pts.length}px) into ${subPtsList.length} sub-shapes`);
+      }
     } else {
-      stitches.push({ x: rightX, y: rightY, color, type: "satin" });
-      stitches.push({ x: leftX,  y: leftY,  color, type: "satin" });
+      subPtsList = [reg.pts];
     }
-    zigzag++;
+
+    for (const pts of subPtsList) {
+      if (pts.length < minAreaPx) continue;
+      const pca = v70_pca(pts);
+      const cls = v70_classify(pts, pca, pxPerMm);
+      const m = v70_buildMask(pts);
+      shapes.push({
+        ci: reg.ci,
+        color: colors[reg.ci],
+        type: cls.type,
+        pca,
+        mask: m.mask, w: m.w, h: m.h, offX: m.offX, offY: m.offY,
+        ptCount: pts.length,
+        areaMm2: cls.areaMm2,
+        widthMm: cls.widthMm,
+        bounds: { mnx: m.offX, mny: m.offY, mxx: m.offX + m.w - 1, mxy: m.offY + m.h - 1 }
+      });
+    }
   }
-  return stitches;
+  console.log(`[v70] Final shapes: ${shapes.length} (fill:${shapes.filter(s=>s.type==="fill").length} satin:${shapes.filter(s=>s.type==="satin").length} run:${shapes.filter(s=>s.type==="running").length})`);
+  return shapes;
 }
 
-function v69_generateStitchesFromShapes(shapes, colors, params, canvasSize) {
+/* ── Top-level stitch generation ──────────────────────────────────────────── */
+function v70_generateStitches(shapes, colors, params, canvasSize) {
   const out = [];
   const colorCounts = colors.map(() => ({fill:0, satin:0, running:0, underlay:0}));
-  const pxScale = 1; // 1px = 0.1mm always, stitch density independent of canvas resolution
+  const pxScale  = canvasSize / 800;
   const P = params || {};
-  const pRow      = Math.round((P.tatamiRow || 5) * pxScale);
-  const pLen      = Math.round((P.tatamiLen || 30) * pxScale);
-  const pPullComp = Math.round((P.pullComp  || 2)  * pxScale);
+  const pRow      = Math.max(3, Math.round((P.tatamiRow || 5) * pxScale));
+  const pLen      = Math.max(15, Math.round((P.tatamiLen || 30) * pxScale));
+  const pPullComp = Math.round((P.pullComp || 2) * pxScale);
   const pOutline  = Math.round(15 * pxScale);
   const pBrick    = Math.round(pLen * 0.5);
 
-  const byColor = new Map();
+  /* Group by color, sort within color: largest fills first */
+  const byCi = new Map();
   for (const sh of shapes) {
-    const ci = sh.ci;
-    if (!byColor.has(ci)) byColor.set(ci, []);
-    byColor.get(ci).push(sh);
+    if (!byCi.has(sh.ci)) byCi.set(sh.ci, []);
+    byCi.get(sh.ci).push(sh);
   }
 
-  let lastX = 0, lastY = 0, prevColor = null;
-
+  let lastX = 0, lastY = 0;
   for (let ci = 0; ci < colors.length; ci++) {
-    const group = byColor.get(ci);
+    const group = byCi.get(ci);
     if (!group || !group.length) continue;
     group.sort((a, b) => {
       const tA = a.type === "fill" ? 0 : a.type === "satin" ? 1 : 2;
       const tB = b.type === "fill" ? 0 : b.type === "satin" ? 1 : 2;
       if (tA !== tB) return tA - tB;
-      return b.area - a.area;
+      return b.ptCount - a.ptCount;
     });
-
     const color = colors[ci];
 
-    /* Color change handling — trim old color, encodeDST auto-detects new color */
-    if (prevColor !== null && color !== prevColor) {
-      out.push({ x: lastX, y: lastY, color: prevColor, type: "trim" });
-    }
-
     for (const sh of group) {
-      const startX = sh.outer[0][0], startY = sh.outer[0][1];
-      const gap = Math.hypot(startX - lastX, startY - lastY);
-
-      if (gap > 12 * pxScale) {
-        if (prevColor !== null && gap > 120) {
-          out.push({ x: lastX, y: lastY, color: prevColor || color, type: "trim" });
-          out.push({ x: startX, y: startY, color: color, type: "jump" });
-        } else if (gap > 12) {
-          /* Bridge with running stitches for short gaps */
-          const steps = Math.max(1, Math.ceil(gap / 8));
-          for (let i = 1; i <= steps; i++) {
-            const fx = Math.round(lastX + (startX - lastX) * i / steps);
-            const fy = Math.round(lastY + (startY - lastY) * i / steps);
-            out.push({ x: fx, y: fy, color, type: "running" });
-          }
-        }
+      /* Trim if moving far */
+      const path = v70_traceOutline(sh.mask, sh.w, sh.h);
+      if (!path.length) continue;
+      const startX = path[0][0] + sh.offX, startY = path[0][1] + sh.offY;
+      if (Math.hypot(startX - lastX, startY - lastY) > 12 * pxScale) {
+        out.push({ x: lastX, y: lastY, color, type: "trim" });
       }
 
-      /* Tie-in at start of shape */
-      if (sh.type !== "running") {
-        out.push({ x: startX, y: startY, color, type: "running" });
-        out.push({ x: startX + 2, y: startY, color, type: "running" });
-        out.push({ x: startX, y: startY, color, type: "running" });
-      }
-
-      /* Outline pass (crisp edges, hides fill ends) */
-      const ol = v69_outlinePath(sh.outer, color, pOutline);
+      /* OUTLINE pass — running stitches around the actual mask boundary */
+      const ol = v70_outlineStitches(path, sh.offX, sh.offY, color, pOutline);
       for (const s of ol) {
         out.push(s);
         colorCounts[ci].running++;
-      }
-      for (const hole of sh.holes) {
-        const oh = v69_outlinePath(hole, color, pOutline);
-        for (const s of oh) {
-          out.push(s);
-          colorCounts[ci].running++;
-        }
+        lastX = s.x; lastY = s.y;
       }
 
-      /* Main stitching */
-      if (sh.type === "fill") {
-        const stitches = v69_fillAtAngle(sh, color, pRow, pLen, pPullComp, pBrick);
-        for (const s of stitches) {
+      /* MAIN STITCHING */
+      if (sh.type === "fill" || (sh.type === "satin" && sh.widthMm > 3.5)) {
+        const scan = v70_scanRuns(sh.mask, sh.w, sh.h, sh.offX, sh.offY,
+                                  sh.pca.angle, pRow);
+        const fs = v70_runsToStitches(scan, color, pBrick, pPullComp);
+        for (const s of fs) {
           out.push(s);
           colorCounts[ci].fill++;
           lastX = s.x; lastY = s.y;
         }
       } else if (sh.type === "satin") {
-        const stitches = v69_satinColumn(sh, color, pLen);
-        for (const s of stitches) {
+        /* For genuine satin (thin), use a denser scan at smaller row pitch */
+        const scan = v70_scanRuns(sh.mask, sh.w, sh.h, sh.offX, sh.offY,
+                                  sh.pca.angle, Math.max(2, Math.round(2.5 * pxScale)));
+        const fs = v70_runsToStitches(scan, color, 0, pPullComp);
+        for (const s of fs) {
           out.push(s);
           colorCounts[ci].satin++;
           lastX = s.x; lastY = s.y;
         }
       }
-
-      /* Tie-off at end of shape */
-      if (sh.type !== "running") {
-        out.push({ x: lastX + 2, y: lastY, color, type: "running" });
-        out.push({ x: lastX, y: lastY, color, type: "running" });
-      }
+      /* running: outline is the stitching, nothing more */
     }
-
-    prevColor = color;
   }
-
   return { stitches: out, colorCounts };
 }
 
@@ -2674,31 +2747,33 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       return res.status(400).json({error:"No regions left after selection — select more colors/shapes"});
     }
 
-    /* ─── V69 VECTORIZATION ────────────────────────────────
-       Build per-region shape descriptors (outline + holes + PCA angle).
-       The new stitch generator works on shapes, not raw pixel rows. */
-    const pxPerMm_gen = canvasSize / (canvasSize / 10);  /* 10 px per mm */
-    const shapeDescriptors = [];
+    /* ─── V70 MASK-BASED ORIENTED STITCH GENERATION ────────────────────
+       Build a filtered pixMap that contains ONLY the selected regions,
+       then let v70 do connected-component analysis + erosion-based blob
+       splitting + per-shape PCA + oriented mask scanning. */
+    const filteredPixMap = new Int16Array(canvasSize * canvasSize).fill(-1);
     for (const reg of filteredRegions) {
-      try {
-        const desc = v69_buildShapeDescriptor(pixMap, reg, canvasSize, pxPerMm_gen);
-        if (desc && desc.outer && desc.outer.length >= 3) {
-          desc.ci = selectedColors.findIndex(c => normHex(c) === normHex(reg.color));
-          if (desc.ci < 0) desc.ci = reg.ci;
-          shapeDescriptors.push(desc);
+      const newCi = selectedColors.findIndex(c => normHex(c) === normHex(reg.color));
+      if (newCi < 0) continue;
+      for (let y = reg.mny; y <= reg.mxy; y++) {
+        for (let x = reg.mnx; x <= reg.mxx; x++) {
+          if (pixMap[y * canvasSize + x] === reg.ci) {
+            filteredPixMap[y * canvasSize + x] = newCi;
+          }
         }
-      } catch(e) { console.error(`Shape descriptor failed for region:`, e.message); }
+      }
     }
-    console.log(`[${rid}] v69 shapes: ${shapeDescriptors.length} | fill:${shapeDescriptors.filter(s=>s.type==="fill").length} satin:${shapeDescriptors.filter(s=>s.type==="satin").length} run:${shapeDescriptors.filter(s=>s.type==="running").length}`);
+    const pxPerMm_gen = 10;  /* 800px canvas = 80mm → 10 px per mm */
+    const v70Shapes = v70_buildShapes(filteredPixMap, selectedColors, canvasSize, pxPerMm_gen);
+    console.log(`[${rid}] v70 produced ${v70Shapes.length} shapes`);
 
     let stitches, colorCounts;
-    if (shapeDescriptors.length > 0) {
-      const result = v69_generateStitchesFromShapes(shapeDescriptors, selectedColors, params, canvasSize);
+    if (v70Shapes.length > 0) {
+      const result = v70_generateStitches(v70Shapes, selectedColors, params, canvasSize);
       stitches = result.stitches;
       colorCounts = result.colorCounts;
     } else {
-      /* Fallback to legacy generator if vectorization produced nothing */
-      console.warn(`[${rid}] v69 produced no shapes; using legacy generator`);
+      console.warn(`[${rid}] v70 produced no shapes; using legacy generator`);
       const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
       stitches = legacy.stitches; colorCounts = legacy.colorCounts;
     }
@@ -2905,9 +2980,9 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
   return res.send(buf);
 });
 
-app.get("/health",(_,res)=>res.json({status:"ok",version:"69.0",features:"v69-vectorized,boundary-trace,pca-angles,satin-columns,outline-pass,bg-detect,zip-inf,scale-aware"}));
+app.get("/health",(_,res)=>res.json({status:"ok",version:"69.0",features:"v70-mask-oriented,blob-split,erosion-recon,pca-angles,satin-columns,outline-pass,bg-detect,zip-inf,scale-aware"}));
 
 const PORT=process.env.PORT||3000;
-const server=app.listen(PORT,()=>console.log(`Stichai v69.0 | :${PORT} | Vectorized stitch generation`));
+const server=app.listen(PORT,()=>console.log(`Stichai v70.0 | :${PORT} | Mask-oriented + blob splitting`));
 server.timeout=120000;
 server.keepAliveTimeout=65000;
