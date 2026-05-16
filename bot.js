@@ -957,6 +957,11 @@ function v70_scanRuns(mask, w, h, offX, offY, angle, rowSpacing) {
    (so the machine pen-ups instead of bridging across).
    ───────────────────────────────────────────────────────────────────────── */
 function v70_runsToStitches(scan, color, brickAmt, pullComp, maxBridgePx, maxStitchLen) {
+  /* maxStitchLen is the soft target — any stitch longer than this gets split
+     into N pieces of equal length. We aim for stitches AROUND this length,
+     not just below it. So if maxStitchLen = 47px (4.7mm), a 100px segment
+     becomes 3 pieces of ~33px (3.3mm), not 2 pieces of 50px. */
+  const targetLen = maxStitchLen;
   const { rows, cos, sin, offX, offY } = scan;
   const stitches = [];
   let reversed = false;
@@ -980,6 +985,19 @@ function v70_runsToStitches(scan, color, brickAmt, pullComp, maxBridgePx, maxSti
         const travel = Math.hypot(sx - lastX, sy - lastY);
         if (isSameRow || travel > maxBridgePx) {
           stitches.push({ x: lastX, y: lastY, color, type: "trim" });
+        } else if (maxStitchLen > 0 && travel > maxStitchLen) {
+          /* Bridge between row N end → row N+1 start. If longer than the
+             machine's max stitch, subdivide so we don't exceed hardware limit
+             AND so the bridge doesn't show as a long diagonal line in viewers. */
+          const n = Math.ceil(travel / maxStitchLen);
+          const bdx = sx - lastX, bdy = sy - lastY;
+          for (let k = 1; k < n; k++) {
+            stitches.push({
+              x: lastX + bdx * k / n,
+              y: lastY + bdy * k / n,
+              color, type: "fill"
+            });
+          }
         }
       }
       /* Emit start point, then subdivide along the row if longer than maxStitchLen.
@@ -1118,8 +1136,13 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
   const P = params || {};
   const pRow      = Math.max(20, Math.round((P.tatamiRow || 40) * pxScale));  /* 4mm default */
   const pLen      = Math.max(20, Math.round((P.tatamiLen || 47) * pxScale));  /* 4.7mm default */
+  /* Subdivision target: stitches LONGER than this get split into N pieces.
+     Industry pro file mean stitch length is 3.5mm. To make our mean land near
+     that, the subdivision target should be ~3.5mm so any longer stitch gets
+     broken into ~equal pieces around the target. */
+  const pSubdiv   = Math.max(20, Math.round((P.tatamiLen || 35) * pxScale * 0.75));  /* ~3.5mm target */
   const pPullComp = Math.round((P.pullComp || 2) * pxScale);
-  const pOutline  = Math.round((P.tatamiLen || 47) * pxScale);  /* outline step = stitch length */
+  const pOutline  = pSubdiv;  /* outline step = same target */
   /* Brick offset: stagger alternate rows by a fraction of ROW pitch (not stitch length).
      Setting this >= rowSpacing causes rows to overlap going backwards — the
      chaos pattern in v70.0. Half a row pitch is the maximum safe value. */
@@ -1178,7 +1201,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
       if (sh.type === "fill" || (sh.type === "satin" && sh.widthMm > 3.5)) {
         const scan = v70_scanRuns(sh.mask, sh.w, sh.h, sh.offX, sh.offY,
                                   stitchAngle, pRow);
-        const fs = v70_runsToStitches(scan, color, pBrick, pPullComp, pMaxBridge, pLen);
+        const fs = v70_runsToStitches(scan, color, pBrick, pPullComp, pMaxBridge, pSubdiv);
         /* Trim between outline-end and fill-start if they're far apart */
         if (fs.length > 0 && lastX !== null) {
           const dx = fs[0].x - lastX, dy = fs[0].y - lastY;
@@ -1195,7 +1218,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
         /* For genuine satin (thin), use a denser scan at smaller row pitch */
         const scan = v70_scanRuns(sh.mask, sh.w, sh.h, sh.offX, sh.offY,
                                   stitchAngle, Math.max(2, Math.round(2.5 * pxScale)));
-        const fs = v70_runsToStitches(scan, color, 0, pPullComp, pMaxBridge, pLen);
+        const fs = v70_runsToStitches(scan, color, 0, pPullComp, pMaxBridge, pSubdiv);
         for (const s of fs) {
           out.push(s);
           colorCounts[ci].satin++;
