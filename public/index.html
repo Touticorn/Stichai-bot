@@ -668,13 +668,14 @@ var T = {
     pwaTitle:"Add to Home Screen", pwaSub:"Launch Stichai like a native app.",
     pwaChromeNote:"Open in Chrome or Edge to install.", pwaFirefoxNote:"Open in Chrome or Edge to install.",
     wandTipTitle:"Smart Extraction Tips",
-    wandTipAI:"Tap \u201cAuto-detect\u201d to extract a person in one tap",
-    wandTipLong:"Hold finger on any object 0.7s to smart-select it",
-    wandTipAdd:"Switch to \u201c+ Add\u201d mode to keep multiple objects",
+    wandTipAI:"Tap \"Auto-detect\" to extract the main person automatically",
+    wandTipLong:"Hold finger on any subject for 0.7s — AI extracts the whole object",
+    wandTipAdd:"Switch to \"+ Add\" mode to keep multiple objects",
     wandBtnAI:"Auto-detect person", wandLoading:"Detecting\u2026",
     wandModeLabel:"Long-press:", wandModeReplace:"Replace", wandModeAdd:"+ Add",
     wandTooBig:"Area too large \u2014 tap a specific spot. Use \uD83E\uDD16 Auto-detect for whole subjects.",
-    wandUndo:"Undo", wandUndone:"Undone", wandBigArea:"% selected \u2014 may be too broad. Try a tighter spot or use Auto-detect."
+    wandUndo:"Undo", wandUndone:"Undone", wandBigArea:"% selected \u2014 may be too broad. Try a tighter spot or use Auto-detect.",
+    wandNotFound:"Nothing detected at that spot \u2014 try holding on a clearer area or use Auto-detect."
   },
   fr: {
     navFeatures:"Fonctionnalit\u00e9s", navPricing:"Tarifs", navTool:"Essayer", install:"Installer",
@@ -752,13 +753,14 @@ var T = {
     pwaTitle:"Ajouter \u00e0 l\u2019\u00e9cran d\u2019accueil", pwaSub:"Lancez Stichai comme une app native.",
     pwaChromeNote:"Ouvrez dans Chrome ou Edge.", pwaFirefoxNote:"Ouvrez dans Chrome ou Edge.",
     wandTipTitle:"Astuces d\u2019extraction intelligente",
-    wandTipAI:"Appuyez sur \u00ab\u00a0D\u00e9tecter\u00a0\u00bb pour extraire une personne en un tap",
-    wandTipLong:"Maintenez le doigt sur un objet 0,7s pour le s\u00e9lectionner",
+    wandTipAI:"Appuyez sur \u00ab\u00a0D\u00e9tecter\u00a0\u00bb pour extraire la personne principale",
+    wandTipLong:"Maintenez le doigt sur un sujet 0,7s \u2014 l\u2019IA extrait l\u2019objet entier",
     wandTipAdd:"Passez en mode \u00ab\u00a0+ Ajouter\u00a0\u00bb pour garder plusieurs sujets",
     wandBtnAI:"D\u00e9tecter la personne", wandLoading:"D\u00e9tection\u2026",
     wandModeLabel:"Appui long\u00a0:", wandModeReplace:"Remplacer", wandModeAdd:"+ Ajouter",
     wandTooBig:"Zone trop grande \u2014 appuyez plus pr\u00e9cis\u00e9ment. Utilisez \uD83E\uDD16 D\u00e9tecter pour les sujets entiers.",
-    wandUndo:"Annuler", wandUndone:"Annul\u00e9", wandBigArea:"% s\u00e9lectionn\u00e9 \u2014 peut \u00eatre trop large. Essayez un endroit plus pr\u00e9cis ou utilisez D\u00e9tecter."
+    wandUndo:"Annuler", wandUndone:"Annul\u00e9", wandBigArea:"% s\u00e9lectionn\u00e9 \u2014 peut \u00eatre trop large.",
+    wandNotFound:"Rien d\u00e9tect\u00e9 \u00e0 cet endroit \u2014 essayez une zone plus nette ou utilisez D\u00e9tecter."
   },
   ar: {
     navFeatures:"\u0627\u0644\u0645\u0645\u064a\u0632\u0627\u062a", navPricing:"\u0627\u0644\u0623\u0633\u0639\u0627\u0631", navTool:"\u062c\u0631\u0651\u0628", install:"\u062a\u062b\u0628\u064a\u062a",
@@ -847,13 +849,14 @@ var T = {
     pwaChromeNote:"\u0627\u0641\u062a\u062d \u0641\u064a Chrome \u0623\u0648 Edge \u0644\u0644\u062a\u062b\u0628\u064a\u062a.",
     pwaFirefoxNote:"\u0627\u0641\u062a\u062d \u0641\u064a Chrome \u0623\u0648 Edge \u0644\u0644\u062a\u062b\u0628\u064a\u062a.",
     wandTipTitle:"\u0646\u0635\u0627\u0626\u062d \u0627\u0644\u0627\u0633\u062a\u062e\u0631\u0627\u062c \u0627\u0644\u0630\u0643\u064a",
-    wandTipAI:"\u0627\u0636\u063a\u0637 \u00ab\u0643\u0634\u0641\u00bb \u0644\u0627\u0633\u062a\u062e\u0631\u0627\u062c \u0634\u062e\u0635 \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b \u0628\u0636\u063a\u0637\u0629 \u0648\u0627\u062d\u062f\u0629",
-    wandTipLong:"\u0627\u0636\u063a\u0637 \u0645\u0637\u0648\u0644\u0627\u064b \u0639\u0644\u0649 \u0623\u064a \u0643\u0627\u0626\u0646 0.7\u062b \u0644\u062a\u062d\u062f\u064a\u062f\u0647 \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b",
+    wandTipAI:"\u0627\u0636\u063a\u0637 \u00ab\u0643\u0634\u0641\u00bb \u0644\u0627\u0633\u062a\u062e\u0631\u0627\u062c \u0627\u0644\u0634\u062e\u0635 \u0627\u0644\u0631\u0626\u064a\u0633\u064a \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b",
+    wandTipLong:"\u0627\u0636\u063a\u0637 \u0645\u0637\u0648\u0644\u0627\u064b 0.7\u062b \u2014 \u0633\u064a\u0633\u062a\u062e\u0631\u062c \u0627\u0644\u0630\u0643\u0627\u0621 \u0627\u0644\u0627\u0635\u0637\u0646\u0627\u0639\u064a \u0627\u0644\u0643\u0627\u0626\u0646 \u0643\u0627\u0645\u0644\u0627\u064b",
     wandTipAdd:"\u0627\u0646\u062a\u0642\u0644 \u0644\u0648\u0636\u0639 \u00ab+ \u0625\u0636\u0627\u0641\u0629\u00bb \u0644\u0644\u0627\u062d\u062a\u0641\u0627\u0638 \u0628\u0639\u062f\u0629 \u0643\u0627\u0626\u0646\u0627\u062a",
     wandBtnAI:"\u0643\u0634\u0641 \u0627\u0644\u0634\u062e\u0635 \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b", wandLoading:"\u062c\u0627\u0631\u064a \u0627\u0644\u0643\u0634\u0641\u2026",
     wandModeLabel:"\u0627\u0644\u0636\u063a\u0637 \u0627\u0644\u0645\u0637\u0648\u0644:", wandModeReplace:"\u0627\u0633\u062a\u0628\u062f\u0627\u0644", wandModeAdd:"+ \u0625\u0636\u0627\u0641\u0629",
-    wandTooBig:"\u0645\u0646\u0637\u0642\u0629 \u0643\u0628\u064a\u0631\u0629 \u062c\u062f\u0627\u064b \u2014 \u0627\u0636\u063a\u0637 \u0628\u062f\u0642\u0629 \u0623\u0643\u062b\u0631. \u0627\u0633\u062a\u062e\u062f\u0645 \uD83E\uDD16 \u0643\u0634\u0641 \u0644\u0644\u0643\u0627\u0626\u0646\u0627\u062a \u0627\u0644\u0643\u0627\u0645\u0644\u0629.",
-    wandUndo:"\u062a\u0631\u0627\u062c\u0639", wandUndone:"\u062a\u0645 \u0627\u0644\u062a\u0631\u0627\u062c\u0639", wandBigArea:"% \u0645\u062d\u062f\u062f \u2014 \u0642\u062f \u064a\u0643\u0648\u0646 \u0648\u0627\u0633\u0639\u0627\u064b. \u062c\u0631\u0651\u0628 \u0645\u0643\u0627\u0646\u0627\u064b \u0623\u062f\u0642 \u0623\u0648 \u0627\u0633\u062a\u062e\u062f\u0645 \u0643\u0634\u0641."
+    wandTooBig:"\u0645\u0646\u0637\u0642\u0629 \u0643\u0628\u064a\u0631\u0629 \u062c\u062f\u0627\u064b \u2014 \u0627\u0636\u063a\u0637 \u0628\u062f\u0642\u0629 \u0623\u0643\u062b\u0631.",
+    wandUndo:"\u062a\u0631\u0627\u062c\u0639", wandUndone:"\u062a\u0645 \u0627\u0644\u062a\u0631\u0627\u062c\u0639", wandBigArea:"% \u0645\u062d\u062f\u062f \u2014 \u0642\u062f \u064a\u0643\u0648\u0646 \u0648\u0627\u0633\u0639\u0627\u064b.",
+    wandNotFound:"\u0644\u0645 \u064a\u064f\u0639\u062b\u0631 \u0639\u0644\u0649 \u0634\u064a\u0621 \u2014 \u062c\u0631\u0651\u0628 \u0645\u0646\u0637\u0642\u0629 \u0623\u0648\u0636\u062d \u0623\u0648 \u0627\u0633\u062a\u062e\u062f\u0645 \u0643\u0634\u0641."
   }
 };
 var currentLang='en';
@@ -1190,128 +1193,128 @@ function startLongPress(e){
 }
 function endLongPress(){ clearTimeout(longPressTimer); pressStartPos=null; }
 
-/* ── UNDO STATE ────────────────────────────────────── */
-var prevMaskDataURL=null;
-function undoWand(){
-  if(!prevMaskDataURL||!mX)return;
-  var img=new Image();
-  img.onload=function(){
-    mX.clearRect(0,0,mX.canvas.width,mX.canvas.height);
-    mX.drawImage(img,0,0);
-    document.getElementById('st').innerHTML='<p>\u21A9 '+t('wandUndone')+'</p>';
-    prevMaskDataURL=null;
-    hm=false;
+/* ── LONG-PRESS → GEMINI EXTRACTION ─────────────────────
+   The user holds their finger on a subject. We send the tap
+   coordinates to /segment-subject so Gemini can identify
+   exactly what's at that point and trace its full outline.
+   flood-fill is kept as a silent offline-only fallback.
+────────────────────────────────────────────────────────── */
+function magicWandExtract(sx, sy){
+  if(!c1||!mX||!cf)return;
+
+  /* Convert canvas pixel → 0-1000 normalized image space */
+  var off=window._imgOff||{x:0,y:0,w:c1.width,h:c1.height};
+  var tapX=Math.round(Math.max(0,Math.min(1000,(sx-off.x)/off.w*1000)));
+  var tapY=Math.round(Math.max(0,Math.min(1000,(sy-off.y)/off.h*1000)));
+
+  /* Visual pulse at tap point while waiting */
+  var pulseFrame=0;
+  var pulsePaint=function(){
+    if(!mX)return;
+    var ctx=mX;
+    ctx.save();
+    ctx.globalCompositeOperation='source-over';
+    var r=18+pulseFrame*3;
+    var alpha=Math.max(0,0.7-pulseFrame*0.07);
+    ctx.strokeStyle='rgba(255,255,255,'+alpha+')';
+    ctx.lineWidth=2.5;
+    ctx.beginPath();
+    ctx.arc(sx,sy,r,0,Math.PI*2);
+    ctx.stroke();
+    ctx.restore();
+    pulseFrame++;
+    if(pulseFrame<10)requestAnimationFrame(pulsePaint);
   };
-  img.src=prevMaskDataURL;
+  requestAnimationFrame(pulsePaint);
+
+  document.getElementById('st').innerHTML=
+    '<p>&#129302; '+t('wandLoading')+'&hellip;</p>';
+
+  var fd=new FormData();
+  fd.append('image',cf);
+  fd.append('tapX',tapX);
+  fd.append('tapY',tapY);
+
+  fetch('/segment-subject',{method:'POST',body:fd})
+    .then(function(r){return r.json();})
+    .then(function(data){
+      if(data.found&&Array.isArray(data.polygon)&&data.polygon.length>=6){
+        applyGeminiPolygon(data.polygon);
+        var ub='<button onclick="undoWand()" style="background:none;border:none;color:var(--red);font-weight:700;cursor:pointer;font-size:12px;padding:0;margin-left:8px">\u21A9 '+t('wandUndo')+'</button>';
+        document.getElementById('st').innerHTML=
+          '<p class="ok">&#10003; '+t('maskAutoExtracted')+' ('+data.subject+')'+ub+'</p>';
+        if(navigator.vibrate)navigator.vibrate([30,30,60]);
+      }else{
+        /* Gemini found nothing at this point */
+        document.getElementById('st').innerHTML=
+          '<div class="error">&#9888;&#65039; '+t('wandNotFound')+'</div>';
+        if(!hm)mX.clearRect(0,0,mX.canvas.width,mX.canvas.height);
+      }
+    })
+    .catch(function(){
+      /* Server offline — fall back to local flood fill */
+      magicWandFloodFill(sx,sy);
+    });
 }
 
-function magicWandExtract(sx,sy){
+/* ── FLOOD-FILL FALLBACK (offline only) ──────────────── */
+function magicWandFloodFill(sx,sy){
   if(!c1||!mX)return;
   var w=c1.width, h=c1.height;
   var d=c1.getContext('2d').getImageData(0,0,w,h).data;
   sx=Math.floor(sx); sy=Math.floor(sy);
   if(sx<0||sy<0||sx>=w||sy>=h)return;
-
   var sidx=sy*w+sx;
-  var sr=d[sidx*4], sg=d[sidx*4+1], sb=d[sidx*4+2];
-
-  /* ── DUAL-CRITERION FLOOD FILL ────────────────────────
-     Classic flood fill fails on photos because colors drift
-     gradually from skin → clothing → sand → sky. Two checks
-     fix this:
-
-     1. SEED check (R²=784): pixel must stay close to the
-        original tap color. Prevents accumulating drift over
-        long paths.
-
-     2. STEP check (R²=400): pixel must be similar to its
-        direct neighbor in the queue (edge-stop). Stops cold
-        at actual color edges regardless of seed distance.
-
-     Together they keep the fill inside one visually
-     homogeneous region instead of flooding the whole image.
-  ─────────────────────────────────────────────────────── */
-  var SEED_R2 = 28*28;  /* max squared Euclidean dist from tap color    */
-  var STEP_R2 = 20*20;  /* max squared dist between adjacent pixels     */
-  var MAX_PX  = Math.floor(w*h*0.30); /* cancel if > 30% selected       */
-
-  var visited = new Uint8Array(w*h);
-  var maxQ    = MAX_PX + 64;
-  var q       = new Int32Array(maxQ);
-  var qHead=0, qTail=0;
-
-  visited[sidx]=1;
-  q[qTail++]=sidx;
-  var selCount=1, cancelled=false;
-  var DX=[-1,1,0,0], DY=[0,0,-1,1];
-
-  outer: while(qHead<qTail){
+  var sr=d[sidx*4],sg=d[sidx*4+1],sb=d[sidx*4+2];
+  var SEED_R2=28*28, STEP_R2=20*20;
+  var MAX_PX=Math.floor(w*h*0.30);
+  var visited=new Uint8Array(w*h);
+  var q=new Int32Array(MAX_PX+64);
+  var qHead=0,qTail=0;
+  visited[sidx]=1; q[qTail++]=sidx;
+  var selCount=1,cancelled=false;
+  var DX=[-1,1,0,0],DY=[0,0,-1,1];
+  outer:while(qHead<qTail){
     var cidx=q[qHead++];
-    var cx=cidx%w, cy=(cidx/w)|0;
-    var cr=d[cidx*4], cg=d[cidx*4+1], cb=d[cidx*4+2];
+    var cx=cidx%w,cy=(cidx/w)|0;
+    var cr=d[cidx*4],cg=d[cidx*4+1],cb=d[cidx*4+2];
     for(var di=0;di<4;di++){
-      var nx=cx+DX[di], ny=cy+DY[di];
+      var nx=cx+DX[di],ny=cy+DY[di];
       if(nx<0||ny<0||nx>=w||ny>=h)continue;
       var nidx=ny*w+nx;
       if(visited[nidx])continue;
       var ni2=nidx*4;
-      var nr=d[ni2], ng=d[ni2+1], nb=d[ni2+2];
-      /* Seed check */
-      var ds=nr-sr, dsg=ng-sg, dsb=nb-sb;
+      var nr=d[ni2],ng=d[ni2+1],nb=d[ni2+2];
+      var ds=nr-sr,dsg=ng-sg,dsb=nb-sb;
       if(ds*ds+dsg*dsg+dsb*dsb>SEED_R2)continue;
-      /* Edge-stop check (neighbor vs current pixel, not seed) */
-      var dp=nr-cr, dpg=ng-cg, dpb=nb-cb;
+      var dp=nr-cr,dpg=ng-cg,dpb=nb-cb;
       if(dp*dp+dpg*dpg+dpb*dpb>STEP_R2)continue;
-      visited[nidx]=1;
-      q[qTail++]=nidx;
-      selCount++;
+      visited[nidx]=1; q[qTail++]=nidx; selCount++;
       if(selCount>=MAX_PX){cancelled=true;break outer;}
     }
   }
-
   if(cancelled){
-    document.getElementById('st').innerHTML=
-      '<div class="error">&#9888;&#65039; '+t('wandTooBig')+'</div>';
+    document.getElementById('st').innerHTML='<div class="error">&#9888;&#65039; '+t('wandTooBig')+'</div>';
     return;
   }
-
   var pct=Math.round(selCount/(w*h)*100);
-
-  /* Build alpha mask */
-  var temp=document.createElement('canvas');
-  temp.width=w; temp.height=h;
-  var tctx=temp.getContext('2d');
-  var tData=tctx.createImageData(w,h);
+  var temp=document.createElement('canvas'); temp.width=w; temp.height=h;
+  var tctx=temp.getContext('2d'); var tData=tctx.createImageData(w,h);
   for(var i=0;i<w*h;i++){if(visited[i])tData.data[i*4+3]=255;}
   tctx.putImageData(tData,0,0);
-
-  /* Morphological close: blur 3px then re-threshold.
-     Fills hairline gaps inside the region, removes stray
-     1-2px noise dots outside it. */
-  var cleanC=document.createElement('canvas');
-  cleanC.width=w; cleanC.height=h;
+  var cleanC=document.createElement('canvas'); cleanC.width=w; cleanC.height=h;
   var cc=cleanC.getContext('2d');
-  cc.filter='blur(3px)';
-  cc.drawImage(temp,0,0);
-  cc.filter='none';
+  cc.filter='blur(3px)'; cc.drawImage(temp,0,0); cc.filter='none';
   var bd=cc.getImageData(0,0,w,h);
   for(var i=3;i<bd.data.length;i+=4)bd.data[i]=bd.data[i]>28?255:0;
   cc.putImageData(bd,0,0);
-
-  /* Save current mask state for undo */
   prevMaskDataURL=mX.canvas.toDataURL();
-
   applyPersonCanvas(cleanC);
-
   var undoBtn='<button onclick="undoWand()" style="background:none;border:none;color:var(--red);font-weight:700;cursor:pointer;font-size:12px;padding:0;margin-left:8px">\u21A9 '+t('wandUndo')+'</button>';
-  var stEl=document.getElementById('st');
-  if(pct>=18){
-    stEl.innerHTML='<p style="color:#856404">&#9888;&#65039; '+pct+'% '+t('wandBigArea')+undoBtn+'</p>';
-  }else{
-    stEl.innerHTML='<p class="ok">&#10003; '+t('maskAutoExtracted')+' ('+pct+'%)'+undoBtn+'</p>';
-  }
+  document.getElementById('st').innerHTML=pct>=18
+    ?'<p style="color:#856404">&#9888;&#65039; '+pct+'% '+t('wandBigArea')+undoBtn+'</p>'
+    :'<p class="ok">&#10003; '+t('maskAutoExtracted')+' ('+pct+'%)'+undoBtn+'</p>';
 }
-
 /* Apply a person canvas (opaque=keep, transparent=mask-red) to mX */
 function applyPersonCanvas(personCanvas){
   var w=mX.canvas.width, h=mX.canvas.height;
