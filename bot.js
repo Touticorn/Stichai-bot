@@ -598,45 +598,38 @@ async function segmentSubjectWithGemini(imageBuffer, mime, tapX, tapY) {
     && !isNaN(tapX) && !isNaN(tapY);
 
   const subjectInstruction = hasPoint
-    ? `The user tapped at coordinate [${tapX}, ${tapY}]. Identify and outline the specific object or person located AT or nearest to that point.`
-    : `Find and outline the MAIN SUBJECT — the most prominent person, baby, or animal in the foreground.`;
+    ? `The user tapped at coordinate [${tapX}, ${tapY}]. Find the object or person AT or nearest to that point.`
+    : `Find the MAIN SUBJECT — the most prominent person, baby, or animal in the foreground.`;
 
-  const prompt = `You are a precise image segmentation assistant for embroidery digitizing.
+  const prompt = `You are an image segmentation assistant for embroidery digitizing.
 ${subjectInstruction}
 
 Return ONLY valid JSON, no markdown, no extra text:
 {
   "found": true,
   "subject": "baby",
-  "polygon": [[x1,y1],[x2,y2],...],
+  "bbox": [xmin, ymin, xmax, ymax],
+  "rows": ["00011111100", "00111111110", ...],
   "confidence": "high" | "medium" | "low"
 }
 
-COORDINATE SYSTEM:
-- x = horizontal: 0=LEFT edge, 1000=RIGHT edge
-- y = vertical:   0=TOP edge,  1000=BOTTOM edge
-- Each point: [x, y] — horizontal FIRST, vertical SECOND
-- Corners: top-left=[0,0]  top-right=[1000,0]  bottom-left=[0,1000]  bottom-right=[1000,1000]
-${hasPoint ? `- The polygon MUST contain the tap point [${tapX},${tapY}]` : ""}
+BOUNDING BOX (bbox) — 4 integers 0-1000:
+- x: 0=left edge, 1000=right edge
+- y: 0=top edge,  1000=bottom edge  
+- Format: [xmin, ymin, xmax, ymax]
+- Must fully surround the subject: top of hat → bottom of feet → full arm span
+- Add 25 units margin on all sides
+${hasPoint ? `- The point [${tapX},${tapY}] must fall inside the bbox` : ""}
 
-TRACING METHOD — trace clockwise starting from the topmost point:
-1. Crown of head / top of hat or turban
-2. Right side of head → right ear
-3. Right shoulder → right arm outer edge → right hand/fist
-4. Right side of torso → right hip
-5. Right leg outer edge → right knee → right foot / right shoe tip
-6. Bottom center — the LOWEST point of the body (feet touching ground)
-7. Left foot / left shoe tip → left knee → left leg
-8. Left hip → left side of torso
-9. Left hand/fist → left arm outer edge → left shoulder
-10. Left side of head → left ear → back to crown
+GRID ROWS (rows) — exactly 20 strings, each exactly 20 characters:
+- Row 0 = top of bbox, row 19 = bottom of bbox
+- Column 0 = left of bbox, column 19 = right of bbox
+- "1" = cell contains ANY part of the subject (be generous)
+- "0" = pure background
+- Bottom rows MUST reach the feet / lowest point of the seated body
+- Every row must be exactly 20 chars of "0" or "1"
 
-CRITICAL RULES:
-- Use 40 to 60 points total — enough for smooth curves at each body part
-- ALWAYS reach all the way down to the feet / bottom of the seated body
-- Include 100% of the subject: hat, turban, bow, all limbs, hands, feet, clothing
-- Extend 15 units OUTSIDE the visible edge — do not clip any part of the body
-- If no subject found: return {"found": false}`;
+If no subject: {"found": false}`;
 
   const res = await geminiPost({
     contents: [{ role:"user", parts:[
@@ -647,7 +640,6 @@ CRITICAL RULES:
       temperature: 0.0,
       maxOutputTokens: 8192,
       responseMimeType: "application/json"
-      /* thinking enabled intentionally — spatial coordinate tasks need it */
     }
   });
 
@@ -662,95 +654,55 @@ CRITICAL RULES:
     if (js.length < 10) return null;
     const parsed = JSON.parse(js);
 
-    if (!parsed.found || !Array.isArray(parsed.polygon) || parsed.polygon.length < 6) {
-      return { found: false };
+    if (!parsed.found) return { found: false };
+
+    /* ── BBOX VALIDATION ─────────────────────────── */
+    if (!Array.isArray(parsed.bbox) || parsed.bbox.length < 4) {
+      console.warn("[segment] Missing bbox"); return { found: false };
+    }
+    const bbox = parsed.bbox.map(v => Math.round(Math.max(0, Math.min(1000, Number(v)))));
+    const [xmin, ymin, xmax, ymax] = bbox;
+    if (xmin >= xmax || ymin >= ymax) {
+      console.warn("[segment] Degenerate bbox:", bbox); return { found: false };
+    }
+    const bboxArea = (xmax-xmin)*(ymax-ymin)/1000/1000*100;
+    if (bboxArea < 1 || bboxArea > 90) {
+      console.warn(`[segment] BBox area ${bboxArea.toFixed(1)}% out of range`); return { found: false };
     }
 
-    let polygon = parsed.polygon
-      .filter(pt => Array.isArray(pt) && pt.length >= 2 && !isNaN(pt[0]) && !isNaN(pt[1]))
-      .map(pt => [
-        Math.round(Math.max(0, Math.min(1000, Number(pt[0])))),
-        Math.round(Math.max(0, Math.min(1000, Number(pt[1]))))
-      ]);
-
-    if (polygon.length < 6) return { found: false };
-
-    /* ── AREA VALIDATION ──────────────────────────────────────
-       Shoelace formula: polygon must cover 2%-80% of image.
-       < 2% → too tiny (probably noise)
-       > 80% → covers whole image (Gemini outlined the background)
-    ─────────────────────────────────────────────────────────── */
-    function polyArea(pts) {
-      let a = 0;
-      for (let i = 0; i < pts.length; i++) {
-        const j = (i + 1) % pts.length;
-        a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
-      }
-      return Math.abs(a) / 2;
+    /* ── GRID ROWS VALIDATION ────────────────────── */
+    const GRID = 20;
+    let rawRows = parsed.rows;
+    if (!Array.isArray(rawRows) || rawRows.length === 0) {
+      console.warn("[segment] Missing rows"); return { found: false };
     }
-    const areaPct = polyArea(polygon) / (1000 * 1000) * 100;
-    console.log(`[segment] polygon area=${areaPct.toFixed(1)}%`);
-    if (areaPct < 1.5 || areaPct > 82) {
-      console.warn(`[segment] Area ${areaPct.toFixed(1)}% out of range — rejecting`);
-      return { found: false };
+    const normRows = rawRows.slice(0, GRID).map(r =>
+      String(r).replace(/[^01]/g, "").padEnd(GRID, "0").slice(0, GRID)
+    );
+    while (normRows.length < GRID) normRows.push("0".repeat(GRID));
+    const grid = normRows.join(""); // 400-char flat grid
+
+    const onesCount = (grid.match(/1/g) || []).length;
+    const gridFill = (onesCount / (GRID*GRID) * 100).toFixed(1);
+    console.log(`[segment] subject="${parsed.subject}" conf=${parsed.confidence} bbox=[${bbox}] fill=${gridFill}%`);
+
+    if (onesCount < 4) {
+      console.warn("[segment] Grid too empty — rejecting"); return { found: false };
     }
 
-    /* ── X/Y SWAP AUTO-CORRECTION ─────────────────────────────
-       Gemini vision models often return [y, x] (row-first) instead
-       of [x, y]. If the tap point falls outside the polygon but
-       inside the swapped version, correct automatically.
-    ─────────────────────────────────────────────────────────── */
-    function pointInPoly(px, py, pts) {
-      let inside = false;
-      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-        const xi = pts[i][0], yi = pts[i][1];
-        const xj = pts[j][0], yj = pts[j][1];
-        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
-          inside = !inside;
-      }
-      return inside;
-    }
-
-    if (hasPoint) {
-      const inside = pointInPoly(tapX, tapY, polygon);
-      if (!inside) {
-        const swapped = polygon.map(pt => [pt[1], pt[0]]);
-        const insideSwapped = pointInPoly(tapX, tapY, swapped);
-        if (insideSwapped) {
-          console.log(`[segment] Auto-corrected x/y swap (Gemini returned row-first coordinates)`);
-          polygon = swapped;
-        } else {
-          console.warn(`[segment] Tap [${tapX},${tapY}] not inside polygon — returning anyway (low confidence)`);
-          parsed.confidence = "low";
-        }
-      }
-    }
-
-    console.log(`[segment] OK subject="${parsed.subject}" confidence=${parsed.confidence} pts=${polygon.length} area=${areaPct.toFixed(1)}%${hasPoint ? ` tap=[${tapX},${tapY}]` : ""}`);
-
-    /* ── POLYGON EXPANSION ────────────────────────────────────
-       Push each vertex 40 units outward from the centroid so
-       the outline sits generously OUTSIDE the body rather than
-       clipping tight edges (feet, hands, hat brim).
-    ─────────────────────────────────────────────────────────── */
-    const EXPAND = 40; // units in 0-1000 space ≈ 4% of image
-    const cx = polygon.reduce((s, p) => s + p[0], 0) / polygon.length;
-    const cy = polygon.reduce((s, p) => s + p[1], 0) / polygon.length;
-    polygon = polygon.map(([x, y]) => {
-      const dx = x - cx, dy = y - cy;
-      const d = Math.sqrt(dx*dx + dy*dy) || 1;
-      return [
-        Math.round(Math.max(0, Math.min(1000, x + dx/d * EXPAND))),
-        Math.round(Math.max(0, Math.min(1000, y + dy/d * EXPAND)))
-      ];
-    });
-
-    return { found: true, subject: parsed.subject || "unknown", polygon, confidence: parsed.confidence || "medium" };
+    return {
+      found: true,
+      subject: parsed.subject || "unknown",
+      bbox,
+      grid,
+      confidence: parsed.confidence || "medium"
+    };
   } catch(e) {
     console.error("segmentSubjectWithGemini parse error:", e.message);
     return null;
   }
 }
+
 
 /* ─── GEMINI (metadata only) ─────────────────────────────*/
 async function geminiPost(body, ms = 45000) {
