@@ -612,19 +612,31 @@ Return ONLY valid JSON, no markdown, no extra text:
   "confidence": "high" | "medium" | "low"
 }
 
-COORDINATE SYSTEM — read carefully:
-- x axis: HORIZONTAL — 0 = LEFT edge of image, 1000 = RIGHT edge
-- y axis: VERTICAL   — 0 = TOP  edge of image, 1000 = BOTTOM edge
-- Each point format: [x, y]  — x (horizontal position) FIRST, y (vertical position) SECOND
-- Corner reference: top-left=[0,0]  top-right=[1000,0]  bottom-left=[0,1000]  bottom-right=[1000,1000]
-${hasPoint ? `- CRITICAL: your polygon MUST contain the tap point [${tapX},${tapY}] — verify this before returning` : ""}
+COORDINATE SYSTEM:
+- x = horizontal: 0=LEFT edge, 1000=RIGHT edge
+- y = vertical:   0=TOP edge,  1000=BOTTOM edge
+- Each point: [x, y] — horizontal FIRST, vertical SECOND
+- Corners: top-left=[0,0]  top-right=[1000,0]  bottom-left=[0,1000]  bottom-right=[1000,1000]
+${hasPoint ? `- The polygon MUST contain the tap point [${tapX},${tapY}]` : ""}
 
-POLYGON REQUIREMENTS:
-- 30 to 50 points tracing the COMPLETE outer silhouette
-- Include all body parts, clothing, accessories (hat, turban, bow, limbs, feet)
-- Stay OUTSIDE the subject edge — never cut inside the body
-- Close the polygon: last point must be near the first
-- If no clear subject at that location: return {"found": false}`;
+TRACING METHOD — trace clockwise starting from the topmost point:
+1. Crown of head / top of hat or turban
+2. Right side of head → right ear
+3. Right shoulder → right arm outer edge → right hand/fist
+4. Right side of torso → right hip
+5. Right leg outer edge → right knee → right foot / right shoe tip
+6. Bottom center — the LOWEST point of the body (feet touching ground)
+7. Left foot / left shoe tip → left knee → left leg
+8. Left hip → left side of torso
+9. Left hand/fist → left arm outer edge → left shoulder
+10. Left side of head → left ear → back to crown
+
+CRITICAL RULES:
+- Use 40 to 60 points total — enough for smooth curves at each body part
+- ALWAYS reach all the way down to the feet / bottom of the seated body
+- Include 100% of the subject: hat, turban, bow, all limbs, hands, feet, clothing
+- Extend 15 units OUTSIDE the visible edge — do not clip any part of the body
+- If no subject found: return {"found": false}`;
 
   const res = await geminiPost({
     contents: [{ role:"user", parts:[
@@ -715,6 +727,24 @@ POLYGON REQUIREMENTS:
     }
 
     console.log(`[segment] OK subject="${parsed.subject}" confidence=${parsed.confidence} pts=${polygon.length} area=${areaPct.toFixed(1)}%${hasPoint ? ` tap=[${tapX},${tapY}]` : ""}`);
+
+    /* ── POLYGON EXPANSION ────────────────────────────────────
+       Push each vertex 40 units outward from the centroid so
+       the outline sits generously OUTSIDE the body rather than
+       clipping tight edges (feet, hands, hat brim).
+    ─────────────────────────────────────────────────────────── */
+    const EXPAND = 40; // units in 0-1000 space ≈ 4% of image
+    const cx = polygon.reduce((s, p) => s + p[0], 0) / polygon.length;
+    const cy = polygon.reduce((s, p) => s + p[1], 0) / polygon.length;
+    polygon = polygon.map(([x, y]) => {
+      const dx = x - cx, dy = y - cy;
+      const d = Math.sqrt(dx*dx + dy*dy) || 1;
+      return [
+        Math.round(Math.max(0, Math.min(1000, x + dx/d * EXPAND))),
+        Math.round(Math.max(0, Math.min(1000, y + dy/d * EXPAND)))
+      ];
+    });
+
     return { found: true, subject: parsed.subject || "unknown", polygon, confidence: parsed.confidence || "medium" };
   } catch(e) {
     console.error("segmentSubjectWithGemini parse error:", e.message);
