@@ -2541,8 +2541,7 @@ app.get("/download/:id", requireAuth, checkDownloadQuota, async(req,res)=>{
       const name = NAMES[nearIdx] || hex;
       infLines.push(`[thread${idx+1}]`, `Color=${rgb.r},${rgb.g},${rgb.b}`, `Name=${name}`, `ID=${String(nearIdx+1).padStart(3,'0')}`, `Hex=${hex}`, "");
     });
-    const infBuf = Buffer.from(infLines.join("
-"), "utf8");
+    const infBuf = Buffer.from(infLines.join("\r\n"), "utf8");
     const zipBuf = buildZipStore([
       { name: "design.dst", data: dstBuf },
       { name: "design.inf", data: infBuf }
