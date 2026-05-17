@@ -1104,6 +1104,8 @@ function initMask(u){
     var dw=i.width*scale,dh=i.height*scale;
     var dx=(800-dw)/2,dy=(800-dh)/2;
     mC.drawImage(i,dx,dy,dw,dh);
+    /* Store letterbox layout so polygon renderer can map 0-1000 → canvas px */
+    window._imgOff={x:dx,y:dy,w:dw,h:dh};
 
     mX.clearRect(0,0,800,800);
     document.getElementById('mw').className='mask-wrap on';
@@ -1371,49 +1373,112 @@ function loadMediaPipeSegmentation(cb){
 }
 
 function applyMediaPipeMask(segCanvas){
-  /* segCanvas is greyscale: white=person/foreground, black=background */
   var w=mX.canvas.width, h=mX.canvas.height;
   var temp=document.createElement('canvas');
   temp.width=w; temp.height=h;
   var tc=temp.getContext('2d');
   tc.drawImage(segCanvas,0,0,w,h);
   var id=tc.getImageData(0,0,w,h), dt=id.data;
-  /* Threshold at 128 → binary person mask; set alpha=255 where person */
   for(var i=0;i<dt.length;i+=4){
     var v=(dt[i]+dt[i+1]+dt[i+2])/3;
-    if(v>128){ dt[i]=0; dt[i+1]=0; dt[i+2]=0; dt[i+3]=255; }
-    else { dt[i+3]=0; }
+    if(v>128){dt[i]=0;dt[i+1]=0;dt[i+2]=0;dt[i+3]=255;}
+    else{dt[i+3]=0;}
   }
   tc.putImageData(id,0,0);
   applyPersonCanvas(temp);
 }
 
+/* ── GEMINI POLYGON RENDERER ─────────────────────────── */
+function applyGeminiPolygon(polygon){
+  if(!c1||!mX||!polygon||polygon.length<3)return;
+  var w=c1.width, h=c1.height;
+  var off=window._imgOff||{x:0,y:0,w:w,h:h};
+
+  /* Draw filled polygon onto an off-screen canvas */
+  var temp=document.createElement('canvas');
+  temp.width=w; temp.height=h;
+  var tc=temp.getContext('2d');
+  tc.beginPath();
+  for(var i=0;i<polygon.length;i++){
+    var px=off.x+polygon[i][0]/1000*off.w;
+    var py=off.y+polygon[i][1]/1000*off.h;
+    if(i===0)tc.moveTo(px,py); else tc.lineTo(px,py);
+  }
+  tc.closePath();
+  tc.fillStyle='black';
+  tc.fill();
+
+  /* Smooth edges: 2px blur then hard re-threshold removes stair-step aliasing */
+  var smooth=document.createElement('canvas');
+  smooth.width=w; smooth.height=h;
+  var sc=smooth.getContext('2d');
+  sc.filter='blur(2px)';
+  sc.drawImage(temp,0,0);
+  sc.filter='none';
+  var bd=sc.getImageData(0,0,w,h);
+  for(var i=3;i<bd.data.length;i+=4)bd.data[i]=bd.data[i]>20?255:0;
+  sc.putImageData(bd,0,0);
+
+  prevMaskDataURL=mX.canvas.toDataURL();
+  applyPersonCanvas(smooth);
+}
+
+/* ── AI PERSON EXTRACTION: Gemini → MediaPipe fallback ── */
 function extractPersonAI(){
-  if(!c1||!mX) return;
+  if(!c1||!mX||!cf)return;
   var btn=document.getElementById('aiExtractBtn');
   btn.disabled=true;
   btn.innerHTML='&#9203; <span>'+t('wandLoading')+'</span>';
+  document.getElementById('st').innerHTML='<p>'+t('analyzing')+'&hellip;</p>';
+
+  /* Try Gemini server-side first (understands scene context) */
+  var fd=new FormData();
+  fd.append('image',cf);
+
+  fetch('/segment-subject',{method:'POST',body:fd})
+    .then(function(r){return r.json();})
+    .then(function(data){
+      if(data.found&&Array.isArray(data.polygon)&&data.polygon.length>=6){
+        applyGeminiPolygon(data.polygon);
+        var conf=data.confidence==='high'?'&#10003;':data.confidence==='medium'?'~':'&#9888;';
+        var ub='<button onclick="undoWand()" style="background:none;border:none;color:var(--red);font-weight:700;cursor:pointer;font-size:12px;padding:0;margin-left:8px">\u21A9 '+t('wandUndo')+'</button>';
+        document.getElementById('st').innerHTML='<p class="ok">'+conf+' '+t('maskAutoExtracted')+' ('+data.subject+')'+ub+'</p>';
+        btn.disabled=false;
+        btn.innerHTML='&#129302; <span>'+t('wandBtnAI')+'</span>';
+        if(navigator.vibrate)navigator.vibrate(60);
+      }else{
+        extractPersonAIFallback(btn);
+      }
+    })
+    .catch(function(){extractPersonAIFallback(btn);});
+}
+
+/* MediaPipe fallback — used when server is unreachable or Gemini returns nothing */
+function extractPersonAIFallback(btn){
+  btn=btn||document.getElementById('aiExtractBtn');
+  document.getElementById('st').innerHTML='<p>&#129302; '+t('wandLoading')+'&hellip;</p>';
   loadMediaPipeSegmentation(function(seg){
     if(!seg){
       btn.disabled=false;
-      btn.innerHTML='&#129302; <span data-t="wandBtnAI">'+t('wandBtnAI')+'</span>';
-      document.getElementById('st').innerHTML='<div class="error">Auto-detection unavailable. Hold finger on the subject instead.</div>';
+      btn.innerHTML='&#129302; <span>'+t('wandBtnAI')+'</span>';
+      document.getElementById('st').innerHTML='<div class="error">'+t('wandTooBig')+'</div>';
       return;
     }
     var handled=false;
     seg.onResults(function(results){
-      if(handled) return; handled=true;
+      if(handled)return; handled=true;
       applyMediaPipeMask(results.segmentationMask);
       btn.disabled=false;
-      btn.innerHTML='&#129302; <span data-t="wandBtnAI">'+t('wandBtnAI')+'</span>';
-      document.getElementById('st').innerHTML='<p class="ok">&#10003; '+t('maskAutoExtracted')+'</p>';
-      if(navigator.vibrate) navigator.vibrate(60);
+      btn.innerHTML='&#129302; <span>'+t('wandBtnAI')+'</span>';
+      var ub='<button onclick="undoWand()" style="background:none;border:none;color:var(--red);font-weight:700;cursor:pointer;font-size:12px;padding:0;margin-left:8px">\u21A9 '+t('wandUndo')+'</button>';
+      document.getElementById('st').innerHTML='<p class="ok">&#10003; '+t('maskAutoExtracted')+ub+'</p>';
+      if(navigator.vibrate)navigator.vibrate(60);
     });
     seg.send({image:c1}).catch(function(){
-      if(!handled){ handled=true;
+      if(!handled){handled=true;
         btn.disabled=false;
-        btn.innerHTML='&#129302; <span data-t="wandBtnAI">'+t('wandBtnAI')+'</span>';
-        document.getElementById('st').innerHTML='<div class="error">Detection failed — try holding finger on the person.</div>';
+        btn.innerHTML='&#129302; <span>'+t('wandBtnAI')+'</span>';
+        document.getElementById('st').innerHTML='<div class="error">Detection failed.</div>';
       }
     });
   });
