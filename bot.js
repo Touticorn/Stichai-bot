@@ -590,11 +590,18 @@ async function buildPixelMap(imageBuffer, maskBuffer, colors, canvasSize) {
 }
 
 /* ─── GEMINI SUBJECT SEGMENTATION ────────────────────────*/
-async function segmentSubjectWithGemini(imageBuffer, mime) {
+async function segmentSubjectWithGemini(imageBuffer, mime, tapX, tapY) {
   if (!GEMINI_API_KEY) return null;
   const b64 = imageBuffer.toString("base64");
 
-  const prompt = `You are an embroidery digitizing assistant. Your task: find and precisely outline the MAIN SUBJECT (person, baby, animal, or primary foreground object) in this photo.
+  const hasPoint = tapX !== undefined && tapY !== undefined
+    && !isNaN(tapX) && !isNaN(tapY);
+
+  const subjectInstruction = hasPoint
+    ? `The user tapped at coordinate [${tapX}, ${tapY}] (where [0,0]=top-left, [1000,1000]=bottom-right). Identify and outline the specific object or person located AT or nearest to that coordinate.`
+    : `Find and outline the MAIN SUBJECT — the most prominent person, baby, or animal in the foreground.`;
+
+  const prompt = `You are an embroidery digitizing assistant. ${subjectInstruction}
 
 Return ONLY strict JSON — no markdown, no prose, no code fences:
 {
@@ -604,20 +611,25 @@ Return ONLY strict JSON — no markdown, no prose, no code fences:
   "confidence": "high" | "medium" | "low"
 }
 
-Polygon rules (CRITICAL — follow exactly):
-- Coordinates are integers 0-1000 where [0,0] = top-left corner, [1000,1000] = bottom-right corner
+Polygon rules (follow exactly):
+- Coordinates are integers 0-1000 where [0,0]=top-left, [1000,1000]=bottom-right
 - Use 35 to 60 points tracing the COMPLETE outer silhouette of the subject
 - Include every part: head, all clothing, limbs, hands, feet, hat, turban, bow, accessories
 - Trace OUTSIDE the subject edge — never clip into the body
 - Close the polygon so the last point is near the first
-- If no identifiable main subject exists, return {"found": false}`;
+- If no identifiable subject at that location, return {"found": false}`;
 
   const res = await geminiPost({
     contents: [{ role:"user", parts:[
       { text: prompt },
       { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
     ]}],
-    generationConfig: { temperature:0.0, maxOutputTokens:2048, responseMimeType:"application/json" }
+    generationConfig: {
+      temperature:0.0,
+      maxOutputTokens:8192,
+      responseMimeType:"application/json",
+      thinkingConfig:{thinkingBudget:0}   /* disable thinking — polygon JSON doesn't benefit from it */
+    }
   });
 
   if (!res) return null;
@@ -635,7 +647,6 @@ Polygon rules (CRITICAL — follow exactly):
       return { found: false };
     }
 
-    /* Validate + clamp every point */
     const polygon = parsed.polygon
       .filter(pt => Array.isArray(pt) && pt.length >= 2 && !isNaN(pt[0]) && !isNaN(pt[1]))
       .map(pt => [
@@ -645,7 +656,7 @@ Polygon rules (CRITICAL — follow exactly):
 
     if (polygon.length < 6) return { found: false };
 
-    console.log(`[segment] Gemini found "${parsed.subject}" confidence=${parsed.confidence} pts=${polygon.length}`);
+    console.log(`[segment] Gemini found "${parsed.subject}" confidence=${parsed.confidence} pts=${polygon.length}${hasPoint ? ` tap=[${tapX},${tapY}]` : ""}`);
     return { found:true, subject: parsed.subject || "unknown", polygon, confidence: parsed.confidence || "medium" };
   } catch(e) {
     console.error("segmentSubjectWithGemini parse error:", e.message);
@@ -692,7 +703,12 @@ Return STRICT JSON only, no prose, no markdown fence:
 
   const res = await geminiPost({
     contents:[{role:"user",parts:[{text:prompt},{inlineData:{mimeType:mime||"image/png",data:b64}}]}],
-    generationConfig:{temperature:0.0,maxOutputTokens:1024,responseMimeType:"application/json"}
+    generationConfig:{
+      temperature:0.0,
+      maxOutputTokens:4096,
+      responseMimeType:"application/json",
+      thinkingConfig:{thinkingBudget:0}   /* disable thinking — structured JSON doesn't need it */
+    }
   });
   if(!res) return null;
 
@@ -3048,10 +3064,14 @@ app.post("/segment-subject", requireAuth, upload.single("image"), async (req, re
   if (!GEMINI_API_KEY) return res.status(503).json({ error:"Gemini not configured", found:false });
 
   const rid = Math.random().toString(36).slice(2,6);
-  console.log(`[${rid}] SEGMENT-SUBJECT start`);
+
+  /* Optional tap coordinates from long-press (0-1000 normalized image space) */
+  const tapX = req.body?.tapX !== undefined ? Math.round(parseFloat(req.body.tapX)) : undefined;
+  const tapY = req.body?.tapY !== undefined ? Math.round(parseFloat(req.body.tapY)) : undefined;
+  console.log(`[${rid}] SEGMENT-SUBJECT start${tapX !== undefined ? ` tap=[${tapX},${tapY}]` : " (auto)"}`);
 
   try {
-    const result = await segmentSubjectWithGemini(req.file.buffer, req.file.mimetype || "image/jpeg");
+    const result = await segmentSubjectWithGemini(req.file.buffer, req.file.mimetype || "image/jpeg", tapX, tapY);
     if (!result || !result.found) {
       console.log(`[${rid}] SEGMENT-SUBJECT: no subject found`);
       return res.json({ found:false });
@@ -3194,6 +3214,9 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       const rawRegions = extractRegions(pixMap, colors, canvasSize);
       regions = mergeAdjacentRegions(rawRegions, canvasSize);
     }
+
+    /* cartoon is rendered exactly like logo — flat colours, no gradients */
+    const effectiveMode = (mode === 'cartoon') ? 'logo' : mode;
 
     if(!regions || !regions.length){
       return res.status(500).json({error:"No stitchable regions found"});
