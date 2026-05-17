@@ -598,26 +598,33 @@ async function segmentSubjectWithGemini(imageBuffer, mime, tapX, tapY) {
     && !isNaN(tapX) && !isNaN(tapY);
 
   const subjectInstruction = hasPoint
-    ? `The user tapped at coordinate [${tapX}, ${tapY}] (where [0,0]=top-left, [1000,1000]=bottom-right). Identify and outline the specific object or person located AT or nearest to that coordinate.`
+    ? `The user tapped at coordinate [${tapX}, ${tapY}]. Identify and outline the specific object or person located AT or nearest to that point.`
     : `Find and outline the MAIN SUBJECT — the most prominent person, baby, or animal in the foreground.`;
 
-  const prompt = `You are an embroidery digitizing assistant. ${subjectInstruction}
+  const prompt = `You are a precise image segmentation assistant for embroidery digitizing.
+${subjectInstruction}
 
-Return ONLY strict JSON — no markdown, no prose, no code fences:
+Return ONLY valid JSON, no markdown, no extra text:
 {
   "found": true,
   "subject": "baby",
-  "polygon": [[x,y],[x,y],...],
+  "polygon": [[x1,y1],[x2,y2],...],
   "confidence": "high" | "medium" | "low"
 }
 
-Polygon rules (follow exactly):
-- Coordinates are integers 0-1000 where [0,0]=top-left, [1000,1000]=bottom-right
-- Use 35 to 60 points tracing the COMPLETE outer silhouette of the subject
-- Include every part: head, all clothing, limbs, hands, feet, hat, turban, bow, accessories
-- Trace OUTSIDE the subject edge — never clip into the body
-- Close the polygon so the last point is near the first
-- If no identifiable subject at that location, return {"found": false}`;
+COORDINATE SYSTEM — read carefully:
+- x axis: HORIZONTAL — 0 = LEFT edge of image, 1000 = RIGHT edge
+- y axis: VERTICAL   — 0 = TOP  edge of image, 1000 = BOTTOM edge
+- Each point format: [x, y]  — x (horizontal position) FIRST, y (vertical position) SECOND
+- Corner reference: top-left=[0,0]  top-right=[1000,0]  bottom-left=[0,1000]  bottom-right=[1000,1000]
+${hasPoint ? `- CRITICAL: your polygon MUST contain the tap point [${tapX},${tapY}] — verify this before returning` : ""}
+
+POLYGON REQUIREMENTS:
+- 30 to 50 points tracing the COMPLETE outer silhouette
+- Include all body parts, clothing, accessories (hat, turban, bow, limbs, feet)
+- Stay OUTSIDE the subject edge — never cut inside the body
+- Close the polygon: last point must be near the first
+- If no clear subject at that location: return {"found": false}`;
 
   const res = await geminiPost({
     contents: [{ role:"user", parts:[
@@ -625,10 +632,10 @@ Polygon rules (follow exactly):
       { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
     ]}],
     generationConfig: {
-      temperature:0.0,
-      maxOutputTokens:8192,
-      responseMimeType:"application/json",
-      thinkingConfig:{thinkingBudget:0}   /* disable thinking — polygon JSON doesn't benefit from it */
+      temperature: 0.0,
+      maxOutputTokens: 8192,
+      responseMimeType: "application/json"
+      /* thinking enabled intentionally — spatial coordinate tasks need it */
     }
   });
 
@@ -647,7 +654,7 @@ Polygon rules (follow exactly):
       return { found: false };
     }
 
-    const polygon = parsed.polygon
+    let polygon = parsed.polygon
       .filter(pt => Array.isArray(pt) && pt.length >= 2 && !isNaN(pt[0]) && !isNaN(pt[1]))
       .map(pt => [
         Math.round(Math.max(0, Math.min(1000, Number(pt[0])))),
@@ -656,8 +663,59 @@ Polygon rules (follow exactly):
 
     if (polygon.length < 6) return { found: false };
 
-    console.log(`[segment] Gemini found "${parsed.subject}" confidence=${parsed.confidence} pts=${polygon.length}${hasPoint ? ` tap=[${tapX},${tapY}]` : ""}`);
-    return { found:true, subject: parsed.subject || "unknown", polygon, confidence: parsed.confidence || "medium" };
+    /* ── AREA VALIDATION ──────────────────────────────────────
+       Shoelace formula: polygon must cover 2%-80% of image.
+       < 2% → too tiny (probably noise)
+       > 80% → covers whole image (Gemini outlined the background)
+    ─────────────────────────────────────────────────────────── */
+    function polyArea(pts) {
+      let a = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const j = (i + 1) % pts.length;
+        a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
+      }
+      return Math.abs(a) / 2;
+    }
+    const areaPct = polyArea(polygon) / (1000 * 1000) * 100;
+    console.log(`[segment] polygon area=${areaPct.toFixed(1)}%`);
+    if (areaPct < 1.5 || areaPct > 82) {
+      console.warn(`[segment] Area ${areaPct.toFixed(1)}% out of range — rejecting`);
+      return { found: false };
+    }
+
+    /* ── X/Y SWAP AUTO-CORRECTION ─────────────────────────────
+       Gemini vision models often return [y, x] (row-first) instead
+       of [x, y]. If the tap point falls outside the polygon but
+       inside the swapped version, correct automatically.
+    ─────────────────────────────────────────────────────────── */
+    function pointInPoly(px, py, pts) {
+      let inside = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const xi = pts[i][0], yi = pts[i][1];
+        const xj = pts[j][0], yj = pts[j][1];
+        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
+          inside = !inside;
+      }
+      return inside;
+    }
+
+    if (hasPoint) {
+      const inside = pointInPoly(tapX, tapY, polygon);
+      if (!inside) {
+        const swapped = polygon.map(pt => [pt[1], pt[0]]);
+        const insideSwapped = pointInPoly(tapX, tapY, swapped);
+        if (insideSwapped) {
+          console.log(`[segment] Auto-corrected x/y swap (Gemini returned row-first coordinates)`);
+          polygon = swapped;
+        } else {
+          console.warn(`[segment] Tap [${tapX},${tapY}] not inside polygon — returning anyway (low confidence)`);
+          parsed.confidence = "low";
+        }
+      }
+    }
+
+    console.log(`[segment] OK subject="${parsed.subject}" confidence=${parsed.confidence} pts=${polygon.length} area=${areaPct.toFixed(1)}%${hasPoint ? ` tap=[${tapX},${tapY}]` : ""}`);
+    return { found: true, subject: parsed.subject || "unknown", polygon, confidence: parsed.confidence || "medium" };
   } catch(e) {
     console.error("segmentSubjectWithGemini parse error:", e.message);
     return null;
