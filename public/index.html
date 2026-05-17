@@ -456,7 +456,7 @@ footer{background:var(--navy);padding:52px clamp(20px,5vw,80px) 36px}
       </div>
       <div class="card" id="sc" style="display:none">
         <div class="stage-label" data-t="step3">Step 3: Select colors &amp; shapes</div>
-        <p style="font-size:12px;color:var(--muted);margin:0 0 8px" data-t="selectHint">Tap a color to remove or merge it · tap the &#128274; to protect a colour from merging</p>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 8px" data-t="selectHint">Tap a color to remove or merge it · tap the 🔒 to protect a colour from merging</p>
         <strong style="font-size:13px"><span data-t="colorsLabel">Colors</span><span id="paletteSourceBadge"></span></strong>
         <div class="btns">
           <button class="btn btn-secondary btn-sm" onclick="allC(1)" data-t="all">All</button>
@@ -591,14 +591,14 @@ var T = {
     modeLogo:"Logo / Graphic", modeLogoDesc:"Best for text, cartoons",
     modePhoto:"Photo \u2192 Stylized", modePhotoDesc:"Converts to illustration",
     modeCartoon:"Cartoon Magic", modeCartoonDesc:"Flat colors, no gradients",
-    maskAutoExtracted:"Subject extracted \u2014 background masked",
+    maskAutoExtracted:"Subject extracted — background masked",
     photoWarn:"\u26A0\uFE0F Photos become graphic illustrations \u2014 not photorealistic.",
     colorsExtract:"Colors to Extract", colorsHint:"More colors = more detail (eyes, eyebrows). Fewer = faster sew time.",
     sizeLabel:"Size", sizeSmall:"Small", sizeLarge:"Large", sizeXLarge:"X-Large",
     sizeWarn:"\u26A0\uFE0F X-Large designs take 1\u20133 hours to sew.",
     step2:"Step 2: Remove areas (optional)", maskHint:"Paint RED over what you don't want stitched",
     toolRemove:"\uD83D\uDD8C\uFE0F Remove", toolUndo:"\u274C Undo", toolClear:"\uD83D\uDDD1\uFE0F Clear", analyze:"Analyze",
-    step3:"Step 3: Select colors & shapes", selectHint:"Tap a color to remove or merge it · tap \ud83d\udd12 to protect a color from merging",
+    step3:"Step 3: Select colors & shapes", selectHint:"Tap a color to remove or merge it · tap 🔒 to protect a color from merging",
     colorsLabel:"Colors", all:"All", none:"None", invert:"Invert", matchColors:"Match colors", shapesLabel:"Shapes",
     colorCountLabel:"{on} active · {removed} removed · {merged} merged · {locked} locked",
     shapeCountLabel:"{on}/{total} shapes selected",
@@ -666,14 +666,14 @@ var T = {
     modeLogo:"Logo / Graphique", modeLogoDesc:"Id\u00e9al pour texte, dessins",
     modePhoto:"Photo \u2192 Stylis\u00e9e", modePhotoDesc:"Convertit en illustration",
     modeCartoon:"Cartoon Magic", modeCartoonDesc:"Couleurs plates, sans gradients",
-    maskAutoExtracted:"Sujet extrait \u2014 fond masqu\u00e9",
+    maskAutoExtracted:"Sujet extrait — fond masqué",
     photoWarn:"\u26A0\uFE0F Les photos deviennent des illustrations graphiques.",
     colorsExtract:"Couleurs \u00e0 extraire", colorsHint:"Plus de couleurs = plus de d\u00e9tails.",
     sizeLabel:"Taille", sizeSmall:"Petit", sizeLarge:"Grand", sizeXLarge:"Tr\u00e8s grand",
     sizeWarn:"\u26A0\uFE0F Les tr\u00e8s grands designs prennent 1\u20133h \u00e0 broder.",
     step2:"\u00c9tape 2\u00a0: Supprimer des zones (facultatif)", maskHint:"Peignez en ROUGE ce que vous ne voulez pas broder",
     toolRemove:"\uD83D\uDD8C\uFE0F Supprimer", toolUndo:"\u274C Annuler", toolClear:"\uD83D\uDDD1\uFE0F Effacer", analyze:"Analyser",
-    step3:"\u00c9tape 3\u00a0: S\u00e9lectionner couleurs & formes", selectHint:"Touchez une couleur pour la supprimer ou fusionner · \ud83d\udd12 pour la prot\u00e9ger",
+    step3:"\u00c9tape 3\u00a0: S\u00e9lectionner couleurs & formes", selectHint:"Touchez une couleur pour la supprimer ou fusionner · 🔒 pour la prot\u00e9ger",
     colorsLabel:"Couleurs", all:"Tout", none:"Aucun", invert:"Inverser", matchColors:"Selon couleurs", shapesLabel:"Formes",
     colorCountLabel:"{on} actives · {removed} supprim\u00e9es · {merged} fusionn\u00e9es · {locked} verrouill\u00e9es",
     shapeCountLabel:"{on}/{total} formes s\u00e9lectionn\u00e9es",
@@ -1090,7 +1090,7 @@ function startLongPress(e){
   pressStartPos=p;
   clearTimeout(longPressTimer);
   longPressTimer=setTimeout(function(){
-    if(pressStartPos && Math.hypot(lx-pressStartPos.x, ly-pressStartPos.y) < 15){
+    if(pressStartPos && Math.hypot(lx-pressStartPos.x, ly-pressStartPos.y) < 20){
       dr=false;
       magicWandExtract(pressStartPos.x, pressStartPos.y);
       if(navigator.vibrate) navigator.vibrate(40);
@@ -1109,7 +1109,7 @@ function magicWandExtract(sx, sy){
   if(sx<<0 || sy<<0 || sx>=w || sy>=h) return;
   var startIdx=(sy*w+sx)*4;
   var tr=d[startIdx], tg=d[startIdx+1], tb=d[startIdx+2];
-  var tol=34;
+  var tol=40;
   var maskArr=new Uint8Array(w*h);
   var q=[[sx,sy]];
   maskArr[sy*w+sx]=1;
@@ -1135,7 +1135,7 @@ function magicWandExtract(sx, sy){
   var tctx=temp.getContext('2d');
   var tData=tctx.createImageData(w,h);
   for(var i=0;i<<w*h;i++){
-    if(maskArr[i]) tData.data[i*4+3]=255;
+    if(maskArr[i]){ tData.data[i*4+3]=255; }
   }
   tctx.putImageData(tData,0,0);
   mX.clearRect(0,0,w,h);
@@ -1228,7 +1228,7 @@ function doAnalyze(fd){
     for(var i=0;i<<d.shapes.length;i++){
       try{
         var s=d.shapes[i];
-        var w=Math.round((s.bounds&&s.bounds.w)||0),h=Math.round((s.bounds&&s.bounds.h)||0);
+        var w=Math.round(s.bounds&&s.bounds.w||0),h=Math.round(s.bounds&&s.bounds.h||0);
         var scolor=s.color||'#000000', stype=s.type||'fill';
         sg.innerHTML+='<div class="s-item" id="si-'+i+'" data-c="'+scolor+'">'+
           '<input type="checkbox" id="cb-'+i+'" checked onchange="tS('+i+')">'+
