@@ -3116,7 +3116,7 @@ app.post("/segment-subject", requireAuth, upload.single("image"), async (req, re
       console.log(`[${rid}] SEGMENT-SUBJECT: no subject found`);
       return res.json({ found:false });
     }
-    console.log(`[${rid}] SEGMENT-SUBJECT: OK pts=${result.polygon.length}`);
+    console.log(`[${rid}] SEGMENT-SUBJECT: OK subject=${result.subject} bbox=[${result.bbox}] cells=${(result.grid?.match(/1/g)||[]).length}/400`);
     return res.json(result);
   } catch(e) {
     console.error(`[${rid}] SEGMENT-SUBJECT crash:`, e.message);
