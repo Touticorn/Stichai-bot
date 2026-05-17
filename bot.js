@@ -589,6 +589,70 @@ async function buildPixelMap(imageBuffer, maskBuffer, colors, canvasSize) {
   return pixMap;
 }
 
+/* ─── GEMINI SUBJECT SEGMENTATION ────────────────────────*/
+async function segmentSubjectWithGemini(imageBuffer, mime) {
+  if (!GEMINI_API_KEY) return null;
+  const b64 = imageBuffer.toString("base64");
+
+  const prompt = `You are an embroidery digitizing assistant. Your task: find and precisely outline the MAIN SUBJECT (person, baby, animal, or primary foreground object) in this photo.
+
+Return ONLY strict JSON — no markdown, no prose, no code fences:
+{
+  "found": true,
+  "subject": "baby",
+  "polygon": [[x,y],[x,y],...],
+  "confidence": "high" | "medium" | "low"
+}
+
+Polygon rules (CRITICAL — follow exactly):
+- Coordinates are integers 0-1000 where [0,0] = top-left corner, [1000,1000] = bottom-right corner
+- Use 35 to 60 points tracing the COMPLETE outer silhouette of the subject
+- Include every part: head, all clothing, limbs, hands, feet, hat, turban, bow, accessories
+- Trace OUTSIDE the subject edge — never clip into the body
+- Close the polygon so the last point is near the first
+- If no identifiable main subject exists, return {"found": false}`;
+
+  const res = await geminiPost({
+    contents: [{ role:"user", parts:[
+      { text: prompt },
+      { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
+    ]}],
+    generationConfig: { temperature:0.0, maxOutputTokens:2048, responseMimeType:"application/json" }
+  });
+
+  if (!res) return null;
+
+  try {
+    const raw = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    if (!raw || !raw.trim()) return null;
+    let js = raw.replace(/```json|```/g, "").trim();
+    const fa = js.indexOf("{"), lb = js.lastIndexOf("}");
+    if (fa !== -1 && lb > fa) js = js.slice(fa, lb + 1);
+    if (js.length < 10) return null;
+    const parsed = JSON.parse(js);
+
+    if (!parsed.found || !Array.isArray(parsed.polygon) || parsed.polygon.length < 6) {
+      return { found: false };
+    }
+
+    /* Validate + clamp every point */
+    const polygon = parsed.polygon
+      .filter(pt => Array.isArray(pt) && pt.length >= 2 && !isNaN(pt[0]) && !isNaN(pt[1]))
+      .map(pt => [
+        Math.round(Math.max(0, Math.min(1000, Number(pt[0])))),
+        Math.round(Math.max(0, Math.min(1000, Number(pt[1]))))
+      ]);
+
+    if (polygon.length < 6) return { found: false };
+
+    console.log(`[segment] Gemini found "${parsed.subject}" confidence=${parsed.confidence} pts=${polygon.length}`);
+    return { found:true, subject: parsed.subject || "unknown", polygon, confidence: parsed.confidence || "medium" };
+  } catch(e) {
+    console.error("segmentSubjectWithGemini parse error:", e.message);
+    return null;
+  }
+}
+
 /* ─── GEMINI (metadata only) ─────────────────────────────*/
 async function geminiPost(body, ms = 45000) {
   for (const model of GEMINI_MODELS) {
@@ -2978,6 +3042,28 @@ app.use(express.static(path.join(__dirname,"public")));
 app.get("/",(_, res)=>res.sendFile(path.join(__dirname,"public","index.html")));
 
 /* ─── DETECT SHAPES ──────────────────────────────────────*/
+/* ─── SUBJECT SEGMENTATION ENDPOINT ─────────────────────*/
+app.post("/segment-subject", requireAuth, upload.single("image"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error:"No image uploaded", found:false });
+  if (!GEMINI_API_KEY) return res.status(503).json({ error:"Gemini not configured", found:false });
+
+  const rid = Math.random().toString(36).slice(2,6);
+  console.log(`[${rid}] SEGMENT-SUBJECT start`);
+
+  try {
+    const result = await segmentSubjectWithGemini(req.file.buffer, req.file.mimetype || "image/jpeg");
+    if (!result || !result.found) {
+      console.log(`[${rid}] SEGMENT-SUBJECT: no subject found`);
+      return res.json({ found:false });
+    }
+    console.log(`[${rid}] SEGMENT-SUBJECT: OK pts=${result.polygon.length}`);
+    return res.json(result);
+  } catch(e) {
+    console.error(`[${rid}] SEGMENT-SUBJECT crash:`, e.message);
+    return res.status(500).json({ error:e.message, found:false });
+  }
+});
+
 app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name:"image",maxCount:1},{name:"mask",maxCount:1}]), async(req,res)=>{
   res.setTimeout(120000);
   const rid=Math.random().toString(36).slice(2,6);
