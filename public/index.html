@@ -1334,14 +1334,18 @@ function callSegmentSubject(tapX,tapY){
   fetch('/segment-subject',{method:'POST',body:fd})
     .then(function(r){return r.json();})
     .then(function(data){
-      if(data.found&&Array.isArray(data.polygon)&&data.polygon.length>=6){
-        /* Store polygon globally for confirm step */
-        window._confirmedPolygon=data.polygon;
-        /* Apply internal red mask to c2 now */
+      if(data.found&&data.bbox&&data.grid){
+        /* New grid-based segmentation */
+        applyGeminiGrid(data.bbox,data.grid);
+        var lbl=document.getElementById('confirmedSubjectLabel');
+        var subj=data.subject||'Subject';
+        if(lbl)lbl.textContent=subj.charAt(0).toUpperCase()+subj.slice(1)+' \u2713';
+        showMaskState('confirmed');
+        if(navigator.vibrate)navigator.vibrate([30,30,60]);
+      }else if(data.found&&Array.isArray(data.polygon)&&data.polygon.length>=6){
+        /* Legacy polygon fallback */
         applyGeminiPolygon(data.polygon);
-        /* Start glow on c3 */
         startGlowAnimation(data.polygon);
-        /* Update confirm bar label */
         var lbl=document.getElementById('confirmedSubjectLabel');
         var subj=data.subject||'Subject';
         if(lbl)lbl.textContent=subj.charAt(0).toUpperCase()+subj.slice(1)+' \u2713';
@@ -1417,13 +1421,70 @@ function startLongPress(e){
 }
 function endLongPress(){clearTimeout(longPressTimer);pressStartPos=null;}
 
-/* ── INTERNAL: APPLY POLYGON TO c2 (red mask) ──────── */
+/* ── INTERNAL: APPLY GRID MASK TO c2 ───────────────── */
+function bboxToGlowPoly(bbox){
+  /* Convert bbox [xmin,ymin,xmax,ymax] → 8-point polygon for glow */
+  var x0=bbox[0],y0=bbox[1],x1=bbox[2],y1=bbox[3];
+  var mx=(x0+x1)/2, my=(y0+y1)/2;
+  return [[x0,y0],[mx,y0],[x1,y0],[x1,my],[x1,y1],[mx,y1],[x0,y1],[x0,my]];
+}
+
+function applyGeminiGrid(bbox, grid){
+  if(!c1||!mX||!bbox||!grid)return;
+  var w=c1.width, h=c1.height;
+  var off=window._imgOff||{x:0,y:0,w:w,h:h};
+  var GRID=20;
+
+  /* Map bbox to canvas pixel coords */
+  var bx0=off.x+bbox[0]/1000*off.w, by0=off.y+bbox[1]/1000*off.h;
+  var bx1=off.x+bbox[2]/1000*off.w, by1=off.y+bbox[3]/1000*off.h;
+  var bw=bx1-bx0, bh=by1-by0;
+  var cellW=bw/GRID, cellH=bh/GRID;
+
+  /* Draw filled grid cells on a raw canvas */
+  var raw=document.createElement('canvas');
+  raw.width=w; raw.height=h;
+  var rctx=raw.getContext('2d');
+  rctx.fillStyle='black';
+  for(var i=0;i<GRID*GRID&&i<grid.length;i++){
+    if(grid[i]==='1'){
+      var col=i%GRID, row=Math.floor(i/GRID);
+      /* +1/-1 overlap between cells avoids hairline gaps */
+      rctx.fillRect(
+        Math.floor(bx0+col*cellW)-1,
+        Math.floor(by0+row*cellH)-1,
+        Math.ceil(cellW)+2,
+        Math.ceil(cellH)+2
+      );
+    }
+  }
+
+  /* Blur + threshold → smooth edges, no pixelation */
+  var smooth=document.createElement('canvas');
+  smooth.width=w; smooth.height=h;
+  var sc=smooth.getContext('2d');
+  sc.filter='blur(14px)';
+  sc.drawImage(raw,0,0);
+  sc.filter='none';
+  var bd=sc.getImageData(0,0,w,h);
+  for(var i=3;i<bd.data.length;i+=4) bd.data[i]=bd.data[i]>30?255:0;
+  sc.putImageData(bd,0,0);
+
+  /* Apply internal red mask (c2) */
+  prevMaskDataURL=mX.canvas.toDataURL();
+  applyPersonCanvas(smooth);
+
+  /* Glow uses bbox-derived polygon (visually good enough) */
+  startGlowAnimation(bboxToGlowPoly(bbox));
+}
+
+/* Keep polygon version for backward compat / manual fallback */
 function applyGeminiPolygon(polygon){
   if(!c1||!mX||!polygon||polygon.length<3)return;
-  var w=c1.width,h=c1.height;
+  var w=c1.width, h=c1.height;
   var off=window._imgOff||{x:0,y:0,w:w,h:h};
   var temp=document.createElement('canvas');
-  temp.width=w;temp.height=h;
+  temp.width=w; temp.height=h;
   var tc=temp.getContext('2d');
   tc.beginPath();
   for(var i=0;i<polygon.length;i++){
@@ -1437,9 +1498,7 @@ function applyGeminiPolygon(polygon){
   var smooth=document.createElement('canvas');
   smooth.width=w;smooth.height=h;
   var sc=smooth.getContext('2d');
-  sc.filter='blur(2px)';
-  sc.drawImage(temp,0,0);
-  sc.filter='none';
+  sc.filter='blur(2px)';sc.drawImage(temp,0,0);sc.filter='none';
   var bd=sc.getImageData(0,0,w,h);
   for(var i=3;i<bd.data.length;i+=4)bd.data[i]=bd.data[i]>20?255:0;
   sc.putImageData(bd,0,0);
