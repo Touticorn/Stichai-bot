@@ -2252,7 +2252,7 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
       geminiNotes:gem?.notes||""
     });
   }catch(e){
-    console.error(`[${rid}] DETECT CRASH:`,e.message, e.stack);
+    console.error(`[${rid}] DETECT CRASH:`,e.message,e.stack);
     return res.status(500).json({error:e.message||"Detection failed"});
   }
 });
@@ -2472,8 +2472,7 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       preWarnings
     });
   }catch(e){
-    console.error(`[${rid}] CRASH:`,e.message,"
-",e.stack);
+    console.error(`[${rid}] CRASH:`,e.message,e.stack);
     return res.status(500).json({error:e.message||"Server error"});
   }
 });
