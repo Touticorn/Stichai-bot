@@ -356,13 +356,29 @@ function getStitchParams(specs) {
 }
 
 /* ─── IMAGE CLEANING ─────────────────────────────────────*/
-async function preprocessImage(buffer, canvasSize) {
-  return sharp(buffer)
-    .resize(canvasSize, canvasSize, {fit:"contain",background:{r:255,g:255,b:255,alpha:1}})
-    .median(2)
-    .sharpen({sigma:1.0})
-    .linear(1.2,-15)
-    .toBuffer();
+async function preprocessImage(buffer, canvasSize, mode) {
+  let pipeline = sharp(buffer)
+    .resize(canvasSize, canvasSize, {fit:"contain",background:{r:255,g:255,b:255,alpha:1}});
+
+  if (mode === 'cartoon') {
+    /* Cartoon fallback: heavy posterization to simulate flat illustration.
+       Used when Gemini image generation is unavailable or fails.
+       - posterize(5): reduces each channel to 5 tonal levels → flat look
+       - stronger sharpen: crisp edges between colour areas
+       - higher contrast: push colours towards their saturated extremes  */
+    pipeline = pipeline
+      .median(1)
+      .sharpen({ sigma: 2.0 })
+      .linear(1.6, -30)
+      .posterize(5);
+  } else {
+    pipeline = pipeline
+      .median(2)
+      .sharpen({ sigma: 1.0 })
+      .linear(1.2, -15);
+  }
+
+  return pipeline.toBuffer();
 }
 
 /* ─── MASK-AWARE DIVERSITY COLOR EXTRACTION ──────────────*/
@@ -594,53 +610,44 @@ async function segmentSubjectWithGemini(imageBuffer, mime, tapX, tapY) {
   if (!GEMINI_API_KEY) return null;
   const b64 = imageBuffer.toString("base64");
 
-  const hasPoint = tapX !== undefined && tapY !== undefined
-    && !isNaN(tapX) && !isNaN(tapY);
+  const hasPoint = tapX !== undefined && tapY !== undefined && !isNaN(tapX) && !isNaN(tapY);
 
   const subjectInstruction = hasPoint
-    ? `The user tapped at coordinate [${tapX}, ${tapY}]. Find the object or person AT or nearest to that point.`
+    ? `The user tapped at coordinate [${tapX}, ${tapY}]. Identify the object or person AT or nearest to that point.`
     : `Find the MAIN SUBJECT — the most prominent person, baby, or animal in the foreground.`;
+
+  /* 30×30 full-image grid: one coordinate system, no bbox confusion */
+  const GRID = 30;
 
   const prompt = `You are an image segmentation assistant for embroidery digitizing.
 ${subjectInstruction}
 
-Return ONLY valid JSON, no markdown, no extra text:
+Return ONLY valid JSON, no markdown:
 {
   "found": true,
   "subject": "baby",
-  "bbox": [xmin, ymin, xmax, ymax],
-  "rows": ["00011111100", "00111111110", ...],
+  "rows": ["000001111100...", ...],
   "confidence": "high" | "medium" | "low"
 }
 
-BOUNDING BOX (bbox) — 4 integers 0-1000:
-- x: 0=left edge, 1000=right edge
-- y: 0=top edge,  1000=bottom edge  
-- Format: [xmin, ymin, xmax, ymax]
-- Must fully surround the subject: top of hat → bottom of feet → full arm span
-- Add 25 units margin on all sides
-${hasPoint ? `- The point [${tapX},${tapY}] must fall inside the bbox` : ""}
+GRID — ${GRID} rows × ${GRID} columns covering the ENTIRE image:
+- Row 0 = very top of image, row ${GRID-1} = very bottom
+- Column 0 = very left of image, column ${GRID-1} = very right
+- '1' = this cell contains part of the MAIN SUBJECT (baby/person/animal)
+- '0' = background: sky, water, sand, other people, shadows, ground
+- Be CONSERVATIVE: when unsure, mark '0'. Only mark '1' for cells clearly part of the subject.
+- Include the COMPLETE subject: head, hat, all clothing, hands, feet — all must be '1'
+- Each of the ${GRID} rows must be exactly ${GRID} characters of '0' or '1', no spaces
+${hasPoint ? `- The cell at that tap point must be '1'` : ''}
 
-GRID ROWS (rows) — exactly 20 strings, each exactly 20 characters:
-- Row 0 = top of bbox, row 19 = bottom of bbox
-- Column 0 = left of bbox, column 19 = right of bbox
-- "1" = cell contains ANY part of the subject (be generous)
-- "0" = pure background
-- Bottom rows MUST reach the feet / lowest point of the seated body
-- Every row must be exactly 20 chars of "0" or "1"
-
-If no subject: {"found": false}`;
+If no clear subject: {"found": false}`;
 
   const res = await geminiPost({
     contents: [{ role:"user", parts:[
       { text: prompt },
       { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
     ]}],
-    generationConfig: {
-      temperature: 0.0,
-      maxOutputTokens: 8192,
-      responseMimeType: "application/json"
-    }
+    generationConfig: { temperature: 0.0, maxOutputTokens: 8192, responseMimeType: "application/json" }
   });
 
   if (!res) return null;
@@ -651,58 +658,85 @@ If no subject: {"found": false}`;
     let js = raw.replace(/```json|```/g, "").trim();
     const fa = js.indexOf("{"), lb = js.lastIndexOf("}");
     if (fa !== -1 && lb > fa) js = js.slice(fa, lb + 1);
-    if (js.length < 10) return null;
     const parsed = JSON.parse(js);
 
     if (!parsed.found) return { found: false };
 
-    /* ── BBOX VALIDATION ─────────────────────────── */
-    if (!Array.isArray(parsed.bbox) || parsed.bbox.length < 4) {
-      console.warn("[segment] Missing bbox"); return { found: false };
-    }
-    const bbox = parsed.bbox.map(v => Math.round(Math.max(0, Math.min(1000, Number(v)))));
-    const [xmin, ymin, xmax, ymax] = bbox;
-    if (xmin >= xmax || ymin >= ymax) {
-      console.warn("[segment] Degenerate bbox:", bbox); return { found: false };
-    }
-    const bboxArea = (xmax-xmin)*(ymax-ymin)/1000/1000*100;
-    if (bboxArea < 1 || bboxArea > 90) {
-      console.warn(`[segment] BBox area ${bboxArea.toFixed(1)}% out of range`); return { found: false };
-    }
-
-    /* ── GRID ROWS VALIDATION ────────────────────── */
-    const GRID = 20;
-    let rawRows = parsed.rows;
-    if (!Array.isArray(rawRows) || rawRows.length === 0) {
+    if (!Array.isArray(parsed.rows) || parsed.rows.length === 0) {
       console.warn("[segment] Missing rows"); return { found: false };
     }
-    const normRows = rawRows.slice(0, GRID).map(r =>
+
+    /* Normalise: pad/trim each row to GRID cols, pad missing rows */
+    const normRows = parsed.rows.slice(0, GRID).map(r =>
       String(r).replace(/[^01]/g, "").padEnd(GRID, "0").slice(0, GRID)
     );
     while (normRows.length < GRID) normRows.push("0".repeat(GRID));
-    const grid = normRows.join(""); // 400-char flat grid
+    const grid = normRows.join(""); // GRID² chars
 
     const onesCount = (grid.match(/1/g) || []).length;
-    const gridFill = (onesCount / (GRID*GRID) * 100).toFixed(1);
-    console.log(`[segment] subject="${parsed.subject}" conf=${parsed.confidence} bbox=[${bbox}] fill=${gridFill}%`);
+    const fillPct = (onesCount / (GRID * GRID) * 100).toFixed(1);
+    console.log(`[segment] subject="${parsed.subject}" conf=${parsed.confidence} fill=${fillPct}%`);
 
-    if (onesCount < 4) {
-      console.warn("[segment] Grid too empty — rejecting"); return { found: false };
-    }
+    if (onesCount < 4)  { console.warn("[segment] Too few cells"); return { found: false }; }
+    if (onesCount > GRID*GRID*0.7) { console.warn(`[segment] Fill ${fillPct}% too high`); return { found: false }; }
 
-    return {
-      found: true,
-      subject: parsed.subject || "unknown",
-      bbox,
-      grid,
-      confidence: parsed.confidence || "medium"
-    };
+    return { found: true, subject: parsed.subject || "unknown", grid, gridSize: GRID, confidence: parsed.confidence || "medium" };
   } catch(e) {
     console.error("segmentSubjectWithGemini parse error:", e.message);
     return null;
   }
 }
 
+
+/* ─── CARTOON IMAGE GENERATION ───────────────────────────
+   Uses gemini-2.0-flash-exp with responseModalities:IMAGE
+   to convert a real photo into a flat cartoon illustration
+   optimised for embroidery digitizing.
+   Returns {buffer, mime} or null on failure.
+────────────────────────────────────────────────────────── */
+async function convertToCartoonWithGemini(imageBuffer, mime, colorCount) {
+  if (!GEMINI_API_KEY) return null;
+  const b64 = imageBuffer.toString("base64");
+
+  const prompt = `You are an embroidery digitizing assistant. Convert this photo into a flat cartoon illustration optimised for machine embroidery stitching:
+- Use exactly ${colorCount} solid flat colours — NO gradients, NO shadows, NO photographic textures
+- Create sharp, crisp boundaries between each colour area
+- Simplify fur, fabric, and skin textures into solid colour blocks
+- Keep the main subject clearly recognisable and centred
+- Style: bold vector sticker / appliqué illustration
+- Background: plain white or a single flat colour
+- Remove all photographic noise and subtle shading
+The output must be the cartoon image itself.`;
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`;
+    const res = await axios.post(url, {
+      contents: [{ role:"user", parts:[
+        { text: prompt },
+        { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
+      ]}],
+      generationConfig: {
+        responseModalities: ["IMAGE"],
+        temperature: 0.3,
+        maxOutputTokens: 8192
+      }
+    }, { timeout: 60000 });
+
+    const parts = res.data?.candidates?.[0]?.content?.parts || [];
+    for (const part of parts) {
+      if (part.inlineData?.data) {
+        const buf = Buffer.from(part.inlineData.data, "base64");
+        console.log(`[cartoon] Gemini generated ${buf.length} bytes (${part.inlineData.mimeType})`);
+        return { buffer: buf, mime: part.inlineData.mimeType || "image/png" };
+      }
+    }
+    console.warn("[cartoon] Gemini returned no image — will use posterized fallback");
+    return null;
+  } catch(e) {
+    console.error(`[cartoon] Generation failed: ${e.response?.status} ${e.response?.data?.error?.message || e.message}`);
+    return null;
+  }
+}
 
 /* ─── GEMINI (metadata only) ─────────────────────────────*/
 async function geminiPost(body, ms = 45000) {
@@ -1558,9 +1592,15 @@ function v71_generatePhotoStitch(pixMap, colors, canvasSize, params) {
 }
 
 /* ─── REGION EXTRACTION ──────────────────────────────────*/
-function extractRegions(pixMap, colors, canvasSize) {
+function extractRegions(pixMap, colors, canvasSize, mode) {
   const visited  = new Uint8Array(canvasSize*canvasSize);
   const regions  = [];
+
+  /* For photo mode, a region needs average run ≤ 4mm to be satin (thin detail).
+     For logo/cartoon, lower this to 1.5mm so that solid blocks of colour
+     correctly become fill (tatami) rather than satin lines.
+     Without this, a 1600px cartoon with fur-texture outfits gets fill:0. */
+  const satinMaxMm = (mode === 'photo') ? 4.0 : 1.5;
 
   for(let ci=0;ci<colors.length;ci++){
     for(let sy=0;sy<canvasSize;sy++){
@@ -1607,7 +1647,7 @@ function extractRegions(pixMap, colors, canvasSize) {
         const scaledMin3 = MIN_AREA * 3 * Math.pow(canvasSize / 800, 2);
         const avgRunMM = avgRunW / (canvasSize / 800) / 10;
         if(area < scaledMin3) type = "running";
-        else if(avgRunMM <= 4.0) type = "satin";
+        else if(avgRunMM <= satinMaxMm) type = "satin";
         else if(avgRunMM <= 8.0 && aspectRatio > 1.8 && solidity > 0.4) type = "satin";
         else type = "fill";
 
@@ -3141,19 +3181,43 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
 
     console.log(`[${rid}] DETECT: mode=${mode} size=${canvasSize}px colors=${colorCount}`);
 
-    const cleanedBuffer = await preprocessImage(imgFile.buffer, canvasSize);
+    /* For cartoon mode: try to generate a flat illustration with Gemini first.
+       This converts a real photo into solid-colour artwork that digitizes far
+       better than a raw photograph. Falls back to heavy posterization if the
+       image-generation API is unavailable. */
+    let sourceBuffer = imgFile.buffer;
+    let sourceMime   = imgFile.mimetype || "image/jpeg";
+    if (mode === 'cartoon') {
+      const cartoon = await convertToCartoonWithGemini(imgFile.buffer, sourceMime, colorCount);
+      if (cartoon) {
+        sourceBuffer = cartoon.buffer;
+        sourceMime   = cartoon.mime;
+        console.log(`[${rid}] Cartoon image generated OK`);
+      } else {
+        console.warn(`[${rid}] Cartoon generation failed — using posterized fallback`);
+      }
+    }
+
+    const cleanedBuffer = await preprocessImage(sourceBuffer, canvasSize, mode);
 
     /* Ask Gemini and the bucket extractor in parallel, then pick a winner.
        Gemini's palette is preferred when it returns ≥3 distinct valid hexes;
        otherwise we fall back to the classic bucket extraction. */
     const [bucketColors, gem] = await Promise.all([
       extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount),
-      analyzeWithGemini(imgFile.buffer, imgFile.mimetype || "image/png", colorCount).catch(() => null)
+      analyzeWithGemini(sourceBuffer, sourceMime, colorCount).catch(() => null)
     ]);
 
     let colors;
     let paletteSource;
-    if (gem && Array.isArray(gem.palette) && gem.palette.length >= 3) {
+    /* For cartoon/logo mode: prefer the bucket palette because it reflects the
+       actual pixel colours in the image. Gemini's palette is better for photo
+       mode where semantic thread-colour suggestions matter more than accuracy. */
+    if (effectiveMode !== 'photo' && bucketColors && bucketColors.length >= 3) {
+      colors = bucketColors;
+      paletteSource = "buckets";
+      console.log(`[${rid}] Palette from buckets (${colors.length}): ${colors.join(", ")}`);
+    } else if (gem && Array.isArray(gem.palette) && gem.palette.length >= 3) {
       colors = gem.palette.slice(0, colorCount);
       paletteSource = "gemini";
       console.log(`[${rid}] Palette from Gemini (${colors.length}): ${colors.join(", ")}`);
@@ -3171,7 +3235,7 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
 
     /* No more background auto-exclusion: every detected region is returned,
        and the UI lets the user deselect bulk-style. */
-    const rawRegions = extractRegions(pixMap, colors, canvasSize);
+    const rawRegions = extractRegions(pixMap, colors, canvasSize, effectiveMode);
     const regions = mergeAdjacentRegions(rawRegions, canvasSize);
 
     if(!regions.length){
@@ -3245,13 +3309,13 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
       canvasSize = parseInt(body.canvasSize) || 800;
       const colorCount = Math.min(16, Math.max(3, parseInt(body.colorCount) || (mode === 'photo' ? 8 : 12)));
       
-      const cleanedBuffer = await preprocessImage(imgFile.buffer, canvasSize);
+      const cleanedBuffer = await preprocessImage(imgFile.buffer, canvasSize, effectiveMode);
       colors = await extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount);
       
       const gem = await analyzeWithGemini(imgFile.buffer, imgFile.mimetype || "image/png", colorCount);
       
       pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
-      const rawRegions = extractRegions(pixMap, colors, canvasSize);
+      const rawRegions = extractRegions(pixMap, colors, canvasSize, effectiveMode);
       regions = mergeAdjacentRegions(rawRegions, canvasSize);
     }
 
