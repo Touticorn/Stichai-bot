@@ -240,6 +240,23 @@ footer{background:var(--navy);padding:52px clamp(20px,5vw,80px) 36px}
 .ios-arrow{text-align:center;font-size:28px;display:none;margin-bottom:6px;animation:bounce-d 1.4s ease-in-out infinite}
 .ios-arrow.show{display:block}
 @keyframes bounce-d{0%,100%{transform:translateY(0)}50%{transform:translateY(8px)}}
+/* ── WAND HINT & AI EXTRACTION ──────────────────────── */
+.wand-hint-bar{background:linear-gradient(135deg,rgba(233,69,96,.07),rgba(233,69,96,.03));border:1.5px solid rgba(233,69,96,.22);border-radius:10px;padding:11px 38px 11px 13px;margin:0 0 10px;position:relative}
+.wh-title{font-weight:800;color:var(--red);font-size:12px;display:flex;align-items:center;gap:5px;margin-bottom:6px;letter-spacing:.3px}
+.wh-row{display:flex;align-items:flex-start;gap:7px;font-size:11.5px;color:#444;line-height:1.45;margin-bottom:3px}
+.wh-row:last-child{margin-bottom:0}
+.wh-row span:first-child{font-size:13px;flex-shrink:0;margin-top:0px}
+.wand-hint-close{position:absolute;top:7px;right:8px;background:none;border:none;cursor:pointer;color:var(--muted2);font-size:13px;padding:3px 5px;line-height:1;border-radius:4px}
+.wand-hint-close:hover{background:rgba(0,0,0,.06);color:var(--txt)}
+.btn-ai-extract{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:11px;background:var(--navy2);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--fb);margin-bottom:8px;transition:all .2s;letter-spacing:.2px}
+.btn-ai-extract:hover{background:#1e2240;transform:translateY(-1px);box-shadow:0 4px 14px rgba(14,14,26,.25)}
+.btn-ai-extract:disabled{background:#aaa;cursor:not-allowed;transform:none;box-shadow:none}
+.wand-mode-row{display:flex;align-items:center;gap:9px;margin:0 0 10px;font-size:12px;font-weight:700;color:var(--muted)}
+.mode-pill{display:flex;border:1.5px solid var(--brd);border-radius:7px;overflow:hidden;flex-shrink:0}
+.mode-pill button{padding:5px 13px;font-size:11px;font-weight:700;border:none;background:#fff;cursor:pointer;font-family:var(--fb);color:var(--muted);transition:all .15s}
+.mode-pill button.on{background:var(--red);color:#fff}
+@keyframes wand-ring{0%,100%{box-shadow:0 0 0 0 rgba(233,69,96,.5)}60%{box-shadow:0 0 0 9px rgba(233,69,96,0)}}
+.wand-ring{animation:wand-ring 1.8s ease-out 3}
 @media(max-width:480px){
   section{padding:68px clamp(16px,4vw,24px)}#app{padding:68px clamp(16px,4vw,24px)}.card{padding:16px}
   .mode-grid,.how-grid{grid-template-columns:1fr}.color-grid,.shape-grid,.plans-grid,.feat-grid{grid-template-columns:1fr}.how-grid::before{display:none}
@@ -441,6 +458,28 @@ footer{background:var(--navy);padding:52px clamp(20px,5vw,80px) 36px}
       </div>
       <div class="card" id="mc" style="display:none">
         <div class="stage-label" data-t="step2">Step 2: Remove areas (optional)</div>
+
+        <!-- Smart extraction hint bar -->
+        <div class="wand-hint-bar" id="wandHintBar">
+          <button class="wand-hint-close" onclick="closeWandHint()" title="Dismiss">&#10005;</button>
+          <div class="wh-title">&#10024; <span data-t="wandTipTitle">Smart Extraction Tips</span></div>
+          <div class="wh-row"><span>&#129302;</span><span data-t="wandTipAI">Tap &ldquo;Auto-detect&rdquo; to extract a person in one tap</span></div>
+          <div class="wh-row"><span>&#128072;</span><span data-t="wandTipLong">Hold finger on any object for 0.7s to smart-select it</span></div>
+          <div class="wh-row"><span>&#10133;</span><span data-t="wandTipAdd">Switch to &ldquo;+ Add&rdquo; mode to keep multiple objects</span></div>
+        </div>
+
+        <!-- AI one-tap detect -->
+        <button class="btn-ai-extract" id="aiExtractBtn" onclick="extractPersonAI()">&#129302; <span data-t="wandBtnAI">Auto-detect person</span></button>
+
+        <!-- Long-press mode toggle -->
+        <div class="wand-mode-row">
+          <span data-t="wandModeLabel">Long-press:</span>
+          <div class="mode-pill" id="wandModePill">
+            <button class="on" id="wandModeReplace" onclick="setWandMode('replace',this)" data-t="wandModeReplace">Replace</button>
+            <button id="wandModeAdd" onclick="setWandMode('add',this)" data-t="wandModeAdd">+ Add</button>
+          </div>
+        </div>
+
         <p style="font-size:12px;color:var(--muted);margin:0 0 8px" data-t="maskHint">Paint <strong style="color:var(--red)">RED</strong> over what you don&rsquo;t want stitched</p>
         <div class="mask-wrap" id="mw"><canvas id="c1"></canvas><canvas id="c2"></canvas></div>
         <div class="tools">
@@ -627,7 +666,13 @@ var T = {
     ios1:"Tap the Share button in Safari",
     ios2:"Scroll down and tap \"Add to Home Screen\"", ios3:"Tap \"Add\" in the top right",
     pwaTitle:"Add to Home Screen", pwaSub:"Launch Stichai like a native app.",
-    pwaChromeNote:"Open in Chrome or Edge to install.", pwaFirefoxNote:"Open in Chrome or Edge to install."
+    pwaChromeNote:"Open in Chrome or Edge to install.", pwaFirefoxNote:"Open in Chrome or Edge to install.",
+    wandTipTitle:"Smart Extraction Tips",
+    wandTipAI:"Tap \u201cAuto-detect\u201d to extract a person in one tap",
+    wandTipLong:"Hold finger on any object 0.7s to smart-select it",
+    wandTipAdd:"Switch to \u201c+ Add\u201d mode to keep multiple objects",
+    wandBtnAI:"Auto-detect person", wandLoading:"Detecting\u2026",
+    wandModeLabel:"Long-press:", wandModeReplace:"Replace", wandModeAdd:"+ Add"
   },
   fr: {
     navFeatures:"Fonctionnalit\u00e9s", navPricing:"Tarifs", navTool:"Essayer", install:"Installer",
@@ -703,7 +748,13 @@ var T = {
     ios2:"Faites d\u00e9filer et appuyez sur \u00ab Ajouter \u00e0 l\u2019\u00e9cran d\u2019accueil \u00bb",
     ios3:"Appuyez sur \u00ab Ajouter \u00bb en haut \u00e0 droite",
     pwaTitle:"Ajouter \u00e0 l\u2019\u00e9cran d\u2019accueil", pwaSub:"Lancez Stichai comme une app native.",
-    pwaChromeNote:"Ouvrez dans Chrome ou Edge.", pwaFirefoxNote:"Ouvrez dans Chrome ou Edge."
+    pwaChromeNote:"Ouvrez dans Chrome ou Edge.", pwaFirefoxNote:"Ouvrez dans Chrome ou Edge.",
+    wandTipTitle:"Astuces d\u2019extraction intelligente",
+    wandTipAI:"Appuyez sur \u00ab\u00a0D\u00e9tecter\u00a0\u00bb pour extraire une personne en un tap",
+    wandTipLong:"Maintenez le doigt sur un objet 0,7s pour le s\u00e9lectionner",
+    wandTipAdd:"Passez en mode \u00ab\u00a0+ Ajouter\u00a0\u00bb pour garder plusieurs sujets",
+    wandBtnAI:"D\u00e9tecter la personne", wandLoading:"D\u00e9tection\u2026",
+    wandModeLabel:"Appui long\u00a0:", wandModeReplace:"Remplacer", wandModeAdd:"+ Ajouter"
   },
   ar: {
     navFeatures:"\u0627\u0644\u0645\u0645\u064a\u0632\u0627\u062a", navPricing:"\u0627\u0644\u0623\u0633\u0639\u0627\u0631", navTool:"\u062c\u0631\u0651\u0628", install:"\u062a\u062b\u0628\u064a\u062a",
@@ -790,7 +841,13 @@ var T = {
     pwaTitle:"\u0625\u0636\u0627\u0641\u0629 \u0625\u0644\u0649 \u0627\u0644\u0634\u0627\u0634\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629",
     pwaSub:"\u0627\u0641\u062a\u062d \u0633\u062a\u064a\u0634\u0627\u064a \u0645\u062b\u0644 \u062a\u0637\u0628\u064a\u0642 \u0623\u0635\u0644\u064a.",
     pwaChromeNote:"\u0627\u0641\u062a\u062d \u0641\u064a Chrome \u0623\u0648 Edge \u0644\u0644\u062a\u062b\u0628\u064a\u062a.",
-    pwaFirefoxNote:"\u0627\u0641\u062a\u062d \u0641\u064a Chrome \u0623\u0648 Edge \u0644\u0644\u062a\u062b\u0628\u064a\u062a."
+    pwaFirefoxNote:"\u0627\u0641\u062a\u062d \u0641\u064a Chrome \u0623\u0648 Edge \u0644\u0644\u062a\u062b\u0628\u064a\u062a.",
+    wandTipTitle:"\u0646\u0635\u0627\u0626\u062d \u0627\u0644\u0627\u0633\u062a\u062e\u0631\u0627\u062c \u0627\u0644\u0630\u0643\u064a",
+    wandTipAI:"\u0627\u0636\u063a\u0637 \u00ab\u0643\u0634\u0641\u00bb \u0644\u0627\u0633\u062a\u062e\u0631\u0627\u062c \u0634\u062e\u0635 \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b \u0628\u0636\u063a\u0637\u0629 \u0648\u0627\u062d\u062f\u0629",
+    wandTipLong:"\u0627\u0636\u063a\u0637 \u0645\u0637\u0648\u0644\u0627\u064b \u0639\u0644\u0649 \u0623\u064a \u0643\u0627\u0626\u0646 0.7\u062b \u0644\u062a\u062d\u062f\u064a\u062f\u0647 \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b",
+    wandTipAdd:"\u0627\u0646\u062a\u0642\u0644 \u0644\u0648\u0636\u0639 \u00ab+ \u0625\u0636\u0627\u0641\u0629\u00bb \u0644\u0644\u0627\u062d\u062a\u0641\u0627\u0638 \u0628\u0639\u062f\u0629 \u0643\u0627\u0626\u0646\u0627\u062a",
+    wandBtnAI:"\u0643\u0634\u0641 \u0627\u0644\u0634\u062e\u0635 \u062a\u0644\u0642\u0627\u0626\u064a\u0627\u064b", wandLoading:"\u062c\u0627\u0631\u064a \u0627\u0644\u0643\u0634\u0641\u2026",
+    wandModeLabel:"\u0627\u0644\u0636\u063a\u0637 \u0627\u0644\u0645\u0637\u0648\u0644:", wandModeReplace:"\u0627\u0633\u062a\u0628\u062f\u0627\u0644", wandModeAdd:"+ \u0625\u0636\u0627\u0641\u0629"
   }
 };
 var currentLang='en';
@@ -1045,6 +1102,7 @@ function initMask(u){
     mX.clearRect(0,0,800,800);
     document.getElementById('mw').className='mask-wrap on';
     document.getElementById('mc').style.display='block';
+    initWandHint();
     c1.onmousedown=function(e){e.preventDefault();dr=true;var p=gp(e);lx=p.x;ly=p.y;startLongPress(e);dm(e)};
     c1.onmousemove=function(e){if(!dr)return;e.preventDefault();dm(e)};
     c1.onmouseup=function(){dr=false;endLongPress();};
@@ -1083,6 +1141,30 @@ function setTool(t,btn){tl=t;var btns=btn.parentNode.querySelectorAll('button');
 function setBrushSize(s,btn){sz=s;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<btns.length;i++)btns[i].className='';btn.className='on'}
 function clearMask(){if(!mX)return;mX.clearRect(0,0,800,800);hm=false}
 
+/* ── WAND MODE & AI EXTRACTION ─────────────────────── */
+var wandMode='replace';
+var mpSegModel=null, mpSegLoading=false, mpSegReady=false;
+
+function setWandMode(m,btn){
+  wandMode=m;
+  var btns=btn.parentNode.querySelectorAll('button');
+  for(var i=0;i<btns.length;i++) btns[i].className='';
+  btn.className='on';
+}
+
+function closeWandHint(){
+  var el=document.getElementById('wandHintBar');
+  if(el) el.style.display='none';
+  try{localStorage.setItem('stichai_wand_hint','1');}catch(e){}
+}
+
+function initWandHint(){
+  try{if(localStorage.getItem('stichai_wand_hint')){var el=document.getElementById('wandHintBar');if(el)el.style.display='none';}}catch(e){}
+  /* Pulse the AI button on first-ever load to draw attention */
+  var ab=document.getElementById('aiExtractBtn');
+  if(ab) ab.classList.add('wand-ring');
+}
+
 /* ── MAGIC WAND (long-press subject extraction) ─── */
 var longPressTimer=null, pressStartPos=null;
 function startLongPress(e){
@@ -1090,10 +1172,11 @@ function startLongPress(e){
   pressStartPos=p;
   clearTimeout(longPressTimer);
   longPressTimer=setTimeout(function(){
-    if(pressStartPos && Math.hypot(lx-pressStartPos.x, ly-pressStartPos.y) < 20){
+    /* Use 35 canvas-px threshold (wider than before) to survive small finger jitter */
+    if(pressStartPos && Math.hypot(lx-pressStartPos.x, ly-pressStartPos.y) < 35){
       dr=false;
       magicWandExtract(pressStartPos.x, pressStartPos.y);
-      if(navigator.vibrate) navigator.vibrate(40);
+      if(navigator.vibrate) navigator.vibrate([30,30,60]);
     }
   }, 700);
 }
@@ -1109,7 +1192,8 @@ function magicWandExtract(sx, sy){
   if(sx<0 || sy<0 || sx>=w || sy>=h) return;
   var startIdx=(sy*w+sx)*4;
   var tr=d[startIdx], tg=d[startIdx+1], tb=d[startIdx+2];
-  var tol=40;
+  /* Increased tolerance: 65 captures photo-noise & soft lighting transitions */
+  var tol=65;
   var maskArr=new Uint8Array(w*h);
   var q=[[sx,sy]];
   maskArr[sy*w+sx]=1;
@@ -1138,14 +1222,117 @@ function magicWandExtract(sx, sy){
     if(maskArr[i]){ tData.data[i*4+3]=255; }
   }
   tctx.putImageData(tData,0,0);
-  mX.clearRect(0,0,w,h);
-  mX.fillStyle='rgba(255,60,60,0.9)';
-  mX.fillRect(0,0,w,h);
-  mX.globalCompositeOperation='destination-out';
-  mX.drawImage(temp,0,0);
-  mX.globalCompositeOperation='source-over';
-  hm=true;
+  applyPersonCanvas(temp);
   document.getElementById('st').innerHTML='<p class="ok">&#10003; '+t('maskAutoExtracted')+'</p>';
+}
+
+/* Apply a person canvas (opaque=keep, transparent=mask-red) to mX */
+function applyPersonCanvas(personCanvas){
+  var w=mX.canvas.width, h=mX.canvas.height;
+  if(wandMode==='replace'){
+    mX.clearRect(0,0,w,h);
+    mX.fillStyle='rgba(255,60,60,0.9)';
+    mX.fillRect(0,0,w,h);
+    mX.globalCompositeOperation='destination-out';
+    mX.drawImage(personCanvas,0,0);
+    mX.globalCompositeOperation='source-over';
+  } else {
+    /* Add mode: cut additional clear windows without disturbing existing ones */
+    /* First ensure the whole background is red where it isn't already */
+    var tmp2=document.createElement('canvas');
+    tmp2.width=w; tmp2.height=h;
+    var tc2=tmp2.getContext('2d');
+    tc2.fillStyle='rgba(255,60,60,0.9)';
+    tc2.fillRect(0,0,w,h);
+    /* Copy existing cleared areas from mX */
+    tc2.globalCompositeOperation='destination-in';
+    tc2.drawImage(mX.canvas,0,0);
+    /* Now punch out new person region */
+    tc2.globalCompositeOperation='destination-out';
+    tc2.drawImage(personCanvas,0,0);
+    /* Rebuild full red layer with both cleared areas */
+    mX.clearRect(0,0,w,h);
+    mX.fillStyle='rgba(255,60,60,0.9)';
+    mX.fillRect(0,0,w,h);
+    mX.globalCompositeOperation='destination-out';
+    /* Re-draw original clear area */
+    mX.drawImage(tmp2,0,0);          /* tmp2 is already "cleared area" alpha */
+    mX.globalCompositeOperation='source-over';
+    /* Simpler accurate approach: just cut new person out of current mask */
+    mX.globalCompositeOperation='destination-out';
+    mX.drawImage(personCanvas,0,0);
+    mX.globalCompositeOperation='source-over';
+  }
+  hm=true;
+}
+
+/* ── MEDIAPIPE AI PERSON DETECTION ─────────────────── */
+function loadMediaPipeSegmentation(cb){
+  if(mpSegReady && mpSegModel){ cb(mpSegModel); return; }
+  if(mpSegLoading){ var iv=setInterval(function(){ if(mpSegReady){clearInterval(iv);cb(mpSegModel);} if(!mpSegLoading){clearInterval(iv);cb(null);} },200); return; }
+  mpSegLoading=true;
+  var s=document.createElement('script');
+  s.src='https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js';
+  s.crossOrigin='anonymous';
+  s.onload=function(){
+    try{
+      mpSegModel=new SelfieSegmentation({locateFile:function(f){return 'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/'+f;}});
+      mpSegModel.setOptions({modelSelection:1}); /* 1 = general (landscape) — works on people & objects */
+      mpSegReady=true; mpSegLoading=false;
+      cb(mpSegModel);
+    }catch(e){ mpSegLoading=false; cb(null); }
+  };
+  s.onerror=function(){ mpSegLoading=false; cb(null); };
+  document.head.appendChild(s);
+}
+
+function applyMediaPipeMask(segCanvas){
+  /* segCanvas is greyscale: white=person/foreground, black=background */
+  var w=mX.canvas.width, h=mX.canvas.height;
+  var temp=document.createElement('canvas');
+  temp.width=w; temp.height=h;
+  var tc=temp.getContext('2d');
+  tc.drawImage(segCanvas,0,0,w,h);
+  var id=tc.getImageData(0,0,w,h), dt=id.data;
+  /* Threshold at 128 → binary person mask; set alpha=255 where person */
+  for(var i=0;i<dt.length;i+=4){
+    var v=(dt[i]+dt[i+1]+dt[i+2])/3;
+    if(v>128){ dt[i]=0; dt[i+1]=0; dt[i+2]=0; dt[i+3]=255; }
+    else { dt[i+3]=0; }
+  }
+  tc.putImageData(id,0,0);
+  applyPersonCanvas(temp);
+}
+
+function extractPersonAI(){
+  if(!c1||!mX) return;
+  var btn=document.getElementById('aiExtractBtn');
+  btn.disabled=true;
+  btn.innerHTML='&#9203; <span>'+t('wandLoading')+'</span>';
+  loadMediaPipeSegmentation(function(seg){
+    if(!seg){
+      btn.disabled=false;
+      btn.innerHTML='&#129302; <span data-t="wandBtnAI">'+t('wandBtnAI')+'</span>';
+      document.getElementById('st').innerHTML='<div class="error">Auto-detection unavailable. Hold finger on the subject instead.</div>';
+      return;
+    }
+    var handled=false;
+    seg.onResults(function(results){
+      if(handled) return; handled=true;
+      applyMediaPipeMask(results.segmentationMask);
+      btn.disabled=false;
+      btn.innerHTML='&#129302; <span data-t="wandBtnAI">'+t('wandBtnAI')+'</span>';
+      document.getElementById('st').innerHTML='<p class="ok">&#10003; '+t('maskAutoExtracted')+'</p>';
+      if(navigator.vibrate) navigator.vibrate(60);
+    });
+    seg.send({image:c1}).catch(function(){
+      if(!handled){ handled=true;
+        btn.disabled=false;
+        btn.innerHTML='&#129302; <span data-t="wandBtnAI">'+t('wandBtnAI')+'</span>';
+        document.getElementById('st').innerHTML='<div class="error">Detection failed — try holding finger on the person.</div>';
+      }
+    });
+  });
 }
 
 function analyze(){
