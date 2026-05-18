@@ -1323,6 +1323,15 @@ function onCanvasTap(e){
   var tapX=Math.round(Math.max(0,Math.min(1000,(cx-off.x)/off.w*1000)));
   var tapY=Math.round(Math.max(0,Math.min(1000,(cy-off.y)/off.h*1000)));
   showMaskState('detecting');
+
+  /* Show elapsed seconds so user knows it's working, not frozen */
+  var _detectStart=Date.now();
+  var _detectTick=setInterval(function(){
+    var lbl=document.querySelector('.detect-label');
+    if(lbl){var s=Math.round((Date.now()-_detectStart)/1000);lbl.textContent=t('wandLoading')+' ('+s+'s)';}
+  },1000);
+  window._detectTick=_detectTick;
+
   callSegmentSubject(tapX,tapY);
 }
 
@@ -1334,14 +1343,18 @@ function callSegmentSubject(tapX,tapY){
   fetch('/segment-subject',{method:'POST',body:fd})
     .then(function(r){return r.json();})
     .then(function(data){
-      if(data.found&&data.bbox&&data.grid){
-        /* New grid-based segmentation */
-        applyGeminiGrid(data.bbox,data.grid);
+      if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
+      if(data.found&&data.grid){
+        /* Grid-based segmentation (full-image 30×30) */
+        applyGeminiGrid(data.grid, data.gridSize||30);
         var lbl=document.getElementById('confirmedSubjectLabel');
         var subj=data.subject||'Subject';
         if(lbl)lbl.textContent=subj.charAt(0).toUpperCase()+subj.slice(1)+' \u2713';
         showMaskState('confirmed');
         if(navigator.vibrate)navigator.vibrate([30,30,60]);
+        /* Scroll confirm bar into view so user sees it */
+        var bar=document.getElementById('maskConfirmBar');
+        if(bar) setTimeout(function(){bar.scrollIntoView({behavior:'smooth',block:'nearest'});},120);
       }else if(data.found&&Array.isArray(data.polygon)&&data.polygon.length>=6){
         /* Legacy polygon fallback */
         applyGeminiPolygon(data.polygon);
@@ -1357,6 +1370,7 @@ function callSegmentSubject(tapX,tapY){
       }
     })
     .catch(function(){
+      if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
       showMaskState('error',t('wandNotFound'));
       setTimeout(function(){showMaskState('idle');},2800);
     });
@@ -1421,27 +1435,49 @@ function startLongPress(e){
 }
 function endLongPress(){clearTimeout(longPressTimer);pressStartPos=null;}
 
-/* ── INTERNAL: APPLY GRID MASK TO c2 ───────────────── */
-function bboxToGlowPoly(bbox){
-  /* Convert bbox [xmin,ymin,xmax,ymax] → 8-point polygon for glow */
-  var x0=bbox[0],y0=bbox[1],x1=bbox[2],y1=bbox[3];
-  var mx=(x0+x1)/2, my=(y0+y1)/2;
-  return [[x0,y0],[mx,y0],[x1,y0],[x1,my],[x1,y1],[mx,y1],[x0,y1],[x0,my]];
+/* ── EXTRACT GLOW POLYGON FROM RENDERED MASK ─────────
+   Scans the smooth mask canvas clockwise (top→right→
+   bottom→left) to find the actual body silhouette edge.
+   This gives the iPhone-style outline that follows the
+   real body shape instead of a plain rectangle.
+────────────────────────────────────────────────────── */
+function extractGlowPolygon(maskCanvas){
+  var w=maskCanvas.width, h=maskCanvas.height;
+  var off=window._imgOff||{x:0,y:0,w:w,h:h};
+  var data=maskCanvas.getContext('2d').getImageData(0,0,w,h).data;
+  var step=6, pts=[];
+  function toNorm(x,y){
+    return [Math.round((x-off.x)/off.w*1000), Math.round((y-off.y)/off.h*1000)];
+  }
+  /* Top pass: find topmost opaque pixel in each column */
+  for(var x=0;x<w;x+=step){
+    for(var y=0;y<h;y++){if(data[(y*w+x)*4+3]>64){pts.push(toNorm(x,y));break;}}
+  }
+  /* Right pass: find rightmost opaque pixel in each row */
+  for(var y=0;y<h;y+=step){
+    for(var x=w-1;x>=0;x--){if(data[(y*w+x)*4+3]>64){pts.push(toNorm(x,y));break;}}
+  }
+  /* Bottom pass: bottommost (right-to-left) */
+  for(var x=w-1;x>=0;x-=step){
+    for(var y=h-1;y>=0;y--){if(data[(y*w+x)*4+3]>64){pts.push(toNorm(x,y));break;}}
+  }
+  /* Left pass: leftmost (bottom-to-top) */
+  for(var y=h-1;y>=0;y-=step){
+    for(var x=0;x<w;x++){if(data[(y*w+x)*4+3]>64){pts.push(toNorm(x,y));break;}}
+  }
+  /* Filter out-of-image points */
+  return pts.filter(function(p){return p[0]>=0&&p[0]<=1000&&p[1]>=0&&p[1]<=1000;});
 }
 
-function applyGeminiGrid(bbox, grid){
-  if(!c1||!mX||!bbox||!grid)return;
+/* ── APPLY FULL-IMAGE GRID MASK TO c2 ───────────────── */
+function applyGeminiGrid(grid, gridSize){
+  if(!c1||!mX||!grid)return;
   var w=c1.width, h=c1.height;
   var off=window._imgOff||{x:0,y:0,w:w,h:h};
-  var GRID=20;
+  var GRID=gridSize||30;
+  var cellW=off.w/GRID, cellH=off.h/GRID;
 
-  /* Map bbox to canvas pixel coords */
-  var bx0=off.x+bbox[0]/1000*off.w, by0=off.y+bbox[1]/1000*off.h;
-  var bx1=off.x+bbox[2]/1000*off.w, by1=off.y+bbox[3]/1000*off.h;
-  var bw=bx1-bx0, bh=by1-by0;
-  var cellW=bw/GRID, cellH=bh/GRID;
-
-  /* Draw filled grid cells on a raw canvas */
+  /* Draw filled subject cells */
   var raw=document.createElement('canvas');
   raw.width=w; raw.height=h;
   var rctx=raw.getContext('2d');
@@ -1449,33 +1485,33 @@ function applyGeminiGrid(bbox, grid){
   for(var i=0;i<GRID*GRID&&i<grid.length;i++){
     if(grid[i]==='1'){
       var col=i%GRID, row=Math.floor(i/GRID);
-      /* +1/-1 overlap between cells avoids hairline gaps */
       rctx.fillRect(
-        Math.floor(bx0+col*cellW)-1,
-        Math.floor(by0+row*cellH)-1,
+        Math.floor(off.x+col*cellW)-1,
+        Math.floor(off.y+row*cellH)-1,
         Math.ceil(cellW)+2,
         Math.ceil(cellH)+2
       );
     }
   }
 
-  /* Blur + threshold → smooth edges, no pixelation */
+  /* Blur + threshold for smooth organic edges */
   var smooth=document.createElement('canvas');
   smooth.width=w; smooth.height=h;
   var sc=smooth.getContext('2d');
-  sc.filter='blur(14px)';
+  sc.filter='blur(12px)';
   sc.drawImage(raw,0,0);
   sc.filter='none';
   var bd=sc.getImageData(0,0,w,h);
-  for(var i=3;i<bd.data.length;i+=4) bd.data[i]=bd.data[i]>30?255:0;
+  for(var i=3;i<bd.data.length;i+=4) bd.data[i]=bd.data[i]>40?255:0;
   sc.putImageData(bd,0,0);
 
   /* Apply internal red mask (c2) */
   prevMaskDataURL=mX.canvas.toDataURL();
   applyPersonCanvas(smooth);
 
-  /* Glow uses bbox-derived polygon (visually good enough) */
-  startGlowAnimation(bboxToGlowPoly(bbox));
+  /* Extract actual body outline from mask for glow — not a rectangle */
+  var glowPoly=extractGlowPolygon(smooth);
+  if(glowPoly&&glowPoly.length>6) startGlowAnimation(glowPoly);
 }
 
 /* Keep polygon version for backward compat / manual fallback */
