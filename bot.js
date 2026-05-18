@@ -650,21 +650,25 @@ async function removeBackgroundImgly(imageBuffer, mime) {
   }
 }
 
-/* ─── GEMINI SUBJECT SEGMENTATION ────────────────────────*/
+/* ─── GEMINI SUBJECT SEGMENTATION (v2 — 40×40 grid, pro-first, clean-up, retry) ─*/
 async function segmentSubjectWithGemini(imageBuffer, mime, tapX, tapY) {
   if (!GEMINI_API_KEY) return null;
   const b64 = imageBuffer.toString("base64");
-
   const hasPoint = tapX !== undefined && tapY !== undefined && !isNaN(tapX) && !isNaN(tapY);
-
-  const subjectInstruction = hasPoint
-    ? `The user tapped at coordinate [${tapX}, ${tapY}]. Identify the object or person AT or nearest to that point.`
-    : `Find the MAIN SUBJECT — the most prominent person, baby, or animal in the foreground.`;
-
-  /* 40×40 full-image grid: higher resolution than 30×30 for better boundaries */
   const GRID = 40;
 
-  const prompt = `You are an image segmentation assistant for embroidery digitizing.
+  async function attemptSegment(strictness) {
+    const subjectInstruction = hasPoint
+      ? `The user tapped at coordinate [${tapX}, ${tapY}]. Identify the object or person AT or nearest to that point.`
+      : `Find the MAIN SUBJECT — the most prominent person, baby, or animal in the foreground.`;
+
+    const strictNote = strictness === 'strict'
+      ? `
+- Be EXTREMELY conservative: only mark '1' for cells that are DEFINITELY part of the subject. When in doubt, mark '0'.`
+      : `
+- Be CONSERVATIVE: when unsure, mark '0'. Only mark '1' for cells clearly part of the subject.`;
+
+    const prompt = `You are an image segmentation assistant for embroidery digitizing.
 ${subjectInstruction}
 
 Return ONLY valid JSON, no markdown:
@@ -679,143 +683,144 @@ GRID — ${GRID} rows × ${GRID} columns covering the ENTIRE image:
 - Row 0 = very top of image, row ${GRID-1} = very bottom
 - Column 0 = very left of image, column ${GRID-1} = very right
 - '1' = this cell contains part of the MAIN SUBJECT (baby/person/animal)
-- '0' = background: sky, water, sand, other people, shadows, ground
-- Be CONSERVATIVE: when unsure, mark '0'. Only mark '1' for cells clearly part of the subject.
+- '0' = background: sky, water, sand, other people, shadows, ground${strictNote}
 - Include the COMPLETE subject: head, hat, all clothing, hands, feet — all must be '1'
 - Each of the ${GRID} rows must be exactly ${GRID} characters of '0' or '1', no spaces
 ${hasPoint ? `- The cell at that tap point must be '1'` : ''}
 
 If no clear subject: {"found": false}`;
 
-  /* Try gemini-2.5-pro first for better spatial reasoning, fallback to flash */
-  async function trySegment(modelName) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
-    try {
-      const res = await axios.post(url, {
-        contents: [{ role:"user", parts:[
-          { text: prompt },
-          { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
-        ]}],
-        generationConfig: { temperature: 0.0, maxOutputTokens: 8192, responseMimeType: "application/json",
-          thinkingConfig: { thinkingBudget: 12000 } /* higher budget for 1600-cell grid */ }
-      }, { timeout: 60000 });
-      return res;
-    } catch(e) {
-      console.error(`Segment ${modelName} → ${e.response?.status}: ${e.response?.data?.error?.message||e.message}`);
-      return null;
+    for (const model of ["gemini-2.5-pro", "gemini-2.5-flash"]) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+      try {
+        const res = await axios.post(url, {
+          contents: [{ role:"user", parts:[
+            { text: prompt },
+            { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
+          ]}],
+          generationConfig: { temperature: 0.0, maxOutputTokens: 8192, responseMimeType: "application/json",
+            thinkingConfig: { thinkingBudget: 12000 } }
+        }, { timeout: 60000 });
+        if (!res) continue;
+        const raw = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        if (!raw || !raw.trim()) continue;
+        let js = raw.replace(/```json|```/g, "").trim();
+        const fa = js.indexOf("{"), lb = js.lastIndexOf("}");
+        if (fa !== -1 && lb > fa) js = js.slice(fa, lb + 1);
+        const parsed = JSON.parse(js);
+        if (!parsed.found) return { found: false };
+        return parsed;
+      } catch(e) {
+        console.error(`Segment ${model} (${strictness}) → ${e.response?.status}: ${e.response?.data?.error?.message||e.message}`);
+      }
     }
+    return null;
   }
 
-  let res = await trySegment("gemini-2.5-pro");
-  if (!res) res = await trySegment("gemini-2.5-flash");
-  if (!res) return null;
+  let parsed = await attemptSegment('normal');
+  if (!parsed || !parsed.found) return { found: false };
 
-  try {
-    const raw = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    if (!raw || !raw.trim()) return null;
-    let js = raw.replace(/```json|```/g, "").trim();
-    const fa = js.indexOf("{"), lb = js.lastIndexOf("}");
-    if (fa !== -1 && lb > fa) js = js.slice(fa, lb + 1);
-    const parsed = JSON.parse(js);
+  /* Retry with stricter prompt if confidence is low or fill looks wrong */
+  let onesCount = 0;
+  let fillPct = 0;
+  let normRows = [];
+  let aspect = 0;
 
-    if (!parsed.found) return { found: false };
-
-    if (!Array.isArray(parsed.rows) || parsed.rows.length === 0) {
-      console.warn("[segment] Missing rows"); return { found: false };
-    }
-
-    /* Normalise: pad/trim each row to GRID cols, pad missing rows */
-    let normRows = parsed.rows.slice(0, GRID).map(r =>
-      String(r).replace(/[^01]/g, "").padEnd(GRID, "0").slice(0, GRID)
-    );
-    while (normRows.length < GRID) normRows.push("0".repeat(GRID));
-
-    /* ── Grid post-processing: remove isolated noise + fill holes ── */
-    function cleanGrid(rows, size) {
-      const out = rows.map(r => r.split(''));
-      for (let y = 1; y < size - 1; y++) {
-        for (let x = 1; x < size - 1; x++) {
-          let ones = 0;
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              if (dy === 0 && dx === 0) continue;
-              if (out[y+dy][x+dx] === '1') ones++;
-            }
+  function processGrid(rows) {
+    let nr = rows.slice(0, GRID).map(r => String(r).replace(/[^01]/g, "").padEnd(GRID, "0").slice(0, GRID));
+    while (nr.length < GRID) nr.push("0".repeat(GRID));
+    /* Morphological clean-up */
+    const out = nr.map(r => r.split(''));
+    for (let y = 1; y < GRID - 1; y++) {
+      for (let x = 1; x < GRID - 1; x++) {
+        let ones = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dy === 0 && dx === 0) continue;
+            if (out[y+dy][x+dx] === '1') ones++;
           }
-          if (out[y][x] === '1' && ones < 2) out[y][x] = '0';
-          else if (out[y][x] === '0' && ones >= 7) out[y][x] = '1';
         }
+        if (out[y][x] === '1' && ones < 2) out[y][x] = '0';
+        else if (out[y][x] === '0' && ones >= 7) out[y][x] = '1';
       }
-      return out.map(r => r.join(''));
     }
-    normRows = cleanGrid(normRows, GRID);
-
-    /* ── Force tap cell + 8-neighborhood to '1' ── */
+    nr = out.map(r => r.join(''));
+    /* Force tap neighbourhood */
     if (hasPoint) {
       const tapCol = Math.min(GRID - 1, Math.max(0, Math.floor((tapX / 1000) * GRID)));
       const tapRow = Math.min(GRID - 1, Math.max(0, Math.floor((tapY / 1000) * GRID)));
-      const rowsArr = normRows.map(r => r.split(''));
+      const ra = nr.map(r => r.split(''));
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
           const rr = tapRow + dy, cc = tapCol + dx;
-          if (rr >= 0 && rr < GRID && cc >= 0 && cc < GRID) rowsArr[rr][cc] = '1';
+          if (rr >= 0 && rr < GRID && cc >= 0 && cc < GRID) ra[rr][cc] = '1';
         }
       }
-      normRows = rowsArr.map(r => r.join(''));
+      nr = ra.map(r => r.join(''));
     }
-
-    const grid = normRows.join(""); // GRID² chars
-
-    /* ── Validate with bounding-box aspect ratio ── */
+    /* Bbox validation */
     let minCol = GRID, maxCol = -1, minRow = GRID, maxRow = -1;
     for (let y = 0; y < GRID; y++) {
       for (let x = 0; x < GRID; x++) {
-        if (normRows[y][x] === '1') {
+        if (nr[y][x] === '1') {
           if (x < minCol) minCol = x; if (x > maxCol) maxCol = x;
           if (y < minRow) minRow = y; if (y > maxRow) maxRow = y;
         }
       }
     }
-    const bboxW = maxCol - minCol + 1;
-    const bboxH = maxRow - minRow + 1;
-    const aspect = bboxW / Math.max(bboxH, 1);
+    const oc = (nr.join("").match(/1/g) || []).length;
+    const fp = (oc / (GRID * GRID) * 100).toFixed(1);
+    const bw = maxCol - minCol + 1;
+    const bh = maxRow - minRow + 1;
+    const asp = bw / Math.max(bh, 1);
+    return { nr, oc, fp, asp, bw, bh };
+  }
 
-    const onesCount = (grid.match(/1/g) || []).length;
-    const fillPct = (onesCount / (GRID * GRID) * 100).toFixed(1);
-    console.log(`[segment] subject="${parsed.subject}" conf=${parsed.confidence} fill=${fillPct}% bbox=${bboxW}×${bboxH} aspect=${aspect.toFixed(2)}`);
+  let proc = processGrid(parsed.rows);
+  onesCount = proc.oc; fillPct = proc.fp; aspect = proc.asp; normRows = proc.nr;
 
-    if (onesCount < 4)  { console.warn("[segment] Too few cells"); return { found: false }; }
-    if (onesCount > GRID*GRID*0.65) { console.warn(`[segment] Fill ${fillPct}% too high`); return { found: false }; }
-    if (aspect > 5 || aspect < 0.2) { console.warn(`[segment] Rejected — suspicious bbox aspect ${aspect.toFixed(2)}`); return { found: false }; }
-
-    /* ── Build alpha mask PNG from grid ── */
-    const maskSize = 200; /* upsample 40×40 → 200×200 for smooth mask */
-    const scale = maskSize / GRID;
-    const maskBuf = Buffer.alloc(maskSize * maskSize * 4);
-    for (let y = 0; y < maskSize; y++) {
-      for (let x = 0; x < maskSize; x++) {
-        const gy = Math.min(GRID - 1, Math.floor(y / scale));
-        const gx = Math.min(GRID - 1, Math.floor(x / scale));
-        const isSubject = normRows[gy][gx] === '1';
-        const idx = (y * maskSize + x) * 4;
-        maskBuf[idx] = 255;
-        maskBuf[idx + 1] = 0;
-        maskBuf[idx + 2] = 0;
-        maskBuf[idx + 3] = isSubject ? 255 : 0;
+  /* Retry strict if suspicious */
+  if (parsed.confidence === 'low' || proc.fp > 60 || proc.asp > 4 || proc.asp < 0.25 || proc.bw < 2 || proc.bh < 2) {
+    console.log(`[segment] First pass suspicious (conf=${parsed.confidence} fill=${proc.fp}% asp=${proc.asp.toFixed(2)}), retrying strict...`);
+    const strictParsed = await attemptSegment('strict');
+    if (strictParsed && strictParsed.found) {
+      const strictProc = processGrid(strictParsed.rows);
+      if (strictProc.oc >= 4 && strictProc.fp <= 65 && strictProc.asp <= 5 && strictProc.asp >= 0.2) {
+        parsed = strictParsed;
+        proc = strictProc;
+        onesCount = proc.oc; fillPct = proc.fp; aspect = proc.asp; normRows = proc.nr;
+        console.log(`[segment] Strict retry accepted (fill=${proc.fp}% asp=${proc.asp.toFixed(2)})`);
       }
     }
-    const maskPng = await sharp(maskBuf, { raw: { width: maskSize, height: maskSize, channels: 4 } })
-      .png({ compressionLevel: 6 }).toBuffer();
-
-    return { found: true, subject: parsed.subject || "unknown", grid, gridSize: GRID, confidence: parsed.confidence || "medium", maskPng: maskPng.toString('base64') };
-  } catch(e) {
-    console.error("segmentSubjectWithGemini parse error:", e.message);
-    return null;
   }
+
+  console.log(`[segment] subject="${parsed.subject}" conf=${parsed.confidence} fill=${fillPct}% bbox=${proc.bw}×${proc.bh} aspect=${aspect.toFixed(2)}`);
+
+  if (onesCount < 4)  { console.warn("[segment] Too few cells"); return { found: false }; }
+  if (onesCount > GRID*GRID*0.65) { console.warn(`[segment] Fill ${fillPct}% too high`); return { found: false }; }
+  if (aspect > 5 || aspect < 0.2) { console.warn(`[segment] Rejected — suspicious bbox aspect ${aspect.toFixed(2)}`); return { found: false }; }
+
+  /* Build alpha mask PNG from grid */
+  const maskSize = 200;
+  const scale = maskSize / GRID;
+  const maskBuf = Buffer.alloc(maskSize * maskSize * 4);
+  for (let y = 0; y < maskSize; y++) {
+    for (let x = 0; x < maskSize; x++) {
+      const gy = Math.min(GRID - 1, Math.floor(y / scale));
+      const gx = Math.min(GRID - 1, Math.floor(x / scale));
+      const isSubject = normRows[gy][gx] === '1';
+      const idx = (y * maskSize + x) * 4;
+      maskBuf[idx] = 255;
+      maskBuf[idx + 1] = 0;
+      maskBuf[idx + 2] = 0;
+      maskBuf[idx + 3] = isSubject ? 255 : 0;
+    }
+  }
+  const maskPng = await sharp(maskBuf, { raw: { width: maskSize, height: maskSize, channels: 4 } })
+    .png({ compressionLevel: 6 }).toBuffer();
+
+  return { found: true, subject: parsed.subject || "unknown", grid: normRows.join(""), gridSize: GRID, confidence: parsed.confidence || "medium", maskPng: maskPng.toString('base64') };
 }
-
-
-
 
 
 /* ─── CARTOON IMAGE GENERATION ───────────────────────────
@@ -3379,25 +3384,32 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
 
     let colors;
     let paletteSource;
-    /* For cartoon/logo mode: prefer the bucket palette because it reflects the
-       actual pixel colours in the image. Gemini's palette is better for photo
-       mode where semantic thread-colour suggestions matter more than accuracy. */
-    if (effectiveMode !== 'photo' && bucketColors && bucketColors.length >= 3) {
-      colors = bucketColors;
-      paletteSource = "buckets";
-      console.log(`[${rid}] Palette from buckets (${colors.length}): ${colors.join(", ")}`);
-    } else if (gem && Array.isArray(gem.palette) && gem.palette.length >= 3) {
+    /* MERGE STRATEGY: Gemini understands semantic colours (brand, skin, hair)
+       but may miss coverage. Buckets are pixel-accurate but dumb. We start
+       with Gemini and fill remaining slots with perceptually-distant bucket
+       colours so no thread is wasted and no detail is lost. */
+    if (gem && Array.isArray(gem.palette) && gem.palette.length >= 3) {
       colors = gem.palette.slice(0, colorCount);
       paletteSource = "gemini";
-      console.log(`[${rid}] Palette from Gemini (${colors.length}): ${colors.join(", ")}`);
-    } else {
+      const gemLabs = colors.map(c => rgbToLab(hexToRgb(c)));
+      for (const b of bucketColors) {
+        if (colors.length >= colorCount) break;
+        const bLab = rgbToLab(hexToRgb(b));
+        const minDist = Math.min(...gemLabs.map(g => dE(bLab, g)));
+        if (minDist > 22 && !colors.some(c => normHex(c) === normHex(b))) {
+          colors.push(b);
+          gemLabs.push(bLab);
+        }
+      }
+      console.log(`[${rid}] Palette Gemini+buckets (${colors.length}): ${colors.join(", ")}`);
+    } else if (bucketColors && bucketColors.length >= 3) {
       colors = bucketColors;
       paletteSource = "buckets";
       console.log(`[${rid}] Palette from buckets (${colors.length}): ${colors.join(", ")}`);
-    }
-    if (!colors || colors.length === 0) {
+    } else {
       colors = ["#000000", "#FFFFFF", "#FF0000", "#0000FF", "#FFFF00"];
       paletteSource = "fallback";
+      console.log(`[${rid}] Palette fallback (${colors.length})`);
     }
 
     const pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
@@ -3534,11 +3546,10 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
         }
       }
 
-      filteredRegions = filteredRegions.filter(r => selectedColors.includes(normHex(r.color)));
-      filteredRegions = filteredRegions.map(r => ({
-        ...r,
-        ci: selectedColors.findIndex(c => normHex(c) === normHex(r.color))
-      }));
+      /* Re-extract regions from the FILTERED pixMap instead of remapping stale
+         region indices. Old bboxes are invalid after color removal. */
+      const rawRegions = extractRegions(pixMap, selectedColors, canvasSize, effectiveMode);
+      filteredRegions = mergeAdjacentRegions(rawRegions, canvasSize);
     }
 
     /* ─── APPLY COLOR MERGES ─────────────────────────── */
@@ -3560,11 +3571,10 @@ app.post("/generate-embroidery", upload.fields([{name:"image",maxCount:1},{name:
           const result = applyColorMerges(pixMap, selectedColors, merges, lockedColors);
           pixMap = result.pixMap;
           selectedColors = result.colors;
-          filteredRegions = filteredRegions.filter(r => selectedColors.includes(normHex(r.color)));
-          filteredRegions = filteredRegions.map(r => ({
-            ...r,
-            ci: selectedColors.findIndex(c => normHex(c) === normHex(r.color))
-          }));
+          /* Re-extract regions from the MERGED pixMap instead of filtering stale
+             regions. Old region bboxes no longer match the new pixel layout. */
+          const rawRegions = extractRegions(pixMap, selectedColors, canvasSize, effectiveMode);
+          filteredRegions = mergeAdjacentRegions(rawRegions, canvasSize);
         }
       }
     } catch(e) {
