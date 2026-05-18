@@ -292,7 +292,7 @@ footer{background:var(--navy);padding:52px clamp(20px,5vw,80px) 36px}
 </style>
 </head>
 <body>
-<nav>
+<<nav>
   <a class="nav-logo" href="#hero">Stitch<span>ai</span></a>
   <div class="nav-right">
     <a class="nav-link" href="#features" data-t="navFeatures">Features</a>
@@ -306,6 +306,13 @@ footer{background:var(--navy);padding:52px clamp(20px,5vw,80px) 36px}
     <button class="nav-install" id="navInstallBtn" onclick="triggerInstall()" data-t="install">Install App</button>
   </div>
 </nav>
+
+<!-- Firebase Auth Bar — hidden until backend config is ready -->
+<div id="authBar" style="display:none;position:fixed;top:60px;left:0;right:0;z-index:99;background:var(--navy2);border-bottom:1px solid rgba(255,255,255,.06);padding:10px clamp(16px,3vw,40px);align-items:center;justify-content:space-between;">
+  <span id="authBarText" style="color:rgba(255,255,255,.7);font-size:13px;font-weight:600;">Sign in to save your designs</span>
+  <button id="authGoogleBtn" style="background:#fff;color:var(--navy);border:none;padding:7px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--fb);">Sign in with Google</button>
+</div>
+
 <section id="hero">
   <div class="hero-glow2"></div>
   <div class="hero-inner">
@@ -609,7 +616,7 @@ footer{background:var(--navy);padding:52px clamp(20px,5vw,80px) 36px}
     </div>
   </div>
 </section>
-<footer>
+<<footer>
   <div class="footer-inner">
     <div class="footer-logo">Stitch<span>ai</span></div>
     <p class="footer-tag" data-t="footerTag">AI-powered embroidery digitizing for everyone.</p>
@@ -710,7 +717,7 @@ var T = {
     stitchCount:"{n} stitches", regionsCount:"{n} regions", colorsCount:"{n} colors",
     designSize:"{mm}mm design", avgStitch:"avg stitch {n}mm",
     sewTime:"\u23F1 Estimated sew time: {time} on {machine}",
-    ios1:"Tap the Share button in Safari",
+    ios1:"Tap %share% in Safari",
     ios2:"Scroll down and tap \"Add to Home Screen\"", ios3:"Tap \"Add\" in the top right",
     pwaTitle:"Add to Home Screen", pwaSub:"Launch Stichai like a native app.",
     pwaChromeNote:"Open in Chrome or Edge to install.", pwaFirefoxNote:"Open in Chrome or Edge to install.",
@@ -795,7 +802,7 @@ var T = {
     stitchCount:"{n} points", regionsCount:"{n} zones", colorsCount:"{n} couleurs",
     designSize:"Design de {mm}\u00a0mm", avgStitch:"point moyen {n}\u00a0mm",
     sewTime:"\u23F1 Temps estim\u00e9\u00a0: {time} sur {machine}",
-    ios1:"Appuyez sur le bouton Partager dans Safari",
+    ios1:"Appuyez sur %share% dans Safari",
     ios2:"Faites d\u00e9filer et appuyez sur \u00ab Ajouter \u00e0 l\u2019\u00e9cran d\u2019accueil \u00bb",
     ios3:"Appuyez sur \u00ab Ajouter \u00bb en haut \u00e0 droite",
     pwaTitle:"Ajouter \u00e0 l\u2019\u00e9cran d\u2019accueil", pwaSub:"Lancez Stichai comme une app native.",
@@ -890,7 +897,7 @@ var T = {
     colorsCount:"{n} \u0623\u0644\u0648\u0627\u0646", designSize:"\u062a\u0635\u0645\u064a\u0645 {mm} \u0645\u0644\u0645",
     avgStitch:"\u0645\u062a\u0648\u0633\u0637 \u0627\u0644\u063a\u0631\u0632\u0629 {n} \u0645\u0644\u0645",
     sewTime:"\u23F1 \u0648\u0642\u062a \u0627\u0644\u062a\u0637\u0631\u064a\u0632 \u0627\u0644\u0645\u064f\u0642\u062f\u0651\u0631: {time} \u0639\u0644\u0649 {machine}",
-    ios1:"\u0627\u0636\u063a\u0637 \u0632\u0631 \u0627\u0644\u0645\u0634\u0627\u0631\u0643\u0629 \u0641\u064a Safari",
+    ios1:"\u0627\u0636\u063a\u0637 \u0639\u0644\u0649 %share% \u0641\u064a Safari",
     ios2:"\u0645\u0631\u0651\u0631 \u0644\u0644\u0623\u0633\u0641\u0644 \u0648\u0627\u0636\u063a\u0637 \u00ab\u0625\u0636\u0627\u0641\u0629 \u0625\u0644\u0649 \u0627\u0644\u0634\u0627\u0634\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629\u00bb",
     ios3:"\u0627\u0636\u063a\u0637 \u00ab\u0625\u0636\u0627\u0641\u0629\u00bb \u0641\u064a \u0623\u0639\u0644\u0649 \u0627\u0644\u064a\u0633\u0627\u0631",
     pwaTitle:"\u0625\u0636\u0627\u0641\u0629 \u0625\u0644\u0649 \u0627\u0644\u0634\u0627\u0634\u0629 \u0627\u0644\u0631\u0626\u064a\u0633\u064a\u0629",
@@ -967,8 +974,8 @@ function renderPlans(){
     return '<div class="plan-card'+(p.popular?' popular':'')+'">'+
       (p.popular?'<div class="pop-badge">'+t('planPopular')+'</div>':'')+
       '<div class="plan-name">'+pName(p.plan)+'</div>'+
-      '<div class="plan-price"><sup>$</sup>'+dollar+'<sub>'+tier.period+'</sub></div>'+
-      (_annual&&tier.save?'<div class="plan-save">\u2713 '+tier.save+'</div>':'<div class="plan-period">billed '+(_annual?'annually':'monthly')+'</div>')+
+      '<div class="plan-price"><sup>$</sup>'+dollar+'<<sub>'+tier.period+'</sub></div>'+
+      (_annual&&tier.save?'<div class="plan-save">\u2713 '+tier.save+'</div>':'<<div class="plan-period">billed '+(_annual?'annually':'monthly')+'</div>')+
       '<ul class="plan-feats">'+p.feats.map(function(f){return'<li>'+f+'</li>';}).join('')+'</ul>'+
       '<button class="plan-cta'+(p.popular?'':' outline')+'" onclick="goToPricing()">'+t('planCtaGet')+' '+pName(p.plan)+'</button>'+
       '</div>';
@@ -1004,10 +1011,11 @@ function showPWASheet(){
   var sh=document.getElementById('pwaSheet');
   document.getElementById('pwaTitle').textContent=t('pwaTitle');
   document.getElementById('pwaSub').textContent=t('pwaSub');
-  document.getElementById('pwaBtn').textContent=t('installBtn')||'Add to Home Screen';
+  document.getElementById('pwaBtn').textContent=t('install')||'Add to Home Screen';
   if(_isIOS2&&_isSafari2){
     document.getElementById('iosGuide').style.display='block';
-    document.getElementById('iosStep1').innerHTML=t('ios1').replace('Share','<span class="ios-share">\u2b06 Share</span>');
+    var shareWord={en:'Share',fr:'Partager',ar:'المشاركة'}[currentLang]||'Share';
+    document.getElementById('iosStep1').innerHTML=t('ios1').replace('%share%','<<span class="ios-share">\u2b06 '+shareWord+'</span>');
     document.getElementById('iosStep2').textContent=t('ios2');
     document.getElementById('iosStep3').textContent=t('ios3');
     document.getElementById('iosArrow').classList.add('show');
@@ -1065,7 +1073,7 @@ if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catc
       function step(now){
         var prog=Math.min((now-st)/dur,1),ease=1-Math.pow(1-prog,3),v=Math.round(ease*cfg.val);
         el.textContent=v>=1000?(Math.round(v/100)/10)+'k':String(v);
-        if(prog<1)requestAnimationFrame(step);
+        if(prog<<1)requestAnimationFrame(step);
         else el.textContent=cfg.val>=1000?(Math.round(cfg.val/100)/10)+'k':String(cfg.val);
       }
       requestAnimationFrame(step);
@@ -1077,7 +1085,24 @@ if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catc
 })();
 
 var CN={"#000000":"Black","#FFFFFF":"White","#FF0000":"Red","#00FF00":"Green","#0000FF":"Blue","#FFFF00":"Yellow","#FF00FF":"Magenta","#00FFFF":"Cyan","#FFA500":"Orange","#800080":"Purple","#FFC0CB":"Pink","#A52A2A":"Brown","#808080":"Gray","#C0C0C0":"Silver","#FFD700":"Gold","#F5F5DC":"Beige","#20B2AA":"Light Sea Green","#87CEEB":"Sky Blue","#DDA0DD":"Plum","#F0E68C":"Khaki","#D2B48C":"Tan","#FF69B4":"Hot Pink","#CD853F":"Peru","#4682B4":"Steel Blue","#9ACD32":"Yellow Green","#D2691E":"Chocolate","#DC143C":"Crimson","#4B0082":"Indigo","#FF1493":"Deep Pink","#00CED1":"Dark Turquoise","#FF4500":"Orange Red","#2E8B57":"Sea Green","#9370DB":"Medium Purple","#FF6347":"Tomato","#40E0D0":"Turquoise","#EE82EE":"Violet","#F4A460":"Sandy Brown","#8B4513":"Saddle Brown","#2F4F4F":"Dark Slate Gray","#E9967A":"Dark Salmon","#483D8B":"Dark Slate Blue","#B22222":"Fire Brick","#228B22":"Forest Green","#6B8E23":"Olive Drab","#BC8F8F":"Rosy Brown","#4169E1":"Royal Blue","#8B0000":"Dark Red","#556B2F":"Dark Olive Green","#8FBC8F":"Dark Sea Green","#B8860B":"Dark Goldenrod","#BDB76B":"Dark Khaki","#DEB887":"Burlywood","#5F9EA0":"Cadet Blue","#7FFF00":"Chartreuse","#FF7F50":"Coral","#6495ED":"Cornflower Blue","#00008B":"Dark Blue","#008B8B":"Dark Cyan","#A9A9A9":"Dark Gray","#006400":"Dark Green","#696969":"Dim Gray","#1E90FF":"Dodger Blue","#F0FFFF":"Azure","#F5F5F5":"White Smoke","#FFE4C4":"Bisque","#8A2BE2":"Blue Violet","#A0522D":"Sienna","#FAEBD7":"Antique White","#7FFFD4":"Aquamarine","#F0F8FF":"Alice Blue","#E0FFFF":"Light Cyan","#FAFAD2":"Light Goldenrod","#D3D3D3":"Light Gray","#FFB6C1":"Light Pink","#FFA07A":"Light Salmon","#87CEFA":"Light Sky Blue","#778899":"Light Slate Gray","#B0C4DE":"Light Steel Blue","#FFFFE0":"Light Yellow","#32CD32":"Lime Green","#66CDAA":"Medium Aquamarine","#0000CD":"Medium Blue","#BA55D3":"Medium Orchid","#3CB371":"Medium Sea Green","#7B68EE":"Medium Slate Blue","#00FA9A":"Medium Spring Green","#48D1CC":"Medium Turquoise","#C71585":"Medium Violet Red","#191970":"Midnight Blue","#F5FFFA":"Mint Cream","#FFE4E1":"Misty Rose","#FFE4B5":"Moccasin","#FFDEAD":"Navajo White","#000080":"Navy","#FFEFD5":"Papaya Whip","#FFDAB9":"Peach Puff","#B0E0E6":"Powder Blue","#800000":"Maroon","#E6E6FA":"Lavender","#F08080":"Light Coral","#ADD8E6":"Light Blue"};
-function gN(h){var u=h.toUpperCase();if(CN[u])return CN[u];var r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16),bn=null,bd=999;for(var k in CN){var r2=parseInt(k.slice(1,3),16),g2=parseInt(k.slice(3,5),16),b2=parseInt(k.slice(5,7),16);var d=Math.abs(r-r2)+Math.abs(g-g2)+Math.abs(b-b2);if(d<bd){bd=d;bn=CN[k]}}return bn||h}
+function gN(h){var u=h.toUpperCase();if(CN[u])return CN[u];var r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16),bn=null,bd=999;for(var k in CN){var r2=parseInt(k.slice(1,3),16),g2=parseInt(k.slice(3,5),16),b2=parseInt(k.slice(5,7),16);var d=Math.abs(r-r2)+Math.abs(g-g2)+Math.abs(b-b2);if(d<<bd){bd=d;bn=CN[k]}}return bn||h}
+
+/* ── AUTH HELPERS ───────────────────────────────────── */
+var _cachedIdToken = null;
+async function getIdToken(force){
+  if(!force && _cachedIdToken) return _cachedIdToken;
+  if(window.firebaseAuth && window.firebaseAuth.currentUser){
+    try{ _cachedIdToken = await window.firebaseAuth.currentUser.getIdToken(force); return _cachedIdToken; }
+    catch(e){ _cachedIdToken = null; return null; }
+  }
+  _cachedIdToken = null;
+  return null;
+}
+function getAuthHeaders(){
+  var h = {};
+  if(_cachedIdToken) h['Authorization'] = 'Bearer ' + _cachedIdToken;
+  return h;
+}
 
 var cf=null,cdu=null,dd=null,ci=null,jid=null;
 var mC,mX,c1,c2,c3,dr=false,tl='brush',sz=35,hm=false;
@@ -1106,6 +1131,15 @@ function handleFile(f){
     return;
   }
   cf=f;
+
+  /* ── RESET MASK STATE ON NEW UPLOAD ───────────────── */
+  stopGlowAnimation();
+  if(c3) c3.getContext('2d').clearRect(0,0,c3.width,c3.height);
+  hm=false;
+  window._confirmedPolygon=null;
+  if(document.getElementById('maskIdleOverlay')) showMaskState('idle');
+  /* ─────────────────────────────────────────────────── */
+
   document.getElementById('st').innerHTML='<p class="ok">'+t('ready')+' <strong>'+f.name+'</strong> ('+(f.size/1024).toFixed(0)+'KB)</p>';
   var r=new FileReader();
   r.onload=function(e){
@@ -1136,7 +1170,7 @@ document.getElementById('cs').addEventListener('input',function(){colorCount=par
 function setSize(s,btn){
   designSize=s;
   var btns=btn.parentNode.querySelectorAll('button');
-  for(var i=0;i<btns.length;i++)btns[i].className='size-btn';
+  for(var i=0;i<<btns.length;i++)btns[i].className='size-btn';
   btn.className='size-btn on';
   document.getElementById('sizeWarning').style.display=s==='2400'?'block':'none';
 }
@@ -1159,14 +1193,12 @@ function initMask(u){
     var dw=i.width*scale,dh=i.height*scale;
     var dx=(800-dw)/2,dy=(800-dh)/2;
     mC.drawImage(i,dx,dy,dw,dh);
-    /* Store letterbox layout so polygon renderer can map 0-1000 → canvas px */
     window._imgOff={x:dx,y:dy,w:dw,h:dh};
 
     mX.clearRect(0,0,800,800);
     document.getElementById('mw').className='mask-wrap on';
     document.getElementById('mc').style.display='block';
 
-    /* Idle overlay: single tap anywhere → detect subject at that point */
     var idleEl=document.getElementById('maskIdleOverlay');
     idleEl.addEventListener('click',function(e){ onCanvasTap(e); });
     idleEl.addEventListener('touchend',function(e){
@@ -1175,7 +1207,6 @@ function initMask(u){
     },{passive:false});
     showMaskState('idle');
 
-    /* Brush painting on c1 (manual mode only — when manual panel is open) */
     c1.onmousedown=function(e){e.preventDefault();dr=true;var p=gp(e);lx=p.x;ly=p.y;dm(e)};
     c1.onmousemove=function(e){if(!dr)return;e.preventDefault();dm(e)};
     c1.onmouseup=function(){dr=false;};
@@ -1210,24 +1241,9 @@ function dm(e){
   mX.stroke();
   lx=p.x;ly=p.y;
 }
-function setTool(t,btn){tl=t;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<btns.length;i++)btns[i].className='';btn.className='on'}
-function setBrushSize(s,btn){sz=s;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<btns.length;i++)btns[i].className='';btn.className='on'}
+function setTool(t,btn){tl=t;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<<btns.length;i++)btns[i].className='';btn.className='on'}
+function setBrushSize(s,btn){sz=s;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<<btns.length;i++)btns[i].className='';btn.className='on'}
 function clearMask(){if(!mX)return;mX.clearRect(0,0,800,800);hm=false}
-
-/* ═══════════════════════════════════════════════════════
-   SUBJECT EXTRACTION — iPhone-style tap to detect
-   ═══════════════════════════════════════════════════════
-
-   Flow:
-   1. User sees idle overlay "Tap the subject"
-   2. Taps anywhere on the image
-   3. Spinner shows while Gemini identifies the subject
-   4. Glowing outline appears around detected subject
-      (background dims, subject stays bright)
-   5. Two buttons: "✓ Use this → Analyse" | "↩ Try again"
-   6. On confirm → apply internal mask + run analysis
-
-   ═══════════════════════════════════════════════════════ */
 
 /* ── STATE MACHINE ──────────────────────────────────── */
 function showMaskState(state, msg){
@@ -1238,16 +1254,15 @@ function showMaskState(state, msg){
   idle.style.display  = state==='idle'      ? 'flex'  : 'none';
   det.style.display   = state==='detecting' ? 'flex'  : 'none';
   conf.style.display  = state==='confirmed' ? 'block' : 'none';
+  if(state==='done'){ idle.style.display='none'; det.style.display='none'; conf.style.display='none'; }
   if(st) st.innerHTML = state==='error'
     ? '<div class="error">&#9888;&#65039; '+(msg||t('wandNotFound'))+'</div>' : '';
-  if(state!=='confirmed') stopGlowAnimation();
+  if(state!=='confirmed' && state!=='done') stopGlowAnimation();
 }
 
 /* ── GLOW ANIMATION ─────────────────────────────────── */
 var _glowMaskCanvas=null,_glowRingCanvas=null;
 
-/* Pre-compute a white ring canvas: expanded mask minus original.
-   Done once per detection — not every animation frame. */
 function computeGlowRing(mask){
   var w=mask.width,h=mask.height;
   var ring=document.createElement('canvas');
@@ -1255,7 +1270,7 @@ function computeGlowRing(mask){
   var rc=ring.getContext('2d');
   rc.filter='blur(9px)';rc.drawImage(mask,0,0);rc.filter='none';
   var rd=rc.getImageData(0,0,w,h);
-  for(var i=0;i<rd.data.length;i+=4){
+  for(var i=0;i<<rd.data.length;i+=4){
     var a=rd.data[i+3];
     rd.data[i]=255;rd.data[i+1]=255;rd.data[i+2]=255;
     rd.data[i+3]=a>8?Math.min(255,(a*2.5)|0):0;
@@ -1302,7 +1317,6 @@ function drawGlowFrame(){
   ctx.fillStyle='rgba(0,0,0,0.55)';
   ctx.fillRect(0,0,w,h);
   if(_glowMaskCanvas){
-    /* Mask-based: cut out subject + draw precomputed ring */
     ctx.save();ctx.globalCompositeOperation='destination-out';
     ctx.drawImage(_glowMaskCanvas,0,0);ctx.restore();
     if(_glowRingCanvas){
@@ -1310,17 +1324,16 @@ function drawGlowFrame(){
       ctx.drawImage(_glowRingCanvas,0,0);ctx.restore();
     }
   }else{
-    /* Polygon fallback */
     var off=window._imgOff||{x:0,y:0,w:w,h:h};
     var pts=window._glowPoly;
     ctx.save();ctx.globalCompositeOperation='destination-out';
     ctx.beginPath();
-    for(var i=0;i<pts.length;i++){var px=off.x+pts[i][0]/1000*off.w,py=off.y+pts[i][1]/1000*off.h;if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}
+    for(var i=0;i<<pts.length;i++){var px=off.x+pts[i][0]/1000*off.w,py=off.y+pts[i][1]/1000*off.h;if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}
     ctx.closePath();ctx.fill();ctx.restore();
     var layers=[{w:18,a:0.06+0.04*pulse},{w:9,a:0.18+0.08*pulse},{w:4,a:0.55+0.2*pulse},{w:2,a:0.85+0.12*pulse}];
-    for(var li=0;li<layers.length;li++){
+    for(var li=0;li<<layers.length;li++){
       ctx.save();ctx.strokeStyle='rgba(255,255,255,'+layers[li].a+')';ctx.lineWidth=layers[li].w;ctx.lineJoin='round';
-      ctx.beginPath();for(var j=0;j<pts.length;j++){var qx=off.x+pts[j][0]/1000*off.w,qy=off.y+pts[j][1]/1000*off.h;if(j===0)ctx.moveTo(qx,qy);else ctx.lineTo(qx,qy);}ctx.closePath();
+      ctx.beginPath();for(var j=0;j<<pts.length;j++){var qx=off.x+pts[j][0]/1000*off.w,qy=off.y+pts[j][1]/1000*off.h;if(j===0)ctx.moveTo(qx,qy);else ctx.lineTo(qx,qy);}ctx.closePath();
       ctx.stroke();ctx.restore();
     }
   }
@@ -1340,7 +1353,6 @@ function onCanvasTap(e){
   var tapY=Math.round(Math.max(0,Math.min(1000,(cy-off.y)/off.h*1000)));
   showMaskState('detecting');
 
-  /* Show elapsed seconds so user knows it's working, not frozen */
   var _detectStart=Date.now();
   var _detectTick=setInterval(function(){
     var lbl=document.querySelector('.detect-label');
@@ -1352,30 +1364,27 @@ function onCanvasTap(e){
 }
 
 /* ── CALL GEMINI SEGMENTATION ───────────────────────── */
-function callSegmentSubject(tapX,tapY){
+async function callSegmentSubject(tapX,tapY){
+  await getIdToken();
   var fd=new FormData();
   fd.append('image',cf);
   if(tapX!==undefined){fd.append('tapX',tapX);fd.append('tapY',tapY);}
-  fetch('/segment-subject',{method:'POST',body:fd})
+  fetch('/segment-subject',{method:'POST',body:fd,headers:getAuthHeaders()})
     .then(function(r){return r.json();})
     .then(function(data){
       if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
       if(data.found&&data.maskPng){
-        /* Pixel-accurate mask from @imgly/background-removal-node */
-        applyMaskPng(data.maskPng);
+        applyMaskPng(data.maskPng, data.subject);
       }else if(data.found&&data.grid){
-        /* Grid-based segmentation (full-image 30×30) */
         applyGeminiGrid(data.grid, data.gridSize||30);
         var lbl=document.getElementById('confirmedSubjectLabel');
         var subj=data.subject||'Subject';
         if(lbl)lbl.textContent=subj.charAt(0).toUpperCase()+subj.slice(1)+' \u2713';
         showMaskState('confirmed');
         if(navigator.vibrate)navigator.vibrate([30,30,60]);
-        /* Scroll confirm bar into view so user sees it */
         var bar=document.getElementById('maskConfirmBar');
         if(bar) setTimeout(function(){bar.scrollIntoView({behavior:'smooth',block:'nearest'});},120);
       }else if(data.found&&Array.isArray(data.polygon)&&data.polygon.length>=6){
-        /* Legacy polygon fallback */
         applyGeminiPolygon(data.polygon);
         startGlowAnimation(data.polygon);
         var lbl=document.getElementById('confirmedSubjectLabel');
@@ -1454,12 +1463,7 @@ function startLongPress(e){
 }
 function endLongPress(){clearTimeout(longPressTimer);pressStartPos=null;}
 
-/* ── EXTRACT GLOW POLYGON FROM RENDERED MASK ─────────
-   Scans the smooth mask canvas clockwise (top→right→
-   bottom→left) to find the actual body silhouette edge.
-   This gives the iPhone-style outline that follows the
-   real body shape instead of a plain rectangle.
-────────────────────────────────────────────────────── */
+/* ── EXTRACT GLOW POLYGON FROM RENDERED MASK ───────── */
 function extractGlowPolygon(maskCanvas){
   var w=maskCanvas.width, h=maskCanvas.height;
   var off=window._imgOff||{x:0,y:0,w:w,h:h};
@@ -1468,23 +1472,18 @@ function extractGlowPolygon(maskCanvas){
   function toNorm(x,y){
     return [Math.round((x-off.x)/off.w*1000), Math.round((y-off.y)/off.h*1000)];
   }
-  /* Top pass: find topmost opaque pixel in each column */
-  for(var x=0;x<w;x+=step){
+  for(var x=0;x<<w;x+=step){
     for(var y=0;y<h;y++){if(data[(y*w+x)*4+3]>64){pts.push(toNorm(x,y));break;}}
   }
-  /* Right pass: find rightmost opaque pixel in each row */
   for(var y=0;y<h;y+=step){
     for(var x=w-1;x>=0;x--){if(data[(y*w+x)*4+3]>64){pts.push(toNorm(x,y));break;}}
   }
-  /* Bottom pass: bottommost (right-to-left) */
   for(var x=w-1;x>=0;x-=step){
     for(var y=h-1;y>=0;y--){if(data[(y*w+x)*4+3]>64){pts.push(toNorm(x,y));break;}}
   }
-  /* Left pass: leftmost (bottom-to-top) */
   for(var y=h-1;y>=0;y-=step){
-    for(var x=0;x<w;x++){if(data[(y*w+x)*4+3]>64){pts.push(toNorm(x,y));break;}}
+    for(var x=0;x<<w;x++){if(data[(y*w+x)*4+3]>64){pts.push(toNorm(x,y));break;}}
   }
-  /* Filter out-of-image points */
   return pts.filter(function(p){return p[0]>=0&&p[0]<=1000&&p[1]>=0&&p[1]<=1000;});
 }
 
@@ -1496,12 +1495,11 @@ function applyGeminiGrid(grid, gridSize){
   var GRID=gridSize||30;
   var cellW=off.w/GRID, cellH=off.h/GRID;
 
-  /* Draw filled subject cells */
   var raw=document.createElement('canvas');
   raw.width=w; raw.height=h;
   var rctx=raw.getContext('2d');
   rctx.fillStyle='black';
-  for(var i=0;i<GRID*GRID&&i<grid.length;i++){
+  for(var i=0;i<<GRID*GRID&&i<<grid.length;i++){
     if(grid[i]==='1'){
       var col=i%GRID, row=Math.floor(i/GRID);
       rctx.fillRect(
@@ -1513,7 +1511,6 @@ function applyGeminiGrid(grid, gridSize){
     }
   }
 
-  /* Blur + threshold for smooth organic edges */
   var smooth=document.createElement('canvas');
   smooth.width=w; smooth.height=h;
   var sc=smooth.getContext('2d');
@@ -1521,21 +1518,16 @@ function applyGeminiGrid(grid, gridSize){
   sc.drawImage(raw,0,0);
   sc.filter='none';
   var bd=sc.getImageData(0,0,w,h);
-  for(var i=3;i<bd.data.length;i+=4) bd.data[i]=bd.data[i]>40?255:0;
+  for(var i=3;i<<bd.data.length;i+=4) bd.data[i]=bd.data[i]>40?255:0;
   sc.putImageData(bd,0,0);
 
-  /* Apply internal red mask (c2) */
   prevMaskDataURL=mX.canvas.toDataURL();
   applyPersonCanvas(smooth);
-
-  /* Glow follows the actual mask edge, not a polygon */
   startGlowAnimationFromMask(smooth);
 }
 
-/* ── APPLY PIXEL-ACCURATE PNG MASK (from imgly) ─────────
-   maskCanvas comes from server: transparent=background,
-   opaque=subject. Used when @imgly package is installed. */
-function applyMaskPng(base64Png){
+/* ── APPLY PIXEL-ACCURATE PNG MASK (from imgly) ───────── */
+function applyMaskPng(base64Png, subject){
   var img=new Image();
   img.onload=function(){
     var w=c1.width,h=c1.height;
@@ -1543,11 +1535,9 @@ function applyMaskPng(base64Png){
     var temp=document.createElement('canvas');
     temp.width=w;temp.height=h;
     var tctx=temp.getContext('2d');
-    /* Scale PNG to match the letterboxed image area */
     tctx.drawImage(img,off.x,off.y,off.w,off.h);
-    /* Binarise alpha channel */
     var id=tctx.getImageData(0,0,w,h),d=id.data;
-    for(var i=0;i<d.length;i+=4){
+    for(var i=0;i<<d.length;i+=4){
       var a=d[i+3];
       d[i]=0;d[i+1]=0;d[i+2]=0;
       d[i+3]=a>128?255:0;
@@ -1557,7 +1547,8 @@ function applyMaskPng(base64Png){
     applyPersonCanvas(temp);
     startGlowAnimationFromMask(temp);
     var lbl=document.getElementById('confirmedSubjectLabel');
-    if(lbl)lbl.textContent='Person \u2713';
+    var subj=(subject||'Subject');
+    if(lbl)lbl.textContent=subj.charAt(0).toUpperCase()+subj.slice(1)+' \u2713';
     showMaskState('confirmed');
     if(navigator.vibrate)navigator.vibrate([30,30,60]);
     var bar=document.getElementById('maskConfirmBar');
@@ -1568,7 +1559,7 @@ function applyMaskPng(base64Png){
 
 /* Keep polygon version for backward compat / manual fallback */
 function applyGeminiPolygon(polygon){
-  if(!c1||!mX||!polygon||polygon.length<3)return;
+  if(!c1||!mX||!polygon||polygon.length<<3)return;
   var w=c1.width, h=c1.height;
   var off=window._imgOff||{x:0,y:0,w:w,h:h};
   var temp=document.createElement('canvas');
@@ -1588,7 +1579,7 @@ function applyGeminiPolygon(polygon){
   var sc=smooth.getContext('2d');
   sc.filter='blur(2px)';sc.drawImage(temp,0,0);sc.filter='none';
   var bd=sc.getImageData(0,0,w,h);
-  for(var i=3;i<bd.data.length;i+=4)bd.data[i]=bd.data[i]>20?255:0;
+  for(var i=3;i<<bd.data.length;i+=4)bd.data[i]=bd.data[i]>20?255:0;
   sc.putImageData(bd,0,0);
   prevMaskDataURL=mX.canvas.toDataURL();
   applyPersonCanvas(smooth);
@@ -1614,7 +1605,7 @@ function magicWandFloodFill(sx,sy){
   var w=c1.width,h=c1.height;
   var d=c1.getContext('2d').getImageData(0,0,w,h).data;
   sx=Math.floor(sx);sy=Math.floor(sy);
-  if(sx<0||sy<0||sx>=w||sy>=h)return;
+  if(sx<<0||sy<<0||sx>=w||sy>=h)return;
   var sidx=sy*w+sx;
   var sr=d[sidx*4],sg=d[sidx*4+1],sb=d[sidx*4+2];
   var SEED_R2=28*28,STEP_R2=20*20,MAX_PX=Math.floor(w*h*0.30);
@@ -1624,13 +1615,13 @@ function magicWandFloodFill(sx,sy){
   visited[sidx]=1;q[qTail++]=sidx;
   var selCount=1,cancelled=false;
   var DX=[-1,1,0,0],DY=[0,0,-1,1];
-  outer:while(qHead<qTail){
+  outer:while(qHead<<qTail){
     var cidx=q[qHead++];
     var cx=cidx%w,cy=(cidx/w)|0;
     var cr=d[cidx*4],cg=d[cidx*4+1],cb=d[cidx*4+2];
-    for(var di=0;di<4;di++){
+    for(var di=0;di<<4;di++){
       var nx=cx+DX[di],ny=cy+DY[di];
-      if(nx<0||ny<0||nx>=w||ny>=h)continue;
+      if(nx<<0||ny<<0||nx>=w||ny>=h)continue;
       var nidx=ny*w+nx;
       if(visited[nidx])continue;
       var ni2=nidx*4;
@@ -1646,13 +1637,13 @@ function magicWandFloodFill(sx,sy){
   if(cancelled){document.getElementById('st').innerHTML='<div class="error">'+t('wandTooBig')+'</div>';return;}
   var temp=document.createElement('canvas');temp.width=w;temp.height=h;
   var tctx=temp.getContext('2d');var tData=tctx.createImageData(w,h);
-  for(var i=0;i<w*h;i++){if(visited[i])tData.data[i*4+3]=255;}
+  for(var i=0;i<<w*h;i++){if(visited[i])tData.data[i*4+3]=255;}
   tctx.putImageData(tData,0,0);
   var cleanC=document.createElement('canvas');cleanC.width=w;cleanC.height=h;
   var cc=cleanC.getContext('2d');
   cc.filter='blur(3px)';cc.drawImage(temp,0,0);cc.filter='none';
   var bd=cc.getImageData(0,0,w,h);
-  for(var i=3;i<bd.data.length;i+=4)bd.data[i]=bd.data[i]>28?255:0;
+  for(var i=3;i<<bd.data.length;i+=4)bd.data[i]=bd.data[i]>28?255:0;
   cc.putImageData(bd,0,0);
   prevMaskDataURL=mX.canvas.toDataURL();
   applyPersonCanvas(cleanC);
@@ -1694,9 +1685,13 @@ function analyze(){
     doAnalyze(fd);
   }
 }
-function doAnalyze(fd){
+
+async function doAnalyze(fd){
+  await getIdToken();
   var xhr=new XMLHttpRequest();
   xhr.open('POST','/detect-shapes',true);
+  var h=getAuthHeaders();
+  for(var k in h) xhr.setRequestHeader(k,h[k]);
   xhr.onload=function(){
     document.getElementById('aB').disabled=false;
     if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">'+t('errHttp')+' '+xhr.status+'</div>';return}
@@ -1708,8 +1703,6 @@ function doAnalyze(fd){
     dd=d;ci=d.detectionId;
     initColorState();
 
-    /* Palette-source badge ("AI" or "BUCKETS") so the user knows where the
-       suggestion came from. */
     var psb = document.getElementById('paletteSourceBadge');
     if (psb) {
       if (d.paletteSource === 'gemini') {
@@ -1721,14 +1714,9 @@ function doAnalyze(fd){
       }
     }
 
-    /* Background auto-exclusion was removed: every detected colour starts as
-       active.  The user is responsible for excluding what they don't want
-       stitched, with help from the bulk-action buttons (All / None / Invert /
-       Match colours) and the 🔒 lock toggle. */
-
     var cg=document.getElementById('cg');
     cg.innerHTML='';
-    for(var i=0;i<d.colors.length;i++){
+    for(var i=0;i<<d.colors.length;i++){
       var c=d.colors[i];
       cg.innerHTML+=
         '<div class="c-item on" id="ci-'+i+'" onclick="tC('+i+')">'+
@@ -1752,7 +1740,7 @@ function doAnalyze(fd){
     document.getElementById('sn').textContent=d.shapes.length;
     var sg=document.getElementById('sg');
     sg.innerHTML='';
-    for(var i=0;i<d.shapes.length;i++){
+    for(var i=0;i<<d.shapes.length;i++){
       try{
         var s=d.shapes[i];
         var w=Math.round(s.bounds&&s.bounds.w||0),h=Math.round(s.bounds&&s.bounds.h||0);
@@ -1776,335 +1764,12 @@ function doAnalyze(fd){
   xhr.send(fd);
 }
 
-/* ── COLOR STATE MACHINE (merge / remove / on / pending) ── */
-var colorState=[];
-var colorMerges={};
-var colorLocked=[];   /* parallel array of booleans; true = protected from merges */
-
-function initColorState(){
-  if(!dd)return;
-  colorState=dd.colors.map(function(){return'on';});
-  colorMerges={};
-  colorLocked=dd.colors.map(function(){return false;});
-}
-
-function syncShapesForColor(hex,enabled){
-  var rows=document.querySelectorAll('.s-item');
-  for(var j=0;j<rows.length;j++){
-    if(rows[j].dataset.c===hex){
-      var cb=rows[j].querySelector('input[type=checkbox]');
-      cb.checked=enabled;rows[j].classList.toggle('off',!enabled);cb.disabled=!enabled;
-    }
-  }
-}
-
-function renderColorItem(i){
-  var el=document.getElementById('ci-'+i);
-  if(!el)return;
-  var st=colorState[i]||'on';
-  var locked=!!colorLocked[i];
-  /* Base classes */
-  el.className='c-item';
-  if(st==='on')el.classList.add('on');
-  if(st==='pending')el.classList.add('on','pending');
-  if(st.indexOf('merged:')===0)el.classList.add('merged');
-  if(locked)el.classList.add('locked');
-  /* Sync shapes */
-  syncShapesForColor(dd.colors[i], st==='on'||st==='pending');
-  /* Merge dot */
-  var dot=el.querySelector('.c-merge-dot');
-  if(dot){
-    if(st.indexOf('merged:')===0){
-      var tgt=st.replace('merged:','');
-      dot.style.background=tgt;dot.title='\u2192 '+tgt;dot.style.display='block';
-    }else{dot.style.display='none';}
-  }
-  /* Lock button */
-  var lockBtn=document.getElementById('cl-'+i);
-  if(lockBtn){
-    lockBtn.textContent = locked ? '\ud83d\udd12' : '\ud83d\udd13';
-    lockBtn.title = locked ? t('unlockTitle') : t('lockTitle');
-    lockBtn.classList.toggle('on', locked);
-  }
-  /* Action buttons — disable Merge when locked */
-  var acts=el.querySelector('.c-actions');
-  if(acts){
-    acts.style.display=(st==='pending')?'flex':'none';
-    var mb=acts.querySelector('.c-act-merge');
-    if(mb)mb.disabled=locked;
-  }
-  updateBulkCounts();
-}
-
-function tLock(i){
-  /* Toggle protection on this colour.  If we're locking a colour that was
-     previously the source of a pending merge, drop that merge too. */
-  colorLocked[i]=!colorLocked[i];
-  if(colorLocked[i]){
-    var st=colorState[i]||'on';
-    if(st.indexOf('merged:')===0){
-      delete colorMerges[dd.colors[i]];
-      colorState[i]='on';
-      syncShapesForColor(dd.colors[i], true);
-    }
-  }
-  renderColorItem(i);
-}
-
-function tC(i){
-  /* Guard: need at least one other "on" to allow deselect */
-  var st=colorState[i]||'on';
-  if(st==='on'){
-    var others=colorState.filter(function(s,j){return j!==i&&s==='on';}).length;
-    if(others===0){alert(t('keepColor'));return;}
-    colorState[i]='pending';
-  }else if(st==='pending'){
-    colorState[i]='on';  /* cancel pending */
-  }else{
-    /* Was removed or merged — restore */
-    delete colorMerges[dd.colors[i]];
-    colorState[i]='on';
-  }
-  renderColorItem(i);
-}
-
-function doRemoveColor(i){
-  colorState[i]='removed';
-  syncShapesForColor(dd.colors[i],false);
-  renderColorItem(i);
-}
-
-function doMergeColor(i){
-  /* Locked colours can't be merged */
-  if(colorLocked[i]){
-    alert(t('lockTitle'));
-    return;
-  }
-  /* Find nearest ON, UN-LOCKED color by Lab ΔE */
-  var src=dd.colors[i];
-  var srcL=hexToLabSimple(src);
-  var bestJ=-1,bestD=Infinity;
-  for(var j=0;j<dd.colors.length;j++){
-    if(j===i||(colorState[j]||'on')!=='on'||colorLocked[j])continue;
-    var d=labDist(srcL,hexToLabSimple(dd.colors[j]));
-    if(d<bestD){bestD=d;bestJ=j;}
-  }
-  if(bestJ<0){alert(t('noOtherColor')||'No other active unlocked color to merge into.');return;}
-  colorMerges[src]=dd.colors[bestJ];
-  colorState[i]='merged:'+dd.colors[bestJ];
-  syncShapesForColor(src,false);
-  renderColorItem(i);
-}
-
-/* Minimal Lab helpers */
-function hexToLabSimple(hex){
-  var m=(hex||'').match(/^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/);
-  if(!m)return{l:0,a:0,b:0};
-  var r=parseInt(m[1],16)/255,g=parseInt(m[2],16)/255,b=parseInt(m[3],16)/255;
-  r=r>0.04045?Math.pow((r+0.055)/1.055,2.4):r/12.92;
-  g=g>0.04045?Math.pow((g+0.055)/1.055,2.4):g/12.92;
-  b=b>0.04045?Math.pow((b+0.055)/1.055,2.4):b/12.92;
-  var x=r*0.4124+g*0.3576+b*0.1805,y=r*0.2126+g*0.7152+b*0.0722,z=r*0.0193+g*0.1192+b*0.9505;
-  var f=function(v){return v>0.008856?Math.cbrt(v):7.787*v+16/116;};
-  return{l:116*f(y)-16,a:500*(f(x/0.95047)-f(y)),b:200*(f(y)-f(z/1.08883))};
-}
-function labDist(a,b){return Math.sqrt(Math.pow(a.l-b.l,2)+Math.pow(a.a-b.a,2)+Math.pow(a.b-b.b,2));}
-
-function tS(i){var cb=document.getElementById('cb-'+i);document.getElementById('si-'+i).classList.toggle('off',!cb.checked);updateBulkCounts();}
-
-/* ── BULK ACTIONS ────────────────────────────────────────────────────── */
-function allC(on){
-  if(!dd)return;
-  if(on){
-    for(var i=0;i<dd.colors.length;i++){
-      delete colorMerges[dd.colors[i]];
-      colorState[i]='on';
-      renderColorItem(i);
-    }
-  }else{
-    /* Bulk-remove every active colour except one (we always need at least
-       one to stitch).  Locked colours are NEVER removed by bulk None. */
-    var keepIdx=-1;
-    for(var i=0;i<dd.colors.length;i++){
-      if(colorLocked[i]&&(colorState[i]||'on')==='on'){ keepIdx=i; break; }
-    }
-    if(keepIdx===-1){
-      for(var i=0;i<dd.colors.length;i++){
-        if((colorState[i]||'on')==='on'){ keepIdx=i; break; }
-      }
-    }
-    if(keepIdx===-1){alert(t('keepColor'));return;}
-    for(var i=0;i<dd.colors.length;i++){
-      if(i===keepIdx) continue;
-      if(colorLocked[i]) continue;          /* never auto-remove a locked colour */
-      if((colorState[i]||'on')==='on'){
-        colorState[i]='removed';
-        syncShapesForColor(dd.colors[i],false);
-        renderColorItem(i);
-      }
-    }
-  }
-}
-
-function invC(){
-  /* Invert each colour's on/off state.  Locked colours are skipped (their
-     state is preserved — that's the whole point of locking). */
-  if(!dd)return;
-  /* First pass: collect what the inverted set would be */
-  var willBeOn=[];
-  for(var i=0;i<dd.colors.length;i++){
-    if(colorLocked[i]){ if((colorState[i]||'on')==='on') willBeOn.push(i); continue; }
-    var st=colorState[i]||'on';
-    if(st==='removed') willBeOn.push(i);   /* will flip to on */
-    /* on / pending / merged: will flip to off, so not added */
-  }
-  if(willBeOn.length===0){alert(t('keepColor'));return;}
-  for(var i=0;i<dd.colors.length;i++){
-    if(colorLocked[i]) continue;
-    var st=colorState[i]||'on';
-    if(st==='removed'){
-      colorState[i]='on';
-    }else{
-      delete colorMerges[dd.colors[i]];
-      colorState[i]='removed';
-      syncShapesForColor(dd.colors[i],false);
-    }
-    renderColorItem(i);
-  }
-}
-
-function allS(on){
-  var rows=document.querySelectorAll('.s-item');
-  for(var i=0;i<rows.length;i++){
-    var cb=rows[i].querySelector('input[type=checkbox]');
-    if(cb.disabled) continue;             /* shape's colour is removed/merged — leave it alone */
-    cb.checked=on;
-    rows[i].classList.toggle('off',!on);
-  }
-  updateBulkCounts();
-}
-
-function invS(){
-  var rows=document.querySelectorAll('.s-item');
-  for(var i=0;i<rows.length;i++){
-    var cb=rows[i].querySelector('input[type=checkbox]');
-    if(cb.disabled) continue;
-    cb.checked=!cb.checked;
-    rows[i].classList.toggle('off',!cb.checked);
-  }
-  updateBulkCounts();
-}
-
-function selectShapesForActiveColors(){
-  /* Convenience: re-check every shape whose colour is currently 'on'.
-     Useful after the user has been clicking around and wants to start fresh
-     from "everything that's still active". */
-  if(!dd)return;
-  var activeHex={};
-  for(var i=0;i<dd.colors.length;i++){
-    if((colorState[i]||'on')==='on') activeHex[dd.colors[i].toLowerCase()]=1;
-  }
-  var rows=document.querySelectorAll('.s-item');
-  for(var i=0;i<rows.length;i++){
-    var c=(rows[i].dataset.c||'').toLowerCase();
-    var cb=rows[i].querySelector('input[type=checkbox]');
-    var should=!!activeHex[c];
-    cb.checked=should;
-    cb.disabled=!should;
-    rows[i].classList.toggle('off',!should);
-  }
-  updateBulkCounts();
-}
-
-function updateBulkCounts(){
-  if(!dd) return;
-  var on=0,removed=0,merged=0,locked=0;
-  for(var i=0;i<dd.colors.length;i++){
-    var st=colorState[i]||'on';
-    if(st==='on'||st==='pending') on++;
-    else if(st==='removed') removed++;
-    else if(st.indexOf('merged:')===0) merged++;
-    if(colorLocked[i]) locked++;
-  }
-  var cc=document.getElementById('cCount');
-  if(cc) cc.textContent=t('colorCountLabel',{on:on,removed:removed,merged:merged,locked:locked});
-
-  var sRows=document.querySelectorAll('.s-item');
-  var sOn=0;
-  for(var i=0;i<sRows.length;i++){
-    var cb=sRows[i].querySelector('input[type=checkbox]');
-    if(cb&&cb.checked&&!cb.disabled) sOn++;
-  }
-  var sc=document.getElementById('sCount');
-  if(sc) sc.textContent=t('shapeCountLabel',{on:sOn,total:sRows.length});
-}
-
-function generate(){
-  if(!ci||!dd)return;
-
-  for(var i=0;i<dd.shapes.length;i++){
-    if(document.getElementById('cb-'+i).checked){
-      var shapeColor=dd.shapes[i].color;
-      var colorOn=false;
-      for(var j=0;j<dd.colors.length;j++){
-        var _st2=colorState[j]||'on';
-        if(_st2==='on' && dd.colors[j]===shapeColor){colorOn=true;break;}
-      }
-      if(!colorOn){
-        alert(t('shapeColorMismatch',{n:(i+1)}));
-        return;
-      }
-    }
-  }
-
-  /* Build sc from colorState — include "on" colors only; merged srcs excluded */
-  var sc=[],ss=[];
-  var _seen=new Set();
-  for(var i=0;i<dd.colors.length;i++){
-    var _st=colorState[i]||'on';
-    if(_st==='on'&&!_seen.has(dd.colors[i])){sc.push(dd.colors[i]);_seen.add(dd.colors[i]);}
-  }
-  if(!sc.length){alert(t('selColor'));return}
-  for(var i=0;i<dd.shapes.length;i++){if(document.getElementById('cb-'+i).checked)ss.push(i)}
-  if(!ss.length){alert(t('selShape'));return}
-  var btn=document.getElementById('gB');
-  btn.disabled=true;btn.textContent='⚡ '+t('generate');
-  document.getElementById('st').innerHTML='<p>'+t('generating')+'</p>';
-
-  var fd=new FormData();
-  fd.append('image',cf);
-  fd.append('mode',designMode);
-  fd.append('canvasSize',designSize);
-  fd.append('colorCount',colorCount);
-  fd.append('detectionId',ci);
-  fd.append('selectedColors',JSON.stringify(sc));
-  fd.append('selectedShapes',JSON.stringify(ss));
-  fd.append('fabric',document.getElementById('fb').value);
-  fd.append('machine',document.getElementById('mb').value);
-  fd.append('hoop',document.getElementById('hp').value);
-  fd.append('density',document.getElementById('ds').value);
-  var bBox=document.getElementById('bastingBox');
-  if(bBox&&bBox.checked)fd.append('bastingBox','1');
-  if(Object.keys(colorMerges).length>0)fd.append('colorMerges',JSON.stringify(colorMerges));
-
-  /* Protected colours — backend skips any merge involving a locked hex. */
-  var locked=[];
-  for(var i=0;i<dd.colors.length;i++){
-    if(colorLocked[i]) locked.push(dd.colors[i]);
-  }
-  if(locked.length>0) fd.append('lockedColors',JSON.stringify(locked));
-  if(hm){
-    c2.toBlob(function(b){
-      if(b)fd.append('mask',b,'mask.png');
-      doGen(fd,sc,ss,btn);
-    },'image/png');
-  }else{
-    doGen(fd,sc,ss,btn);
-  }
-}
-function doGen(fd,sc,ss,btn){
+async function doGen(fd,sc,ss,btn){
+  await getIdToken();
   var xhr=new XMLHttpRequest();
   xhr.open('POST','/generate-embroidery',true);
+  var h=getAuthHeaders();
+  for(var k in h) xhr.setRequestHeader(k,h[k]);
   xhr.onload=function(){
     btn.disabled=false;btn.textContent='⚡ '+t('generate');
     if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">'+t('errHttp')+' '+xhr.status+'</div>';return}
@@ -2132,20 +1797,375 @@ function doGen(fd,sc,ss,btn){
   xhr.send(fd);
 }
 
-function dl(){
+/* ── AUTH-COMPATIBLE DOWNLOAD ───────────────────────── */
+async function dl(){
   if(!jid){alert(t('download'));return;}
   var fmt=document.getElementById('fs')?document.getElementById('fs').value:'dst';
-  var a=document.createElement('a');
-  a.href='/download/'+jid+'?fmt='+fmt;
-  a.download='design.'+fmt;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  await getIdToken();
+  fetch('/download/'+jid+'?fmt='+fmt,{headers:getAuthHeaders()})
+    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.blob();})
+    .then(function(b){
+      var url=URL.createObjectURL(b);
+      var ts=new Date().toISOString().slice(0,16).replace(/[:T]/g,'-');
+      var a=document.createElement('a');
+      a.href=url;
+      a.download='stichai-'+ts+'.'+fmt;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function(){URL.revokeObjectURL(url);},30000);
+    })
+    .catch(function(e){alert(t('errNetwork')+': '+e.message);});
+}
+
+/* ── COLOR STATE MACHINE (merge / remove / on / pending) ── */
+var colorState=[];
+var colorMerges={};
+var colorLocked=[];
+
+function initColorState(){
+  if(!dd)return;
+  colorState=dd.colors.map(function(){return'on';});
+  colorMerges={};
+  colorLocked=dd.colors.map(function(){return false;});
+}
+
+function syncShapesForColor(hex,enabled){
+  var rows=document.querySelectorAll('.s-item');
+  for(var j=0;j<<rows.length;j++){
+    if(rows[j].dataset.c===hex){
+      var cb=rows[j].querySelector('input[type=checkbox]');
+      cb.checked=enabled;rows[j].classList.toggle('off',!enabled);cb.disabled=!enabled;
+    }
+  }
+}
+
+function renderColorItem(i){
+  var el=document.getElementById('ci-'+i);
+  if(!el)return;
+  var st=colorState[i]||'on';
+  var locked=!!colorLocked[i];
+  el.className='c-item';
+  if(st==='on')el.classList.add('on');
+  if(st==='pending')el.classList.add('on','pending');
+  if(st.indexOf('merged:')===0)el.classList.add('merged');
+  if(locked)el.classList.add('locked');
+  syncShapesForColor(dd.colors[i], st==='on'||st==='pending');
+  var dot=el.querySelector('.c-merge-dot');
+  if(dot){
+    if(st.indexOf('merged:')===0){
+      var tgt=st.replace('merged:','');
+      dot.style.background=tgt;dot.title='\u2192 '+tgt;dot.style.display='block';
+    }else{dot.style.display='none';}
+  }
+  var lockBtn=document.getElementById('cl-'+i);
+  if(lockBtn){
+    lockBtn.textContent = locked ? '\ud83d\udd12' : '\ud83d\udd13';
+    lockBtn.title = locked ? t('unlockTitle') : t('lockTitle');
+    lockBtn.classList.toggle('on', locked);
+  }
+  var acts=el.querySelector('.c-actions');
+  if(acts){
+    acts.style.display=(st==='pending')?'flex':'none';
+    var mb=acts.querySelector('.c-act-merge');
+    if(mb)mb.disabled=locked;
+  }
+  updateBulkCounts();
+}
+
+function tLock(i){
+  colorLocked[i]=!colorLocked[i];
+  if(colorLocked[i]){
+    var st=colorState[i]||'on';
+    if(st.indexOf('merged:')===0){
+      delete colorMerges[dd.colors[i]];
+      colorState[i]='on';
+      syncShapesForColor(dd.colors[i], true);
+    }
+  }
+  renderColorItem(i);
+}
+
+function tC(i){
+  var st=colorState[i]||'on';
+  if(st==='on'){
+    var others=colorState.filter(function(s,j){return j!==i&&s==='on';}).length;
+    if(others===0){alert(t('keepColor'));return;}
+    colorState[i]='pending';
+  }else if(st==='pending'){
+    colorState[i]='on';
+  }else{
+    delete colorMerges[dd.colors[i]];
+    colorState[i]='on';
+  }
+  renderColorItem(i);
+}
+
+function doRemoveColor(i){
+  colorState[i]='removed';
+  syncShapesForColor(dd.colors[i],false);
+  renderColorItem(i);
+}
+
+function doMergeColor(i){
+  if(colorLocked[i]){
+    alert(t('lockTitle'));
+    return;
+  }
+  var src=dd.colors[i];
+  var srcL=hexToLabSimple(src);
+  var bestJ=-1,bestD=Infinity;
+  for(var j=0;j<<dd.colors.length;j++){
+    if(j===i||(colorState[j]||'on')!=='on'||colorLocked[j])continue;
+    var d=labDist(srcL,hexToLabSimple(dd.colors[j]));
+    if(d<<bestD){bestD=d;bestJ=j;}
+  }
+  if(bestJ<<0){alert(t('noOtherColor')||'No other active unlocked color to merge into.');return;}
+  colorMerges[src]=dd.colors[bestJ];
+  colorState[i]='merged:'+dd.colors[bestJ];
+  syncShapesForColor(src,false);
+  renderColorItem(i);
+}
+
+/* Minimal Lab helpers */
+function hexToLabSimple(hex){
+  var m=(hex||'').match(/^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/);
+  if(!m)return{l:0,a:0,b:0};
+  var r=parseInt(m[1],16)/255,g=parseInt(m[2],16)/255,b=parseInt(m[3],16)/255;
+  r=r>0.04045?Math.pow((r+0.055)/1.055,2.4):r/12.92;
+  g=g>0.04045?Math.pow((g+0.055)/1.055,2.4):g/12.92;
+  b=b>0.04045?Math.pow((b+0.055)/1.055,2.4):b/12.92;
+  var x=r*0.4124+g*0.3576+b*0.1805,y=r*0.2126+g*0.7152+b*0.0722,z=r*0.0193+g*0.1192+b*0.9505;
+  var f=function(v){return v>0.008856?Math.cbrt(v):7.787*v+16/116;};
+  return{l:116*f(y)-16,a:500*(f(x/0.95047)-f(y)),b:200*(f(y)-f(z/1.08883))};
+}
+function labDist(a,b){return Math.sqrt(Math.pow(a.l-b.l,2)+Math.pow(a.a-b.a,2)+Math.pow(a.b-b.b,2));}
+
+function tS(i){var cb=document.getElementById('cb-'+i);document.getElementById('si-'+i).classList.toggle('off',!cb.checked);updateBulkCounts();}
+
+/* ── BULK ACTIONS ────────────────────────────────────── */
+function allC(on){
+  if(!dd)return;
+  if(on){
+    for(var i=0;i<<dd.colors.length;i++){
+      delete colorMerges[dd.colors[i]];
+      colorState[i]='on';
+      renderColorItem(i);
+    }
+  }else{
+    var keepIdx=-1;
+    for(var i=0;i<<dd.colors.length;i++){
+      if(colorLocked[i]&&(colorState[i]||'on')==='on'){ keepIdx=i; break; }
+    }
+    if(keepIdx===-1){
+      for(var i=0;i<<dd.colors.length;i++){
+        if((colorState[i]||'on')==='on'){ keepIdx=i; break; }
+      }
+    }
+    if(keepIdx===-1){alert(t('keepColor'));return;}
+    for(var i=0;i<<dd.colors.length;i++){
+      if(i===keepIdx) continue;
+      if(colorLocked[i]) continue;
+      if((colorState[i]||'on')==='on'){
+        colorState[i]='removed';
+        syncShapesForColor(dd.colors[i],false);
+        renderColorItem(i);
+      }
+    }
+  }
+}
+
+function invC(){
+  if(!dd)return;
+  var willBeOn=[];
+  for(var i=0;i<<dd.colors.length;i++){
+    if(colorLocked[i]){ if((colorState[i]||'on')==='on') willBeOn.push(i); continue; }
+    var st=colorState[i]||'on';
+    if(st==='removed') willBeOn.push(i);
+  }
+  if(willBeOn.length===0){alert(t('keepColor'));return;}
+  for(var i=0;i<<dd.colors.length;i++){
+    if(colorLocked[i]) continue;
+    var st=colorState[i]||'on';
+    if(st==='removed'){
+      colorState[i]='on';
+    }else{
+      delete colorMerges[dd.colors[i]];
+      colorState[i]='removed';
+      syncShapesForColor(dd.colors[i],false);
+    }
+    renderColorItem(i);
+  }
+}
+
+function allS(on){
+  var rows=document.querySelectorAll('.s-item');
+  for(var i=0;i<<rows.length;i++){
+    var cb=rows[i].querySelector('input[type=checkbox]');
+    if(cb.disabled) continue;
+    cb.checked=on;
+    rows[i].classList.toggle('off',!on);
+  }
+  updateBulkCounts();
+}
+
+function invS(){
+  var rows=document.querySelectorAll('.s-item');
+  for(var i=0;i<<rows.length;i++){
+    var cb=rows[i].querySelector('input[type=checkbox]');
+    if(cb.disabled) continue;
+    cb.checked=!cb.checked;
+    rows[i].classList.toggle('off',!cb.checked);
+  }
+  updateBulkCounts();
+}
+
+function selectShapesForActiveColors(){
+  if(!dd)return;
+  var activeHex={};
+  for(var i=0;i<<dd.colors.length;i++){
+    if((colorState[i]||'on')==='on') activeHex[dd.colors[i].toLowerCase()]=1;
+  }
+  var rows=document.querySelectorAll('.s-item');
+  for(var i=0;i<<rows.length;i++){
+    var c=(rows[i].dataset.c||'').toLowerCase();
+    var cb=rows[i].querySelector('input[type=checkbox]');
+    var should=!!activeHex[c];
+    cb.checked=should;
+    cb.disabled=!should;
+    rows[i].classList.toggle('off',!should);
+  }
+  updateBulkCounts();
+}
+
+function updateBulkCounts(){
+  if(!dd) return;
+  var on=0,removed=0,merged=0,locked=0;
+  for(var i=0;i<<dd.colors.length;i++){
+    var st=colorState[i]||'on';
+    if(st==='on'||st==='pending') on++;
+    else if(st==='removed') removed++;
+    else if(st.indexOf('merged:')===0) merged++;
+    if(colorLocked[i]) locked++;
+  }
+  var cc=document.getElementById('cCount');
+  if(cc) cc.textContent=t('colorCountLabel',{on:on,removed:removed,merged:merged,locked:locked});
+
+  var sRows=document.querySelectorAll('.s-item');
+  var sOn=0;
+  for(var i=0;i<sRows.length;i++){
+    var cb=sRows[i].querySelector('input[type=checkbox]');
+    if(cb&&cb.checked&&!cb.disabled) sOn++;
+  }
+  var sc=document.getElementById('sCount');
+  if(sc) sc.textContent=t('shapeCountLabel',{on:sOn,total:sRows.length});
+}
+
+function generate(){
+  if(!ci||!dd)return;
+
+  for(var i=0;i<<dd.shapes.length;i++){
+    if(document.getElementById('cb-'+i).checked){
+      var shapeColor=dd.shapes[i].color;
+      var colorOn=false;
+      for(var j=0;j<<dd.colors.length;j++){
+        var _st2=colorState[j]||'on';
+        if(_st2==='on' && dd.colors[j]===shapeColor){colorOn=true;break;}
+      }
+      if(!colorOn){
+        alert(t('shapeColorMismatch',{n:(i+1)}));
+        return;
+      }
+    }
+  }
+
+  var sc=[],ss=[];
+  var _seen=new Set();
+  for(var i=0;i<<dd.colors.length;i++){
+    var _st=colorState[i]||'on';
+    if(_st==='on'&&!_seen.has(dd.colors[i])){sc.push(dd.colors[i]);_seen.add(dd.colors[i]);}
+  }
+  if(!sc.length){alert(t('selColor'));return}
+  for(var i=0;i<<dd.shapes.length;i++){if(document.getElementById('cb-'+i).checked)ss.push(i)}
+  if(!ss.length){alert(t('selShape'));return}
+  var btn=document.getElementById('gB');
+  btn.disabled=true;btn.textContent='⚡ '+t('generate');
+  document.getElementById('st').innerHTML='<p>'+t('generating')+'</p>';
+
+  var fd=new FormData();
+  fd.append('image',cf);
+  fd.append('mode',designMode);
+  fd.append('canvasSize',designSize);
+  fd.append('colorCount',colorCount);
+  fd.append('detectionId',ci);
+  fd.append('selectedColors',JSON.stringify(sc));
+  fd.append('selectedShapes',JSON.stringify(ss));
+  fd.append('fabric',document.getElementById('fb').value);
+  fd.append('machine',document.getElementById('mb').value);
+  fd.append('hoop',document.getElementById('hp').value);
+  fd.append('density',document.getElementById('ds').value);
+  var bBox=document.getElementById('bastingBox');
+  if(bBox&&bBox.checked)fd.append('bastingBox','1');
+  if(Object.keys(colorMerges).length>0)fd.append('colorMerges',JSON.stringify(colorMerges));
+
+  var locked=[];
+  for(var i=0;i<<dd.colors.length;i++){
+    if(colorLocked[i]) locked.push(dd.colors[i]);
+  }
+  if(locked.length>0) fd.append('lockedColors',JSON.stringify(locked));
+  if(hm){
+    c2.toBlob(function(b){
+      if(b)fd.append('mask',b,'mask.png');
+      doGen(fd,sc,ss,btn);
+    },'image/png');
+  }else{
+    doGen(fd,sc,ss,btn);
+  }
+}
+
+/* ── FIREBASE AUTH SCAFFOLD ───────────────────────────
+   Uncomment the authBar display line once your Railway env
+   has FIREBASE_SERVICE_ACCOUNT and you've filled firebaseConfig. */
+var firebaseConfig = {
+  // apiKey: "YOUR_API_KEY",
+  // authDomain: "YOUR_PROJECT.firebaseapp.com",
+  // projectId: "YOUR_PROJECT",
+  // appId: "YOUR_APP_ID"
+};
+if(firebaseConfig.apiKey){
+  firebase.initializeApp(firebaseConfig);
+  window.firebaseAuth = firebase.auth();
+
+  // Uncomment next line to show the sign-in bar:
+  // document.getElementById('authBar').style.display='flex';
+
+  document.getElementById('authGoogleBtn').addEventListener('click', function(){
+    var provider = new firebase.auth.GoogleAuthProvider();
+    window.firebaseAuth.signInWithPopup(provider).catch(function(e){ console.error(e); });
+  });
+
+  window.firebaseAuth.onAuthStateChanged(function(user){
+    if(user){
+      getIdToken(true);
+      var bar = document.getElementById('authBar');
+      var txt = document.getElementById('authBarText');
+      if(txt) txt.textContent = user.email || user.displayName || 'Signed in';
+      if(bar){
+        bar.innerHTML = '<span style="color:rgba(255,255,255,.7);font-size:13px;font-weight:600;">'+(user.email||user.displayName||'Signed in')+'</span>'+
+          '<button onclick="window.firebaseAuth.signOut()" style="background:transparent;border:1.5px solid rgba(255,255,255,.25);color:#fff;padding:7px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--fb);">Sign out</button>';
+        bar.style.display='flex';
+      }
+    }
+  });
 }
 
 /* ─── INIT ─────────────────────────────────────────── */
 renderPlans();
 detectLanguage();
 </script>
+
+<!-- Firebase Auth SDK — configure when FIREBASE_SERVICE_ACCOUNT is ready on Railway -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 </body>
 </html>
