@@ -1244,71 +1244,87 @@ function showMaskState(state, msg){
 }
 
 /* ── GLOW ANIMATION ─────────────────────────────────── */
-function drawGlowFrame(){
-  if(!window._glowPoly||!c3)return;
-  var ctx=c3.getContext('2d');
-  var w=c3.width,h=c3.height;
-  ctx.clearRect(0,0,w,h);
-  var off=window._imgOff||{x:0,y:0,w:w,h:h};
-  var pts=window._glowPoly;
+var _glowMaskCanvas=null,_glowRingCanvas=null;
 
-  /* Dark overlay everywhere */
-  ctx.fillStyle='rgba(0,0,0,0.55)';
-  ctx.fillRect(0,0,w,h);
-
-  /* Cut out subject (show bright through) */
-  ctx.save();
-  ctx.globalCompositeOperation='destination-out';
-  ctx.beginPath();
-  for(var i=0;i<pts.length;i++){
-    var px=off.x+pts[i][0]/1000*off.w;
-    var py=off.y+pts[i][1]/1000*off.h;
-    if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);
+/* Pre-compute a white ring canvas: expanded mask minus original.
+   Done once per detection — not every animation frame. */
+function computeGlowRing(mask){
+  var w=mask.width,h=mask.height;
+  var ring=document.createElement('canvas');
+  ring.width=w;ring.height=h;
+  var rc=ring.getContext('2d');
+  rc.filter='blur(9px)';rc.drawImage(mask,0,0);rc.filter='none';
+  var rd=rc.getImageData(0,0,w,h);
+  for(var i=0;i<rd.data.length;i+=4){
+    var a=rd.data[i+3];
+    rd.data[i]=255;rd.data[i+1]=255;rd.data[i+2]=255;
+    rd.data[i+3]=a>8?Math.min(255,(a*2.5)|0):0;
   }
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-
-  /* Animated multi-layer glow stroke */
-  window._glowPhase=(window._glowPhase||0)+0.045;
-  var pulse=(Math.sin(window._glowPhase)+1)/2; /* 0→1 */
-  var layers=[
-    {w:18,a:0.06+0.04*pulse},
-    {w:9, a:0.18+0.08*pulse},
-    {w:4, a:0.55+0.2*pulse},
-    {w:2, a:0.85+0.12*pulse}
-  ];
-  function mkPath(ctx){
-    ctx.beginPath();
-    for(var i=0;i<pts.length;i++){
-      var px=off.x+pts[i][0]/1000*off.w;
-      var py=off.y+pts[i][1]/1000*off.h;
-      if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);
-    }
-    ctx.closePath();
-  }
-  for(var li=0;li<layers.length;li++){
-    ctx.save();
-    ctx.strokeStyle='rgba(255,255,255,'+layers[li].a+')';
-    ctx.lineWidth=layers[li].w;
-    ctx.lineJoin='round';
-    mkPath(ctx);
-    ctx.stroke();
-    ctx.restore();
-  }
-  window._glowAnimId=requestAnimationFrame(drawGlowFrame);
+  rc.putImageData(rd,0,0);
+  rc.globalCompositeOperation='destination-out';
+  rc.drawImage(mask,0,0);
+  rc.globalCompositeOperation='source-over';
+  return ring;
 }
-function startGlowAnimation(poly){
-  window._glowPoly=poly;
+
+function startGlowAnimationFromMask(mask){
+  _glowMaskCanvas=mask;
+  _glowRingCanvas=computeGlowRing(mask);
+  window._glowPoly=null;
   window._glowPhase=0;
   if(window._glowAnimId)cancelAnimationFrame(window._glowAnimId);
   drawGlowFrame();
 }
+
+function startGlowAnimation(poly){
+  window._glowPoly=poly;
+  _glowMaskCanvas=null;_glowRingCanvas=null;
+  window._glowPhase=0;
+  if(window._glowAnimId)cancelAnimationFrame(window._glowAnimId);
+  drawGlowFrame();
+}
+
 function stopGlowAnimation(){
   if(window._glowAnimId)cancelAnimationFrame(window._glowAnimId);
-  window._glowAnimId=null;
-  window._glowPoly=null;
+  window._glowAnimId=null;window._glowPoly=null;
+  _glowMaskCanvas=null;_glowRingCanvas=null;
   if(c3)c3.getContext('2d').clearRect(0,0,c3.width,c3.height);
+}
+
+function drawGlowFrame(){
+  if(!c3)return;
+  if(!_glowMaskCanvas&&!window._glowPoly)return;
+  var ctx=c3.getContext('2d');
+  var w=c3.width,h=c3.height;
+  ctx.clearRect(0,0,w,h);
+  window._glowPhase=(window._glowPhase||0)+0.045;
+  var pulse=(Math.sin(window._glowPhase)+1)/2;
+  ctx.fillStyle='rgba(0,0,0,0.55)';
+  ctx.fillRect(0,0,w,h);
+  if(_glowMaskCanvas){
+    /* Mask-based: cut out subject + draw precomputed ring */
+    ctx.save();ctx.globalCompositeOperation='destination-out';
+    ctx.drawImage(_glowMaskCanvas,0,0);ctx.restore();
+    if(_glowRingCanvas){
+      ctx.save();ctx.globalAlpha=0.55+0.38*pulse;
+      ctx.drawImage(_glowRingCanvas,0,0);ctx.restore();
+    }
+  }else{
+    /* Polygon fallback */
+    var off=window._imgOff||{x:0,y:0,w:w,h:h};
+    var pts=window._glowPoly;
+    ctx.save();ctx.globalCompositeOperation='destination-out';
+    ctx.beginPath();
+    for(var i=0;i<pts.length;i++){var px=off.x+pts[i][0]/1000*off.w,py=off.y+pts[i][1]/1000*off.h;if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}
+    ctx.closePath();ctx.fill();ctx.restore();
+    var layers=[{w:18,a:0.06+0.04*pulse},{w:9,a:0.18+0.08*pulse},{w:4,a:0.55+0.2*pulse},{w:2,a:0.85+0.12*pulse}];
+    for(var li=0;li<layers.length;li++){
+      ctx.save();ctx.strokeStyle='rgba(255,255,255,'+layers[li].a+')';ctx.lineWidth=layers[li].w;ctx.lineJoin='round';
+      ctx.beginPath();for(var j=0;j<pts.length;j++){var qx=off.x+pts[j][0]/1000*off.w,qy=off.y+pts[j][1]/1000*off.h;if(j===0)ctx.moveTo(qx,qy);else ctx.lineTo(qx,qy);}ctx.closePath();
+      ctx.stroke();ctx.restore();
+    }
+  }
+  window._glowAnimId=requestAnimationFrame(drawGlowFrame);
 }
 
 /* ── TAP HANDLER ────────────────────────────────────── */
@@ -1344,7 +1360,10 @@ function callSegmentSubject(tapX,tapY){
     .then(function(r){return r.json();})
     .then(function(data){
       if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
-      if(data.found&&data.grid){
+      if(data.found&&data.maskPng){
+        /* Pixel-accurate mask from @imgly/background-removal-node */
+        applyMaskPng(data.maskPng);
+      }else if(data.found&&data.grid){
         /* Grid-based segmentation (full-image 30×30) */
         applyGeminiGrid(data.grid, data.gridSize||30);
         var lbl=document.getElementById('confirmedSubjectLabel');
@@ -1509,9 +1528,42 @@ function applyGeminiGrid(grid, gridSize){
   prevMaskDataURL=mX.canvas.toDataURL();
   applyPersonCanvas(smooth);
 
-  /* Extract actual body outline from mask for glow — not a rectangle */
-  var glowPoly=extractGlowPolygon(smooth);
-  if(glowPoly&&glowPoly.length>6) startGlowAnimation(glowPoly);
+  /* Glow follows the actual mask edge, not a polygon */
+  startGlowAnimationFromMask(smooth);
+}
+
+/* ── APPLY PIXEL-ACCURATE PNG MASK (from imgly) ─────────
+   maskCanvas comes from server: transparent=background,
+   opaque=subject. Used when @imgly package is installed. */
+function applyMaskPng(base64Png){
+  var img=new Image();
+  img.onload=function(){
+    var w=c1.width,h=c1.height;
+    var off=window._imgOff||{x:0,y:0,w:w,h:h};
+    var temp=document.createElement('canvas');
+    temp.width=w;temp.height=h;
+    var tctx=temp.getContext('2d');
+    /* Scale PNG to match the letterboxed image area */
+    tctx.drawImage(img,off.x,off.y,off.w,off.h);
+    /* Binarise alpha channel */
+    var id=tctx.getImageData(0,0,w,h),d=id.data;
+    for(var i=0;i<d.length;i+=4){
+      var a=d[i+3];
+      d[i]=0;d[i+1]=0;d[i+2]=0;
+      d[i+3]=a>128?255:0;
+    }
+    tctx.putImageData(id,0,0);
+    prevMaskDataURL=mX.canvas.toDataURL();
+    applyPersonCanvas(temp);
+    startGlowAnimationFromMask(temp);
+    var lbl=document.getElementById('confirmedSubjectLabel');
+    if(lbl)lbl.textContent='Person \u2713';
+    showMaskState('confirmed');
+    if(navigator.vibrate)navigator.vibrate([30,30,60]);
+    var bar=document.getElementById('maskConfirmBar');
+    if(bar)setTimeout(function(){bar.scrollIntoView({behavior:'smooth',block:'nearest'});},120);
+  };
+  img.src='data:image/png;base64,'+base64Png;
 }
 
 /* Keep polygon version for backward compat / manual fallback */
