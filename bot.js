@@ -605,6 +605,44 @@ async function buildPixelMap(imageBuffer, maskBuffer, colors, canvasSize) {
   return pixMap;
 }
 
+/* ─── IMGLY BACKGROUND REMOVAL ───────────────────────────
+   Pixel-accurate background removal using ONNX/WASM models.
+   Requires: npm install @imgly/background-removal-node
+   If the package is not installed, falls back to Gemini grid.
+   Add to package.json: "@imgly/background-removal-node": "^1.4.5"
+─────────────────────────────────────────────────────────── */
+let _imglyLib = undefined; // undefined=not tried, null=unavailable, object=loaded
+async function loadImglyBgRemoval() {
+  if (_imglyLib !== undefined) return _imglyLib;
+  try {
+    _imglyLib = require('@imgly/background-removal-node');
+    console.log('[imgly] background-removal-node loaded OK');
+    return _imglyLib;
+  } catch(e) {
+    console.warn('[imgly] package not installed — add "@imgly/background-removal-node" to package.json for pixel-accurate segmentation. Falling back to Gemini grid.');
+    _imglyLib = null;
+    return null;
+  }
+}
+
+async function removeBackgroundImgly(imageBuffer, mime) {
+  const lib = await loadImglyBgRemoval();
+  if (!lib) return null;
+  try {
+    const { Blob } = require('buffer');
+    const blob = new Blob([imageBuffer], { type: mime || 'image/jpeg' });
+    const result = await lib.removeBackground(blob, {
+      model: 'small',           /* 'small'=fast ~3s, 'medium'=better ~6s */
+      output: { format: 'image/png', quality: 1.0 }
+    });
+    const buf = Buffer.from(await result.arrayBuffer());
+    return buf; /* PNG with alpha: transparent=background, opaque=subject */
+  } catch(e) {
+    console.error('[imgly] removeBackground error:', e.message);
+    return null;
+  }
+}
+
 /* ─── GEMINI SUBJECT SEGMENTATION ────────────────────────*/
 async function segmentSubjectWithGemini(imageBuffer, mime, tapX, tapY) {
   if (!GEMINI_API_KEY) return null;
@@ -3152,6 +3190,14 @@ app.post("/segment-subject", requireAuth, upload.single("image"), async (req, re
   console.log(`[${rid}] SEGMENT-SUBJECT start${tapX !== undefined ? ` tap=[${tapX},${tapY}]` : " (auto)"}`);
 
   try {
+    /* ── Try pixel-accurate ML segmentation first ──────── */
+    const bgMask = await removeBackgroundImgly(req.file.buffer, req.file.mimetype || 'image/jpeg');
+    if (bgMask) {
+      console.log(`[${rid}] SEGMENT-SUBJECT: OK via imgly (${bgMask.length} bytes)`);
+      return res.json({ found: true, subject: 'person', maskPng: bgMask.toString('base64'), confidence: 'high' });
+    }
+
+    /* ── Fall back to Gemini 30×30 grid ────────────────── */
     const result = await segmentSubjectWithGemini(req.file.buffer, req.file.mimetype || "image/jpeg", tapX, tapY);
     if (!result || !result.found) {
       console.log(`[${rid}] SEGMENT-SUBJECT: no subject found`);
