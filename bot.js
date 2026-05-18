@@ -315,7 +315,14 @@ function getStitchParams(specs) {
     tatamiRow: 4, tatamiLen: 42, tatamiUl: 25, pull: 2,
     pullComp: HOOP_PULL[hoop] || 2,
     machineLimits: limits,
-    machine, fabric, stabilizer, density, maxStitchLen: limits.maxJump, hoop
+    machine, fabric, stabilizer, density, hoop,
+    /* Max fill-stitch length = 4.7 mm (47 px at 10 px/mm scale).
+       Previously used limits.maxJump (12.1 mm) by mistake — that is the
+       jump-stitch limit, NOT the fill-stitch length limit.  Using 12.1 mm
+       for fill stitches caused thousands of "long stitch" warnings in every
+       generated file and would break thread on a real machine. */
+    maxStitchLen: 47,
+    machineLimits: limits
   };
 
   const fabricMap = {
@@ -2835,19 +2842,33 @@ function getBounds(stitches) {
   return {minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY};
 }
 
-/* Normalize stitches: split long moves, convert trims→jumps, emit color_changes */
+/* Normalize stitches: split long moves, convert trims→jumps, emit color_changes.
+   Also inserts tie-in lock stitches at the START of each color segment and
+   tie-off lock stitches at the END — without these the thread unravels from
+   both ends of every segment (the "7 Missing Tie-Ins / 7 Missing Tie-Offs"). */
 function normalizeStitches(stitches, maxJump) {
   const out = [];
   let px = 0, py = 0, prevColor = null;
+  let needsTieIn = true;   /* first color also needs tie-in after initial jump */
+  const LOCK = 12;         /* 12 px ≈ 1.2 mm — short enough not to show,
+                              long enough for the machine to catch the thread */
+
   for (const s of stitches) {
-    if (s.type === 'trim') {
-      // Treat trim as jump to next position
-      continue;
-    }
+    if (s.type === 'trim') continue;
+
     if (prevColor !== null && s.color !== prevColor) {
-      out.push({dx: 0, dy: 0, type: 'color_change'});
+      /* ── TIE-OFF: 3 lock stitches before ending this colour ── */
+      const lastOut = out[out.length - 1];
+      if (lastOut && lastOut.type === 'stitch') {
+        out.push({dx:-LOCK, dy:0, type:'stitch'});
+        out.push({dx: LOCK, dy:0, type:'stitch'});
+        out.push({dx:-LOCK, dy:0, type:'stitch'});
+      }
+      out.push({dx:0, dy:0, type:'color_change'});
+      needsTieIn = true;
     }
     prevColor = s.color;
+
     const dx = s.x - px, dy = s.y - py;
     const dist = Math.hypot(dx, dy);
     if (dist > maxJump) {
@@ -2863,8 +2884,25 @@ function normalizeStitches(stitches, maxJump) {
       out.push({dx, dy, type: s.type === 'jump' ? 'jump' : 'stitch'});
     }
     px = s.x; py = s.y;
+
+    /* ── TIE-IN: 3 lock stitches right after first needle-down of each colour ── */
+    if (needsTieIn && s.type !== 'jump') {
+      out.push({dx: LOCK, dy:0, type:'stitch'});
+      out.push({dx:-LOCK, dy:0, type:'stitch'});
+      out.push({dx: LOCK, dy:0, type:'stitch'});
+      needsTieIn = false;
+    }
   }
-  out.push({dx: 0, dy: 0, type: 'end'});
+
+  /* ── FINAL TIE-OFF at end of design ── */
+  const lastOut = out[out.length - 1];
+  if (lastOut && lastOut.type === 'stitch') {
+    out.push({dx:-LOCK, dy:0, type:'stitch'});
+    out.push({dx: LOCK, dy:0, type:'stitch'});
+    out.push({dx:-LOCK, dy:0, type:'stitch'});
+  }
+
+  out.push({dx:0, dy:0, type:'end'});
   return out;
 }
 
