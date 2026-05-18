@@ -686,7 +686,7 @@ If no clear subject: {"found": false}`;
       { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
     ]}],
     generationConfig: { temperature: 0.0, maxOutputTokens: 8192, responseMimeType: "application/json",
-      thinkingConfig: { thinkingBudget: 1024 } /* cap thinking → ~6s instead of 20s */ }
+      thinkingConfig: { thinkingBudget: 8000 } /* give full thinking — needed to fill 900-cell grid */ }
   });
 
   if (!res) return null;
