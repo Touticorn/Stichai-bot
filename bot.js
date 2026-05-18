@@ -647,7 +647,8 @@ If no clear subject: {"found": false}`;
       { text: prompt },
       { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
     ]}],
-    generationConfig: { temperature: 0.0, maxOutputTokens: 8192, responseMimeType: "application/json" }
+    generationConfig: { temperature: 0.0, maxOutputTokens: 8192, responseMimeType: "application/json",
+      thinkingConfig: { thinkingBudget: 1024 } /* cap thinking → ~6s instead of 20s */ }
   });
 
   if (!res) return null;
@@ -3156,7 +3157,7 @@ app.post("/segment-subject", requireAuth, upload.single("image"), async (req, re
       console.log(`[${rid}] SEGMENT-SUBJECT: no subject found`);
       return res.json({ found:false });
     }
-    console.log(`[${rid}] SEGMENT-SUBJECT: OK subject=${result.subject} bbox=[${result.bbox}] cells=${(result.grid?.match(/1/g)||[]).length}/400`);
+    console.log(`[${rid}] SEGMENT-SUBJECT: OK subject=${result.subject} cells=${(result.grid?.match(/1/g)||[]).length}/${result.gridSize||30}^2 conf=${result.confidence}`);
     return res.json(result);
   } catch(e) {
     console.error(`[${rid}] SEGMENT-SUBJECT crash:`, e.message);
