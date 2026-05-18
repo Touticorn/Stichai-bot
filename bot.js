@@ -661,8 +661,8 @@ async function segmentSubjectWithGemini(imageBuffer, mime, tapX, tapY) {
     ? `The user tapped at coordinate [${tapX}, ${tapY}]. Identify the object or person AT or nearest to that point.`
     : `Find the MAIN SUBJECT — the most prominent person, baby, or animal in the foreground.`;
 
-  /* 30×30 full-image grid: one coordinate system, no bbox confusion */
-  const GRID = 30;
+  /* 40×40 full-image grid: higher resolution than 30×30 for better boundaries */
+  const GRID = 40;
 
   const prompt = `You are an image segmentation assistant for embroidery digitizing.
 ${subjectInstruction}
@@ -687,15 +687,27 @@ ${hasPoint ? `- The cell at that tap point must be '1'` : ''}
 
 If no clear subject: {"found": false}`;
 
-  const res = await geminiPost({
-    contents: [{ role:"user", parts:[
-      { text: prompt },
-      { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
-    ]}],
-    generationConfig: { temperature: 0.0, maxOutputTokens: 8192, responseMimeType: "application/json",
-      thinkingConfig: { thinkingBudget: 8000 } /* give full thinking — needed to fill 900-cell grid */ }
-  });
+  /* Try gemini-2.5-pro first for better spatial reasoning, fallback to flash */
+  async function trySegment(modelName) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
+    try {
+      const res = await axios.post(url, {
+        contents: [{ role:"user", parts:[
+          { text: prompt },
+          { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
+        ]}],
+        generationConfig: { temperature: 0.0, maxOutputTokens: 8192, responseMimeType: "application/json",
+          thinkingConfig: { thinkingBudget: 12000 } /* higher budget for 1600-cell grid */ }
+      }, { timeout: 60000 });
+      return res;
+    } catch(e) {
+      console.error(`Segment ${modelName} → ${e.response?.status}: ${e.response?.data?.error?.message||e.message}`);
+      return null;
+    }
+  }
 
+  let res = await trySegment("gemini-2.5-pro");
+  if (!res) res = await trySegment("gemini-2.5-flash");
   if (!res) return null;
 
   try {
@@ -713,25 +725,97 @@ If no clear subject: {"found": false}`;
     }
 
     /* Normalise: pad/trim each row to GRID cols, pad missing rows */
-    const normRows = parsed.rows.slice(0, GRID).map(r =>
+    let normRows = parsed.rows.slice(0, GRID).map(r =>
       String(r).replace(/[^01]/g, "").padEnd(GRID, "0").slice(0, GRID)
     );
     while (normRows.length < GRID) normRows.push("0".repeat(GRID));
+
+    /* ── Grid post-processing: remove isolated noise + fill holes ── */
+    function cleanGrid(rows, size) {
+      const out = rows.map(r => r.split(''));
+      for (let y = 1; y < size - 1; y++) {
+        for (let x = 1; x < size - 1; x++) {
+          let ones = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dy === 0 && dx === 0) continue;
+              if (out[y+dy][x+dx] === '1') ones++;
+            }
+          }
+          if (out[y][x] === '1' && ones < 2) out[y][x] = '0';
+          else if (out[y][x] === '0' && ones >= 7) out[y][x] = '1';
+        }
+      }
+      return out.map(r => r.join(''));
+    }
+    normRows = cleanGrid(normRows, GRID);
+
+    /* ── Force tap cell + 8-neighborhood to '1' ── */
+    if (hasPoint) {
+      const tapCol = Math.min(GRID - 1, Math.max(0, Math.floor((tapX / 1000) * GRID)));
+      const tapRow = Math.min(GRID - 1, Math.max(0, Math.floor((tapY / 1000) * GRID)));
+      const rowsArr = normRows.map(r => r.split(''));
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const rr = tapRow + dy, cc = tapCol + dx;
+          if (rr >= 0 && rr < GRID && cc >= 0 && cc < GRID) rowsArr[rr][cc] = '1';
+        }
+      }
+      normRows = rowsArr.map(r => r.join(''));
+    }
+
     const grid = normRows.join(""); // GRID² chars
+
+    /* ── Validate with bounding-box aspect ratio ── */
+    let minCol = GRID, maxCol = -1, minRow = GRID, maxRow = -1;
+    for (let y = 0; y < GRID; y++) {
+      for (let x = 0; x < GRID; x++) {
+        if (normRows[y][x] === '1') {
+          if (x < minCol) minCol = x; if (x > maxCol) maxCol = x;
+          if (y < minRow) minRow = y; if (y > maxRow) maxRow = y;
+        }
+      }
+    }
+    const bboxW = maxCol - minCol + 1;
+    const bboxH = maxRow - minRow + 1;
+    const aspect = bboxW / Math.max(bboxH, 1);
 
     const onesCount = (grid.match(/1/g) || []).length;
     const fillPct = (onesCount / (GRID * GRID) * 100).toFixed(1);
-    console.log(`[segment] subject="${parsed.subject}" conf=${parsed.confidence} fill=${fillPct}%`);
+    console.log(`[segment] subject="${parsed.subject}" conf=${parsed.confidence} fill=${fillPct}% bbox=${bboxW}×${bboxH} aspect=${aspect.toFixed(2)}`);
 
     if (onesCount < 4)  { console.warn("[segment] Too few cells"); return { found: false }; }
-    if (onesCount > GRID*GRID*0.7) { console.warn(`[segment] Fill ${fillPct}% too high`); return { found: false }; }
+    if (onesCount > GRID*GRID*0.65) { console.warn(`[segment] Fill ${fillPct}% too high`); return { found: false }; }
+    if (aspect > 5 || aspect < 0.2) { console.warn(`[segment] Rejected — suspicious bbox aspect ${aspect.toFixed(2)}`); return { found: false }; }
 
-    return { found: true, subject: parsed.subject || "unknown", grid, gridSize: GRID, confidence: parsed.confidence || "medium" };
+    /* ── Build alpha mask PNG from grid ── */
+    const maskSize = 200; /* upsample 40×40 → 200×200 for smooth mask */
+    const scale = maskSize / GRID;
+    const maskBuf = Buffer.alloc(maskSize * maskSize * 4);
+    for (let y = 0; y < maskSize; y++) {
+      for (let x = 0; x < maskSize; x++) {
+        const gy = Math.min(GRID - 1, Math.floor(y / scale));
+        const gx = Math.min(GRID - 1, Math.floor(x / scale));
+        const isSubject = normRows[gy][gx] === '1';
+        const idx = (y * maskSize + x) * 4;
+        maskBuf[idx] = 255;
+        maskBuf[idx + 1] = 0;
+        maskBuf[idx + 2] = 0;
+        maskBuf[idx + 3] = isSubject ? 255 : 0;
+      }
+    }
+    const maskPng = await sharp(maskBuf, { raw: { width: maskSize, height: maskSize, channels: 4 } })
+      .png({ compressionLevel: 6 }).toBuffer();
+
+    return { found: true, subject: parsed.subject || "unknown", grid, gridSize: GRID, confidence: parsed.confidence || "medium", maskPng: maskPng.toString('base64') };
   } catch(e) {
     console.error("segmentSubjectWithGemini parse error:", e.message);
     return null;
   }
 }
+
+
+
 
 
 /* ─── CARTOON IMAGE GENERATION ───────────────────────────
