@@ -15,6 +15,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,800;0,900;1,700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <title>Stichai — AI Embroidery Digitizer</title>
 <style>
+/* ========== ALL ORIGINAL STYLES – same as your first working version ========== */
 :root{
   --red:#e94560;--rd:#c93250;--glow:rgba(233,69,96,.35);
   --navy:#0e0e1a;--navy2:#1a1a2e;
@@ -322,28 +323,1289 @@ footer{background:var(--navy);padding:52px clamp(20px,5vw,80px) 36px}
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
-// FULL ORIGINAL JAVASCRIPT FROM YOUR FIRST INDEX.HTML (all functions, T object, pricing, etc.)
-// Since it's extremely long, I'm including the exact script from your first message.
-// Please replace this placeholder with the actual script from your original working file.
-// For the final answer, I will provide a complete script.
+// ========== FULL ORIGINAL JAVASCRIPT (from your first working index.html) ==========
+// This includes all translation objects, setLang, pricing, setMode, setSize, initMask,
+// analyze, generate, color merging, shape selection, download, etc.
 
-// IMPORTANT: The following is a placeholder. The real script is 5000+ lines.
-// I am now copying the exact script from your original index.html (the one with all functions).
-// It will be included in the final answer below.
-
-// === BEGIN ORIGINAL SCRIPT ===
 var T = {
-  en: { /* full translations from your original */ },
-  fr: { /* ... */ },
-  ar: { /* ... */ }
+  en: {
+    navFeatures:"Features", navPricing:"Pricing", navTool:"Try it", install:"Install App",
+    heroEyebrow:"AI Embroidery Digitizer",
+    heroH1a:"From photo to", heroH1b:"embroidery file", heroH1c:"in 60 seconds.",
+    heroSub:"Upload any photo. AI digitizes it into DST, PES or JEF — ready for Tajima, Brother, Janome. No software needed.",
+    heroCta:"Start for free", heroAlt:"See pricing",
+    statUsers:"Embroiderers", statFiles:"Files generated", statFormats:"Export formats",
+    featEm:"Everything you need.", featRest:"Nothing you don’t.",
+    feat1h:"60-second digitizing", feat1p:"Upload, analyze, download. No back-and-forth with a human digitizer.",
+    feat2h:"Tajima-verified files", feat2p:"Edge-walk underlay, pull compensation, tie-in/tie-off, jump optimization.",
+    feat3h:"Merge or remove colors", feat3p:"Tap any color to remove it — or merge it into the nearest thread color.",
+    feat4h:"DST · PES · JEF export", feat4p:"Tajima, Brother/Babylock and Janome — the right format for your machine.",
+    feat5h:"Mask tool", feat5p:"Paint over areas to exclude. Background removal in seconds.",
+    feat6h:"Works everywhere", feat6p:"Arabic, French, English. Mobile-first. Install as app on iOS or Android.",
+    howEyebrow:"How it works", howH:"Four steps.", howHb:"Zero learning curve.",
+    how1h:"Upload your photo", how1p:"JPG, PNG or WEBP — logos, cartoons and illustrations work best.",
+    how2h:"Remove background", how2p:"Optional. Paint red over anything you don’t want stitched.",
+    how3h:"Pick colors & shapes", how3p:"AI detects all thread colors. Merge, remove or keep each one.",
+    how4h:"Download & sew", how4p:"DST, PES or JEF — ready for your machine. No conversion needed.",
+    tmEyebrow:"Testimonials", tmH:"Loved by embroiderers", tmHb:"around the world.",
+    tm1q:"I translated my shop’s logo in 2 minutes. The DST file ran perfectly on my Tajima.", tm1n:"Fatima B.", tm1l:"Casablanca, Morocco",
+    tm2q:"I run a small embroidery business. Stichai saves me 3–4 hours every single week.", tm2n:"Marie C.", tm2l:"Lyon, France",
+    tm3q:"Perfect for hobby projects. Files load straight into my Brother PE800 with zero issues.", tm3n:"James T.", tm3l:"Manchester, UK",
+    pricingEyebrow:"Pricing", pricingH:"Simple pricing,", pricingHb:"serious results.",
+    pricingSub:"No credit card required to try. Subscribe when you’re ready.",
+    monthlyLbl:"Monthly", annualLbl:"Annual", saveLbl:"Save 33%",
+    trialFootnote:"All plans include DST · PES · JEF · 3 design sizes",
+    planSimple:"Simple", planPro:"Pro", planProMax:"Pro Max",
+    planPopular:"Most popular", planCurrent:"Current plan", planCtaGet:"Get",
+    appEyebrow:"The Tool", appH:"Start digitizing now.",
+    footerTag:"AI-powered embroidery digitizing for everyone.",
+    footerPrivacy:"Privacy Policy", footerTerms:"Terms", footerContact:"Contact",
+    step1:"Step 1: Upload photo", uploadLabel:"📷 Click or drag photo here", uploadHint:"JPG, PNG, WEBP — Max 10MB",
+    designSettings:"Design Settings", typeLabel:"Type",
+    modeLogo:"Logo / Graphic", modeLogoDesc:"Best for text, cartoons",
+    modePhoto:"Photo → Stylized", modePhotoDesc:"Converts to illustration",
+    modeCartoon:"Cartoon Magic", modeCartoonDesc:"Flat colors, no gradients",
+    photoWarn:"⚠️ Photos become graphic illustrations — not photorealistic.",
+    colorsExtract:"Colors to Extract", colorsHint:"More colors = more detail (eyes, eyebrows). Fewer = faster sew time.",
+    sizeLabel:"Size", sizeSmall:"Small", sizeLarge:"Large", sizeXLarge:"X-Large",
+    sizeWarn:"⚠️ X-Large designs take 1–3 hours to sew.",
+    step2:"Step 2: Remove areas (optional)", maskHint:"Paint RED over what you don't want stitched",
+    toolRemove:"🖌️ Remove", toolUndo:"❌ Undo", toolClear:"🗑️ Clear", analyze:"Analyze",
+    step3:"Step 3: Select colors & shapes", selectHint:"Tap a color to remove or merge it · tap 🔒 to protect a color from merging",
+    colorsLabel:"Colors", all:"All", none:"None", invert:"Invert", matchColors:"Match colors", shapesLabel:"Shapes",
+    colorCountLabel:"{on} active · {removed} removed · {merged} merged · {locked} locked",
+    shapeCountLabel:"{on}/{total} shapes selected",
+    lockTitle:"Protect this color from merging", unlockTitle:"Allow this color to merge",
+    paletteSrcGemini:"AI", paletteSrcBuckets:"BUCKETS",
+    machineSpecs:"Machine Specs", fabCotton:"Cotton",
+    denLow:"Low", denMedium:"Medium", denHigh:"High", generate:"Generate",
+    bastingLabel:"🧵 Add basting box (hoop alignment guide)",
+    removeColor:"Remove", mergeColor:"Merge", noOtherColor:"No other active color to merge into.",
+    step4:"Step 4: Preview & Download", download:"Download",
+    dstNote:"DST is the universal embroidery format. Convert to PES/JEF using your machine software if needed.",
+    errFileType:"Please upload an image (JPG, PNG, WEBP)", errFileSize:"File too large — max 10MB",
+    ready:"Ready:", analyzing:"Analyzing...", generating:"Generating embroidery file...",
+    done:"✅ Done! Download your file below.",
+    errHttp:"HTTP", errInvalid:"Invalid response", errUnknown:"Unknown error", errNetwork:"Network error",
+    errNoRegions:"No stitchable regions found",
+    errNoStitches:"Not enough stitches — select more shapes or check contrast",
+    errNoRegionsLeft:"No regions left after selection",
+    selColor:"Select at least one color", selShape:"Select at least one shape",
+    keepColor:"Keep at least one color selected",
+    shapeColorMismatch:"Shape #{n} is selected but its color is deselected.",
+    foundShapes:"Found {n} shape{s}! Design size: {mm}mm",
+    stitchCount:"{n} stitches", regionsCount:"{n} regions", colorsCount:"{n} colors",
+    designSize:"{mm}mm design", avgStitch:"avg stitch {n}mm",
+    sewTime:"⏱ Estimated sew time: {time} on {machine}",
+    ios1:"Tap %share% in Safari",
+    ios2:"Scroll down and tap \"Add to Home Screen\"", ios3:"Tap \"Add\" in the top right",
+    pwaTitle:"Add to Home Screen", pwaSub:"Launch Stichai like a native app.",
+    tapToDetect:"Tap the subject you want to embroider",
+    confirmAndAnalyze:"Use this → Analyse",
+    retryDetect:"Try again",
+    skipMask:"Skip → Analyse whole image",
+    manualTools:"Manual touch-up",
+    wandNotFound:"Nothing found — try tapping directly on the subject.",
+    wandTooBig:"Area too large — tap a more specific spot.",
+    wandUndo:"Undo", wandUndone:"Undone",
+    wandLoading:"Detecting…"
+  },
+  fr: {
+    navFeatures:"Fonctionnalités", navPricing:"Tarifs", navTool:"Essayer", install:"Installer",
+    heroEyebrow:"Digitaliseur de broderie IA",
+    heroH1a:"De la photo au", heroH1b:"fichier de broderie", heroH1c:"en 60 secondes.",
+    heroSub:"Importez n’importe quelle photo. L’IA la digitalise en DST, PES ou JEF — prêt pour Tajima, Brother, Janome.",
+    heroCta:"Commencer gratuitement", heroAlt:"Voir les tarifs",
+    statUsers:"Brodeurs", statFiles:"Fichiers générés", statFormats:"Formats d’export",
+    featEm:"Tout ce qu’il vous faut.", featRest:"Rien de superflu.",
+    feat1h:"Digitalisation en 60s", feat1p:"Importez, analysez, téléchargez. Sans attendre.",
+    feat2h:"Fichiers certifiés Tajima", feat2p:"Sous-couche, compensation de traction, ancres, optimisation des sauts.",
+    feat3h:"Fusionner ou supprimer", feat3p:"Touchez une couleur pour la supprimer ou la fusionner avec la plus proche.",
+    feat4h:"Export DST · PES · JEF", feat4p:"Tajima, Brother/Babylock et Janome — le bon format pour votre machine.",
+    feat5h:"Outil masque", feat5p:"Peignez les zones à exclure. Suppression de fond en quelques secondes.",
+    feat6h:"Fonctionne partout", feat6p:"Arabe, français, anglais. Mobile d’abord. Installable sur iOS ou Android.",
+    howEyebrow:"Fonctionnement", howH:"Quatre étapes.", howHb:"Zéro apprentissage.",
+    how1h:"Importez votre photo", how1p:"JPG, PNG ou WEBP — logos, dessins et illustrations.",
+    how2h:"Supprimez le fond", how2p:"Optionnel. Peignez en rouge ce que vous ne voulez pas.",
+    how3h:"Choisissez couleurs & formes", how3p:"L’IA détecte les couleurs. Fusionnez, supprimez ou gardez.",
+    how4h:"Téléchargez & brodez", how4p:"DST, PES ou JEF — prêt pour votre machine.",
+    tmEyebrow:"Témoignages", tmH:"Aimé par les brodeurs", tmHb:"du monde entier.",
+    tm1q:"J’ai digitalisé le logo de ma boutique en 2 minutes. Le fichier DST a tourné parfaitement.", tm1n:"Fatima B.", tm1l:"Casablanca, Maroc",
+    tm2q:"Je gère un petit atelier de broderie. Stichai me fait gagner 3–4 heures par semaine.", tm2n:"Marie C.", tm2l:"Lyon, France",
+    tm3q:"Parfait pour mes projets loisirs. Les fichiers se chargent dans mon Brother PE800 sans problème.", tm3n:"James T.", tm3l:"Manchester, Royaume-Uni",
+    pricingEyebrow:"Tarifs", pricingH:"Des tarifs simples,", pricingHb:"des résultats sérieux.",
+    pricingSub:"Sans carte bancaire pour essayer. Abonnez-vous quand vous êtes prêt.",
+    monthlyLbl:"Mensuel", annualLbl:"Annuel", saveLbl:"Économisez 33%",
+    trialFootnote:"Tous les plans incluent DST · PES · JEF · 3 tailles",
+    planSimple:"Simple", planPro:"Pro", planProMax:"Pro Max",
+    planPopular:"Le plus populaire", planCurrent:"Plan actuel", planCtaGet:"Choisir",
+    appEyebrow:"L’Outil", appH:"Commencez à digitaliser.",
+    footerTag:"Digitalisation de broderie par IA, pour tout le monde.",
+    footerPrivacy:"Confidentialité", footerTerms:"CGU", footerContact:"Contact",
+    step1:"Étape 1 : Importer une photo", uploadLabel:"📷 Cliquez ou glissez une photo ici", uploadHint:"JPG, PNG, WEBP — Max 10 Mo",
+    designSettings:"Paramètres du design", typeLabel:"Type",
+    modeLogo:"Logo / Graphique", modeLogoDesc:"Idéal pour texte, dessins",
+    modePhoto:"Photo → Stylisée", modePhotoDesc:"Convertit en illustration",
+    modeCartoon:"Cartoon Magic", modeCartoonDesc:"Couleurs plates, sans gradients",
+    photoWarn:"⚠️ Les photos deviennent des illustrations graphiques.",
+    colorsExtract:"Couleurs à extraire", colorsHint:"Plus de couleurs = plus de détails. Moins de couleurs = temps de couture plus rapide.",
+    sizeLabel:"Taille", sizeSmall:"Petit", sizeLarge:"Grand", sizeXLarge:"Très grand",
+    sizeWarn:"⚠️ Les très grands designs prennent 1–3h à broder.",
+    step2:"Étape 2 : Supprimer des zones (facultatif)", maskHint:"Peignez en ROUGE ce que vous ne voulez pas broder",
+    toolRemove:"🖌️ Supprimer", toolUndo:"❌ Annuler", toolClear:"🗑️ Effacer", analyze:"Analyser",
+    step3:"Étape 3 : Sélectionner couleurs & formes", selectHint:"Touchez une couleur pour la supprimer ou fusionner · 🔒 pour la protéger",
+    colorsLabel:"Couleurs", all:"Tout", none:"Aucun", invert:"Inverser", matchColors:"Selon couleurs", shapesLabel:"Formes",
+    colorCountLabel:"{on} actives · {removed} supprimées · {merged} fusionnées · {locked} verrouillées",
+    shapeCountLabel:"{on}/{total} formes sélectionnées",
+    lockTitle:"Protéger cette couleur de la fusion", unlockTitle:"Autoriser la fusion de cette couleur",
+    paletteSrcGemini:"IA", paletteSrcBuckets:"AUTO",
+    machineSpecs:"Spécifications machine", fabCotton:"Coton",
+    denLow:"Faible", denMedium:"Moyen", denHigh:"Élevé", generate:"Générer",
+    bastingLabel:"🧵 Ajouter un cadre de bâti",
+    removeColor:"Supprimer", mergeColor:"Fusionner", noOtherColor:"Aucune autre couleur active.",
+    step4:"Étape 4 : Aperçu & Téléchargement", download:"Télécharger",
+    dstNote:"DST est le format universel de broderie. Convertissez en PES/JEF avec le logiciel de votre machine si nécessaire.",
+    errFileType:"Veuillez importer une image (JPG, PNG, WEBP)", errFileSize:"Fichier trop volumineux — max 10 Mo",
+    ready:"Prêt :", analyzing:"Analyse en cours...", generating:"Génération du fichier...",
+    done:"✅ Terminé ! Téléchargez votre fichier.",
+    errHttp:"HTTP", errInvalid:"Réponse invalide", errUnknown:"Erreur inconnue", errNetwork:"Erreur réseau",
+    errNoRegions:"Aucune zone brodable trouvée",
+    errNoStitches:"Pas assez de points — sélectionnez plus de formes ou vérifiez le contraste",
+    errNoRegionsLeft:"Aucune zone restante après sélection",
+    selColor:"Sélectionnez au moins une couleur", selShape:"Sélectionnez au moins une forme",
+    keepColor:"Gardez au moins une couleur sélectionnée",
+    shapeColorMismatch:"La forme #{n} est sélectionnée mais sa couleur est désélectionnée.",
+    foundShapes:"{n} forme{s} trouvée{s} ! Taille : {mm} mm",
+    stitchCount:"{n} points", regionsCount:"{n} zones", colorsCount:"{n} couleurs",
+    designSize:"Design de {mm} mm", avgStitch:"point moyen {n} mm",
+    sewTime:"⏱ Temps estimé : {time} sur {machine}",
+    ios1:"Appuyez sur %share% dans Safari",
+    ios2:"Faites défiler et appuyez sur « Ajouter à l’écran d’accueil »",
+    ios3:"Appuyez sur « Ajouter » en haut à droite",
+    pwaTitle:"Ajouter à l’écran d’accueil", pwaSub:"Lancez Stichai comme une app native.",
+    tapToDetect:"Appuyez sur le sujet à broder",
+    confirmAndAnalyze:"Utiliser → Analyser",
+    retryDetect:"Réessayer",
+    skipMask:"Ignorer → Analyser l’image entière",
+    manualTools:"Retouche manuelle",
+    wandNotFound:"Rien trouvé — appuyez directement sur le sujet.",
+    wandTooBig:"Zone trop grande — appuyez plus précisément.",
+    wandUndo:"Annuler", wandUndone:"Annulé",
+    wandLoading:"Détection…"
+  },
+  ar: {
+    navFeatures:"المميزات", navPricing:"الأسعار", navTool:"جرّب", install:"تثبيت",
+    heroEyebrow:"برنامج تطريز بالذكاء الاصطناعي",
+    heroH1a:"من الصورة إلى", heroH1b:"ملف التطريز", heroH1c:"في 60 ثانية.",
+    heroSub:"ارفع أي صورة. يحولها الذكاء الاصطناعي إلى DST أو PES أو JEF جاهز لماكينتك.",
+    heroCta:"ابدأ مجاناً", heroAlt:"عرض الأسعار",
+    statUsers:"مطرّزون", statFiles:"ملفات منشأة", statFormats:"صيغ تصدير",
+    featEm:"كل ما تحتاجه.", featRest:"لا أكثر ولا أقل.",
+    feat1h:"رقمنة في 60 ثانية", feat1p:"ارفع وحلّل ونزّل. بدون انتظار.",
+    feat2h:"ملفات موثّقة Tajima", feat2p:"ترميز دقيق مختبر على ماكينات حقيقية.",
+    feat3h:"دمج أو حذف الألوان", feat3p:"اضغط على أي لون لحذفه أو دمجه مع أقرب لون.",
+    feat4h:"DST · PES · JEF", feat4p:"Tajima و Brother/Babylock و Janome — الصيغة المناسبة لماكينتك.",
+    feat5h:"أداة القناع", feat5p:"ارسم فوق المناطق لاستبعادها.",
+    feat6h:"يعمل في كل مكان", feat6p:"عربي وفرنسي وإنجليزي. للجوال أولاً. iOS و Android.",
+    howEyebrow:"كيف يعمل", howH:"أربع خطوات.", howHb:"بدون تعلّم مسبق.",
+    how1h:"ارفع صورتك", how1p:"JPG أو PNG أو WEBP — الشعارات والرسوم.",
+    how2h:"احذف الخلفية", how2p:"اختياري. ارسم بالأحمر فوق ما لا تريد تطريزه.",
+    how3h:"اختر الألوان والأشكال", how3p:"الذكاء الاصطناعي يكشف الألوان. ادمج أو احذف.",
+    how4h:"نزّل وابدأ التطريز", how4p:"DST أو PES أو JEF — جاهز لماكينتك.",
+    tmEyebrow:"شهادات", tmH:"يحبّه المطرّزون", tmHb:"في كل العالم.",
+    tm1q:"رقمت شعار متجري في أقل من دقيقتين. عمل ملف DST بشكل مثالي.", tm1n:"فاطمة ب.", tm1l:"الدار البيضاء، المغرب",
+    tm2q:"أدير ورشة تطريز صغيرة. ستيشاي يوفر عليّ 3–4 ساعات كل أسبوع.", tm2n:"ماري ك.", tm2l:"ليون، فرنسا",
+    tm3q:"مثالي لمشاريع الهواة. الملفات تُحمّل مباشرة في Brother PE800.", tm3n:"جيمس ت.", tm3l:"مانشستر، المملكة المتحدة",
+    pricingEyebrow:"الأسعار", pricingH:"أسعار بسيطة،", pricingHb:"نتائج احترافية.",
+    pricingSub:"بدون بطاقة بنكية للتجربة. اشترك عندما تكون مستعداً.",
+    monthlyLbl:"شهري", annualLbl:"سنوي", saveLbl:"وفّر 33%",
+    trialFootnote:"جميع الخطط تشمل DST · PES · JEF · 3 أحجام",
+    planSimple:"بسيط", planPro:"احترافي", planProMax:"احترافي ماكس",
+    planPopular:"الأكثر شعبية", planCurrent:"الخطة الحالية", planCtaGet:"اشترك",
+    appEyebrow:"الأداة", appH:"ابدأ الرقمنة الآن.",
+    footerTag:"رقمنة التطريز بالذكاء الاصطناعي للجميع.",
+    footerPrivacy:"الخصوصية", footerTerms:"الشروط", footerContact:"تواصل",
+    step1:"الخطوة 1: رفع صورة", uploadLabel:"📷 انقر أو اسحب صورة هنا", uploadHint:"JPG, PNG, WEBP — الحد الأقصى 10 ميغا",
+    designSettings:"إعدادات التصميم", typeLabel:"النوع",
+    modeLogo:"شعار / رسومي", modeLogoDesc:"الأفضل للنصوص والرسوم",
+    modePhoto:"صورة → فني", modePhotoDesc:"تحويل إلى رسم توضيحي",
+    modeCartoon:"سحر كرتوني", modeCartoonDesc:"ألوان متجانسة بدون تدرجات",
+    photoWarn:"⚠️ الصور تصبح رسوماً توضيحية.",
+    colorsExtract:"الألوان المطلوب استخراجها", colorsHint:"مزيد من الألوان = تفاصيل أكثر. أقل ألواناً = وقت تطريز أسرع.",
+    sizeLabel:"الحجم", sizeSmall:"صغير", sizeLarge:"كبير", sizeXLarge:"كبير جداً",
+    sizeWarn:"⚠️ التصاميم الكبيرة تستغرق 1–3 ساعات.",
+    step2:"الخطوة 2: إزالة مناطق (اختياري)", maskHint:"ارسم بالأحمر فوق ما لا تريد تطريزه",
+    toolRemove:"🖌️ إزالة", toolUndo:"❌ تراجع", toolClear:"🗑️ مسح", analyze:"تحليل",
+    step3:"الخطوة 3: اختيار الألوان والأشكال", selectHint:"اضغط على لون لحذفه أو دمجه · 🔒 للحماية",
+    colorsLabel:"الألوان", all:"الكل", none:"لا شيء", invert:"عكس", matchColors:"حسب الألوان", shapesLabel:"الأشكال",
+    colorCountLabel:"نشط {on} · محذوف {removed} · مدمج {merged} · مقفل {locked}",
+    shapeCountLabel:"{on}/{total} أشكال محددة",
+    lockTitle:"حماية هذا اللون من الدمج", unlockTitle:"السماح بدمج هذا اللون",
+    paletteSrcGemini:"ذكاء", paletteSrcBuckets:"تلقائي",
+    machineSpecs:"مواصفات الماكينة", fabCotton:"قطن",
+    denLow:"منخفض", denMedium:"متوسط", denHigh:"عالي", generate:"إنشاء",
+    bastingLabel:"🧵 إضافة إطار التعريض",
+    removeColor:"حذف", mergeColor:"دمج", noOtherColor:"لا يوجد لون آخر للدمج.",
+    step4:"الخطوة 4: معاينة وتنزيل", download:"تنزيل",
+    dstNote:"DST هو تنسيق التطريز العالمي. حوّل إلى PES/JEF باستخدام برنامج الماكينة.",
+    errFileType:"يرجى رفع ملف صورة", errFileSize:"الملف كبير جداً — الحد 10 ميغا",
+    ready:"جاهز:", analyzing:"جارٍ التحليل...",
+    generating:"جارٍ إنشاء ملف التطريز...",
+    done:"✅ تم! قم بتنزيل ملفك.",
+    errHttp:"HTTP", errInvalid:"استجابة غير صالحة", errUnknown:"خطأ غير معروف", errNetwork:"خطأ في الشبكة",
+    errNoRegions:"لم يُعثر على مناطق قابلة للتطريز",
+    errNoStitches:"نقاط غير كافية — حدد مزيداً من الأشكال أو تحقق من التباين",
+    errNoRegionsLeft:"لا توجد مناطق متبقية",
+    selColor:"اختر لوناً واحداً على الأقل", selShape:"اختر شكلاً واحداً على الأقل",
+    keepColor:"احتفظ بلون واحد على الأقل",
+    shapeColorMismatch:"الشكل #{n} محدد لكن لونه غير محدد.",
+    foundShapes:"تم العثور على {n} شكل! الحجم: {mm} مم",
+    stitchCount:"{n} غرزة", regionsCount:"{n} منطقة", colorsCount:"{n} ألوان",
+    designSize:"تصميم {mm} مم", avgStitch:"متوسط الغرزة {n} مم",
+    sewTime:"⏱ وقت التطريز المُقدّر: {time} على {machine}",
+    ios1:"اضغط على %share% في Safari",
+    ios2:"مرّر لأسفل واضغط «إضافة إلى الشاشة الرئيسية»",
+    ios3:"اضغط «إضافة» في أعلى اليسار",
+    pwaTitle:"إضافة إلى الشاشة الرئيسية", pwaSub:"افتح ستيشاي مثل تطبيق أصلي.",
+    tapToDetect:"اضغط على الكائن الذي تريد تطريزه",
+    confirmAndAnalyze:"استخدام هذا → تحليل",
+    retryDetect:"إعادة المحاولة",
+    skipMask:"تخطّي → تحليل الصورة كاملة",
+    manualTools:"لمسات يدوية",
+    wandNotFound:"لم يُعثر على شيء — اضغط مباشرة على الكائن.",
+    wandTooBig:"منطقة كبيرة — اضغط بدقة أكثر.",
+    wandUndo:"تراجع", wandUndone:"تم التراجع",
+    wandLoading:"جاري الكشف…"
+  }
 };
-var currentLang='en';
-function detectLanguage(){ /* ... */ }
-function setLang(lang){ /* ... */ }
-function t(key,vars){ /* ... */ }
-// ... all your original functions (setMode, setSize, initMask, gp, dm, setTool, setBrushSize, clearMask, showMaskState, onCanvasTap, callSegmentSubject, applyMaskPng, applyGeminiGrid, confirmSubjectAndAnalyze, redoSubjectDetection, skipMaskAndAnalyze, toggleManualTools, undoWand, analyze, doAnalyze, doGen, initColorState, syncShapesForColor, renderColorItem, tLock, tC, doRemoveColor, doMergeColor, hexToLabSimple, labDist, tS, allC, invC, allS, invS, selectShapesForActiveColors, updateBulkCounts, generate, dl, etc.)
 
-// === NEW ADDITIONS ===
+var currentLang='en';
+
+function detectLanguage(){
+  var arCC=['SA','AE','EG','QA','KW','BH','OM','JO','IQ','LY','SD','SY','YE','PS','LB','MR','SO','DJ','DZ','MA','TN'];
+  var frCC=['FR','BE','CH','LU','MC','CA','SN','CI','ML','BF','NE','TG','BJ','GN','CD','CG','GA','CM','CF','GQ','RW','BI','MG','MU','SC','HT'];
+  fetch('https://ipapi.co/json/')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      var cc=(d.country_code||'').toUpperCase();
+      if(arCC.indexOf(cc)>-1)setLang('ar');
+      else if(frCC.indexOf(cc)>-1)setLang('fr');
+      else setLang('en');
+    })
+    .catch(function(){
+      var n=navigator.language||'en';
+      if(n.indexOf('ar')===0)setLang('ar');
+      else if(n.indexOf('fr')===0)setLang('fr');
+      else setLang('en');
+    });
+}
+
+function setLang(lang){
+  currentLang=lang;
+  document.documentElement.lang=lang;
+  document.body.setAttribute('dir',lang==='ar'?'rtl':'ltr');
+  document.getElementById('btnEn').className=lang==='en'?'on':'';
+  document.getElementById('btnFr').className=lang==='fr'?'on':'';
+  document.getElementById('btnAr').className=lang==='ar'?'on':'';
+  document.querySelectorAll('[data-t]').forEach(function(el){
+    var k=el.getAttribute('data-t');
+    if(T[lang]&&T[lang][k])el.innerHTML=T[lang][k];
+  });
+  var ab=document.getElementById('aB');
+  if(ab)ab.innerHTML='🔍 <span data-t="analyze">'+t('analyze')+'</span>';
+  var gb=document.getElementById('gB');
+  if(gb&&!gb.disabled)gb.innerHTML='⚡ <span data-t="generate">'+t('generate')+'</span>';
+  renderPlans();
+}
+
+function t(key,vars){
+  var s=(T[currentLang]&&T[currentLang][key])||(T.en&&T.en[key])||key;
+  if(vars)for(var k in vars)s=s.split('{'+k+'}').join(vars[k]);
+  return s;
+}
+
+/* Pricing */
+var _annual=false;
+var PLANS=[
+  {plan:'simple',monthly:{price:'$5.99',period:'/mo'},annual:{price:'$47.99',period:'/yr',save:'Save $23.89'},feats:['7 downloads/week','DST · PES · JEF','All 3 sizes','Email support']},
+  {plan:'pro',monthly:{price:'$14.99',period:'/mo'},annual:{price:'$119.99',period:'/yr',save:'Save $59.89'},feats:['30 downloads/week','DST · PES · JEF','All 3 sizes','Priority support'],popular:true},
+  {plan:'promax',monthly:{price:'$29.99',period:'/mo'},annual:{price:'$239.99',period:'/yr',save:'Save $119.89'},feats:['Unlimited downloads','DST · PES · JEF','All 3 sizes','Priority support']},
+];
+function pName(p){return{simple:t('planSimple'),pro:t('planPro'),promax:t('planProMax')}[p]||p;}
+function renderPlans(){
+  var g=document.getElementById('mainPlansGrid');if(!g)return;
+  g.innerHTML=PLANS.map(function(p){
+    var tier=_annual?p.annual:p.monthly;
+    var dollar=tier.price.replace('$','').split('/')[0];
+    return '<div class="plan-card'+(p.popular?' popular':'')+'">'+
+      (p.popular?'<div class="pop-badge">'+t('planPopular')+'</div>':'')+
+      '<div class="plan-name">'+pName(p.plan)+'</div>'+
+      '<div class="plan-price"><sup>$</sup>'+dollar+'<sub>'+tier.period+'</sub></div>'+
+      (_annual&&tier.save?'<div class="plan-save">✓ '+tier.save+'</div>':'<div class="plan-period">billed '+(_annual?'annually':'monthly')+'</div>')+
+      '<ul class="plan-feats">'+p.feats.map(function(f){return'<li>'+f+'</li>';}).join('')+'</ul>'+
+      '<button class="plan-cta'+(p.popular?'':' outline')+'" onclick="goToPricing()">'+t('planCtaGet')+' '+pName(p.plan)+'</button>'+
+      '</div>';
+  }).join('');
+}
+function toggleBilling(){_annual=!_annual;document.getElementById('mainBillingTog').classList.toggle('on',_annual);renderPlans();}
+function goToPricing(){document.getElementById('app').scrollIntoView({behavior:'smooth'});}
+
+/* PWA */
+var _ua2=navigator.userAgent;
+var _isIOS2=/iPhone|iPad|iPod/.test(_ua2)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+var _isSafari2=/Safari/.test(_ua2)&&!/Chrome/.test(_ua2)&&!/CriOS/.test(_ua2)&&!/FxiOS/.test(_ua2);
+var _isCriOS=/CriOS/.test(_ua2),_isFxiOS=/FxiOS/.test(_ua2);
+var _isChrome2=(/Chrome/.test(_ua2)||/Chromium/.test(_ua2))&&!/Edg/.test(_ua2)&&!_isCriOS;
+var _isEdge2=/Edg\//.test(_ua2),_isSamsung=/SamsungBrowser/.test(_ua2);
+var _isFF=/Firefox/.test(_ua2)&&!_isFxiOS;
+var _isStandalone=window.navigator.standalone===true||window.matchMedia('(display-mode:standalone)').matches;
+var _pwaShown=false,deferredPrompt=null;
+window.addEventListener('beforeinstallprompt',function(e){
+  e.preventDefault();deferredPrompt=e;
+  var nb=document.getElementById('navInstallBtn');
+  if(nb&&!_isStandalone)nb.style.display='';
+});
+window.addEventListener('appinstalled',function(){
+  deferredPrompt=null;
+  var nb=document.getElementById('navInstallBtn');if(nb)nb.style.display='none';
+});
+function showPWASheet(){
+  if(_isStandalone||_pwaShown)return;
+  if(localStorage.getItem('pwa_never'))return;
+  if(_isIOS2&&!_isSafari2)return;
+  _pwaShown=true;
+  var sh=document.getElementById('pwaSheet');
+  document.getElementById('pwaTitle').textContent=t('pwaTitle');
+  document.getElementById('pwaSub').textContent=t('pwaSub');
+  document.getElementById('pwaBtn').textContent=t('install')||'Add to Home Screen';
+  if(_isIOS2&&_isSafari2){
+    document.getElementById('iosGuide').style.display='block';
+    var shareWord={en:'Share',fr:'Partager',ar:'المشاركة'}[currentLang]||'Share';
+    document.getElementById('iosStep1').innerHTML=t('ios1').replace('%share%','<span class="ios-share">⬆ '+shareWord+'</span>');
+    document.getElementById('iosStep2').textContent=t('ios2');
+    document.getElementById('iosStep3').textContent=t('ios3');
+    document.getElementById('iosArrow').classList.add('show');
+    document.getElementById('pwaBtn').textContent='Got it ✓';
+    document.getElementById('pwaBtn').onclick=function(){pwaDismiss(true);};
+  }else if(_isChrome2||_isEdge2||_isSamsung){
+    if(!deferredPrompt)return;
+    document.getElementById('iosGuide').style.display='none';
+    document.getElementById('iosArrow').classList.remove('show');
+  }else if(_isFF){
+    document.getElementById('pwaSub').textContent=t('pwaFirefoxNote');
+    document.getElementById('pwaBtn').style.display='none';
+  }else{
+    document.getElementById('pwaSub').textContent=t('pwaChromeNote');
+    document.getElementById('pwaBtn').style.display='none';
+  }
+  sh.classList.add('show');
+}
+function pwaInstall(){
+  if(_isIOS2&&_isSafari2){pwaDismiss(true);return;}
+  if(deferredPrompt){deferredPrompt.prompt();deferredPrompt.userChoice.then(function(r){deferredPrompt=null;pwaDismiss(r.outcome==='accepted');});}
+  else pwaDismiss(true);
+}
+function pwaDismiss(perm){
+  if(perm)localStorage.setItem('pwa_never','1');
+  document.getElementById('pwaSheet').classList.remove('show');
+}
+function triggerInstall(){
+  if(deferredPrompt){deferredPrompt.prompt();}
+  else if(_isIOS2){_pwaShown=false;showPWASheet();}
+}
+
+/* Service Worker */
+if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){});}
+
+/* Scroll reveal */
+(function(){
+  var els=document.querySelectorAll('.reveal');
+  if(!('IntersectionObserver' in window)){els.forEach(function(e){e.classList.add('in');});return;}
+  var io=new IntersectionObserver(function(entries){
+    entries.forEach(function(en){if(en.isIntersecting){en.target.classList.add('in');io.unobserve(en.target);}});
+  },{threshold:0.12});
+  els.forEach(function(e){io.observe(e);});
+})();
+
+/* Animated counters */
+(function(){
+  var targets=[{id:'statNum1',val:2000},{id:'statNum2',val:50000}];
+  var done=false;
+  function animateCounters(){
+    if(done)return;done=true;
+    targets.forEach(function(cfg){
+      var el=document.getElementById(cfg.id);if(!el)return;
+      var dur=1800,st=performance.now();
+      function step(now){
+        var prog=Math.min((now-st)/dur,1),ease=1-Math.pow(1-prog,3),v=Math.round(ease*cfg.val);
+        el.textContent=v>=1000?(Math.round(v/100)/10)+'k':String(v);
+        if(prog<1)requestAnimationFrame(step);
+        else el.textContent=cfg.val>=1000?(Math.round(cfg.val/100)/10)+'k':String(cfg.val);
+      }
+      requestAnimationFrame(step);
+    });
+  }
+  var statsEl=document.getElementById('stats');if(!statsEl)return;
+  var io=new IntersectionObserver(function(en){if(en[0].isIntersecting){animateCounters();io.disconnect();}},{threshold:0.3});
+  io.observe(statsEl);
+})();
+
+var CN={"#000000":"Black","#FFFFFF":"White","#FF0000":"Red","#00FF00":"Green","#0000FF":"Blue","#FFFF00":"Yellow","#FF00FF":"Magenta","#00FFFF":"Cyan","#FFA500":"Orange","#800080":"Purple","#FFC0CB":"Pink","#A52A2A":"Brown","#808080":"Gray","#C0C0C0":"Silver","#FFD700":"Gold","#F5F5DC":"Beige","#20B2AA":"Light Sea Green","#87CEEB":"Sky Blue","#DDA0DD":"Plum","#F0E68C":"Khaki","#D2B48C":"Tan","#FF69B4":"Hot Pink","#CD853F":"Peru","#4682B4":"Steel Blue","#9ACD32":"Yellow Green","#D2691E":"Chocolate","#DC143C":"Crimson","#4B0082":"Indigo","#FF1493":"Deep Pink","#00CED1":"Dark Turquoise","#FF4500":"Orange Red","#2E8B57":"Sea Green","#9370DB":"Medium Purple","#FF6347":"Tomato","#40E0D0":"Turquoise","#EE82EE":"Violet","#F4A460":"Sandy Brown","#8B4513":"Saddle Brown","#2F4F4F":"Dark Slate Gray","#E9967A":"Dark Salmon","#483D8B":"Dark Slate Blue","#B22222":"Fire Brick","#228B22":"Forest Green","#6B8E23":"Olive Drab","#BC8F8F":"Rosy Brown","#4169E1":"Royal Blue","#8B0000":"Dark Red","#556B2F":"Dark Olive Green","#8FBC8F":"Dark Sea Green","#B8860B":"Dark Goldenrod","#BDB76B":"Dark Khaki","#DEB887":"Burlywood","#5F9EA0":"Cadet Blue","#7FFF00":"Chartreuse","#FF7F50":"Coral","#6495ED":"Cornflower Blue","#00008B":"Dark Blue","#008B8B":"Dark Cyan","#A9A9A9":"Dark Gray","#006400":"Dark Green","#696969":"Dim Gray","#1E90FF":"Dodger Blue","#F0FFFF":"Azure","#F5F5F5":"White Smoke","#FFE4C4":"Bisque","#8A2BE2":"Blue Violet","#A0522D":"Sienna","#FAEBD7":"Antique White","#7FFFD4":"Aquamarine","#F0F8FF":"Alice Blue","#E0FFFF":"Light Cyan","#FAFAD2":"Light Goldenrod","#D3D3D3":"Light Gray","#FFB6C1":"Light Pink","#FFA07A":"Light Salmon","#87CEFA":"Light Sky Blue","#778899":"Light Slate Gray","#B0C4DE":"Light Steel Blue","#FFFFE0":"Light Yellow","#32CD32":"Lime Green","#66CDAA":"Medium Aquamarine","#0000CD":"Medium Blue","#BA55D3":"Medium Orchid","#3CB371":"Medium Sea Green","#7B68EE":"Medium Slate Blue","#00FA9A":"Medium Spring Green","#48D1CC":"Medium Turquoise","#C71585":"Medium Violet Red","#191970":"Midnight Blue","#F5FFFA":"Mint Cream","#FFE4E1":"Misty Rose","#FFE4B5":"Moccasin","#FFDEAD":"Navajo White","#000080":"Navy","#FFEFD5":"Papaya Whip","#FFDAB9":"Peach Puff","#B0E0E6":"Powder Blue","#800000":"Maroon","#E6E6FA":"Lavender","#F08080":"Light Coral","#ADD8E6":"Light Blue"};
+function gN(h){var u=h.toUpperCase();if(CN[u])return CN[u];var r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16),bn=null,bd=999;for(var k in CN){var r2=parseInt(k.slice(1,3),16),g2=parseInt(k.slice(3,5),16),b2=parseInt(k.slice(5,7),16);var d=Math.abs(r-r2)+Math.abs(g-g2)+Math.abs(b-b2);if(d<bd){bd=d;bn=CN[k]}}return bn||h}
+
+/* Auth helpers */
+var _cachedIdToken = null;
+async function getIdToken(force){
+  if(!force && _cachedIdToken) return _cachedIdToken;
+  if(window.firebaseAuth && window.firebaseAuth.currentUser){
+    try{ _cachedIdToken = await window.firebaseAuth.currentUser.getIdToken(force); return _cachedIdToken; }
+    catch(e){ _cachedIdToken = null; return null; }
+  }
+  _cachedIdToken = null;
+  return null;
+}
+function getAuthHeaders(){
+  var h = {};
+  if(_cachedIdToken) h['Authorization'] = 'Bearer ' + _cachedIdToken;
+  return h;
+}
+
+/* App variables */
+var cf=null,cdu=null,dd=null,ci=null,jid=null;
+var mC,mX,c1,c2,c3,dr=false,tl='brush',sz=35,hm=false;
+var designMode='logo',designSize='800',colorCount=8;
+
+/* Upload handling */
+document.getElementById('fi').addEventListener('change', function(){
+  if(this.files && this.files[0]) handleFile(this.files[0]);
+});
+var dz = document.getElementById('dz');
+dz.addEventListener('dragover', function(e){ e.preventDefault(); e.stopPropagation(); dz.classList.add('dragover'); });
+dz.addEventListener('dragleave', function(e){ e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover'); });
+dz.addEventListener('drop', function(e){
+  e.preventDefault(); e.stopPropagation(); dz.classList.remove('dragover');
+  var files = e.dataTransfer && e.dataTransfer.files;
+  if(files && files[0]) handleFile(files[0]);
+});
+
+function handleFile(f){
+  if(!f.type.match(/^image\//)){
+    document.getElementById('st').innerHTML='<div class="error">'+t('errFileType')+'</div>';
+    return;
+  }
+  if(f.size > 10*1024*1024){
+    document.getElementById('st').innerHTML='<div class="error">'+t('errFileSize')+'</div>';
+    return;
+  }
+  cf=f;
+  stopGlowAnimation();
+  if(c3) c3.getContext('2d').clearRect(0,0,c3.width,c3.height);
+  hm=false;
+  window._confirmedPolygon=null;
+  if(document.getElementById('maskIdleOverlay')) showMaskState('idle');
+  document.getElementById('st').innerHTML='<p class="ok">'+t('ready')+' <strong>'+f.name+'</strong> ('+(f.size/1024).toFixed(0)+'KB)</p>';
+  var r=new FileReader();
+  r.onload=function(e){
+    cdu=e.target.result;
+    document.getElementById('oi').src=cdu;
+    document.getElementById('pw').style.display='block';
+    document.getElementById('modeCard').style.display='block';
+    initMask(cdu);
+  };
+  r.readAsDataURL(f);
+}
+
+function setMode(m){
+  designMode=m;
+  document.getElementById('btnLogo').classList.toggle('on',m==='logo');
+  document.getElementById('btnPhoto').classList.toggle('on',m==='photo');
+  document.getElementById('btnCartoon').classList.toggle('on',m==='cartoon');
+  document.getElementById('photoWarning').style.display=(m==='photo'||m==='cartoon')?'block':'none';
+  var s=document.getElementById('cs');
+  if(m==='logo'){s.value=12;colorCount=12;}
+  else if(m==='photo'){s.value=8;colorCount=8;}
+  else if(m==='cartoon'){s.value=10;colorCount=10;}
+  document.getElementById('csl').textContent=s.value;
+}
+
+document.getElementById('cs').addEventListener('input',function(){colorCount=parseInt(this.value);});
+
+function setSize(s,btn){
+  designSize=s;
+  var btns=btn.parentNode.querySelectorAll('button');
+  for(var i=0;i<btns.length;i++)btns[i].className='size-btn';
+  btn.className='size-btn on';
+  document.getElementById('sizeWarning').style.display=s==='2400'?'block':'none';
+}
+
+function initMask(u){
+  var i=new Image();
+  i.onload=function(){
+    c1=document.getElementById('c1');
+    c2=document.getElementById('c2');
+    c3=document.getElementById('c3');
+    mC=c1.getContext('2d');
+    mX=c2.getContext('2d');
+    c1.width=800; c1.height=800;
+    c2.width=800; c2.height=800;
+    c3.width=800; c3.height=800;
+    mC.fillStyle='#FFFFFF';
+    mC.fillRect(0,0,800,800);
+    var scale=Math.min(800/i.width,800/i.height);
+    var dw=i.width*scale,dh=i.height*scale;
+    var dx=(800-dw)/2,dy=(800-dh)/2;
+    mC.drawImage(i,dx,dy,dw,dh);
+    window._imgOff={x:dx,y:dy,w:dw,h:dh};
+    mX.clearRect(0,0,800,800);
+    document.getElementById('mw').className='mask-wrap on';
+    document.getElementById('mc').style.display='block';
+    var idleEl=document.getElementById('maskIdleOverlay');
+    idleEl.addEventListener('click',function(e){ onCanvasTap(e); });
+    idleEl.addEventListener('touchend',function(e){
+      e.preventDefault();
+      if(e.changedTouches&&e.changedTouches[0]) onCanvasTap(e.changedTouches[0]);
+    },{passive:false});
+    showMaskState('idle');
+    c1.onmousedown=function(e){e.preventDefault();dr=true;var p=gp(e);lx=p.x;ly=p.y;dm(e)};
+    c1.onmousemove=function(e){if(!dr)return;e.preventDefault();dm(e)};
+    c1.onmouseup=function(){dr=false;};
+    c1.onmouseleave=function(){dr=false;};
+    c1.addEventListener('touchstart',function(e){e.preventDefault();dr=true;var p=gp(e.touches[0]);lx=p.x;ly=p.y;dm(e.touches[0])},{passive:false});
+    c1.addEventListener('touchmove',function(e){if(!dr)return;e.preventDefault();dm(e.touches[0])},{passive:false});
+    c1.addEventListener('touchend',function(){dr=false;},{passive:false});
+    c1.addEventListener('touchcancel',function(){dr=false;},{passive:false});
+    c1.addEventListener('contextmenu',function(e){e.preventDefault();});
+  };
+  i.src=u;
+}
+var lx=0,ly=0;
+function gp(e){
+  var r=c1.getBoundingClientRect();
+  return{x:(e.clientX-r.left)*(800/r.width),y:(e.clientY-r.top)*(800/r.height)};
+}
+function dm(e){
+  var p=gp(e);
+  mX.lineCap='round';
+  mX.lineJoin='round';
+  mX.lineWidth=sz;
+  if(tl=='brush'){
+    mX.strokeStyle='rgba(255,60,60,0.9)';
+    mX.globalCompositeOperation='source-over';
+    hm=true;
+  }else{
+    mX.globalCompositeOperation='destination-out';
+  }
+  mX.beginPath();
+  mX.moveTo(lx,ly);
+  mX.lineTo(p.x,p.y);
+  mX.stroke();
+  lx=p.x;ly=p.y;
+}
+function setTool(t,btn){tl=t;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<btns.length;i++)btns[i].className='';btn.className='on'}
+function setBrushSize(s,btn){sz=s;var btns=btn.parentNode.querySelectorAll('button');for(var i=0;i<btns.length;i++)btns[i].className='';btn.className='on'}
+function clearMask(){if(!mX)return;mX.clearRect(0,0,800,800);hm=false}
+
+function showMaskState(state, msg){
+  var idle =document.getElementById('maskIdleOverlay');
+  var det  =document.getElementById('maskDetectOverlay');
+  var conf =document.getElementById('maskConfirmBar');
+  var st   =document.getElementById('st');
+  idle.style.display  = state==='idle'      ? 'flex'  : 'none';
+  det.style.display   = state==='detecting' ? 'flex'  : 'none';
+  conf.style.display  = state==='confirmed' ? 'block' : 'none';
+  if(state==='done'){ idle.style.display='none'; det.style.display='none'; conf.style.display='none'; }
+  if(st) st.innerHTML = state==='error'
+    ? '<div class="error">⚠️ '+(msg||t('wandNotFound'))+'</div>' : '';
+  if(state!=='confirmed' && state!=='done') stopGlowAnimation();
+}
+
+var _glowMaskCanvas=null,_glowRingCanvas=null;
+function computeGlowRing(mask){
+  var w=mask.width,h=mask.height;
+  var ring=document.createElement('canvas');
+  ring.width=w;ring.height=h;
+  var rc=ring.getContext('2d');
+  rc.filter='blur(9px)';rc.drawImage(mask,0,0);rc.filter='none';
+  var rd=rc.getImageData(0,0,w,h);
+  for(var i=0;i<rd.data.length;i+=4){
+    var a=rd.data[i+3];
+    rd.data[i]=255;rd.data[i+1]=255;rd.data[i+2]=255;
+    rd.data[i+3]=a>8?Math.min(255,(a*2.5)|0):0;
+  }
+  rc.putImageData(rd,0,0);
+  rc.globalCompositeOperation='destination-out';
+  rc.drawImage(mask,0,0);
+  rc.globalCompositeOperation='source-over';
+  return ring;
+}
+function startGlowAnimationFromMask(mask){
+  _glowMaskCanvas=mask;
+  _glowRingCanvas=computeGlowRing(mask);
+  window._glowPoly=null;
+  window._glowPhase=0;
+  if(window._glowAnimId)cancelAnimationFrame(window._glowAnimId);
+  drawGlowFrame();
+}
+function startGlowAnimation(poly){
+  window._glowPoly=poly;
+  _glowMaskCanvas=null;_glowRingCanvas=null;
+  window._glowPhase=0;
+  if(window._glowAnimId)cancelAnimationFrame(window._glowAnimId);
+  drawGlowFrame();
+}
+function stopGlowAnimation(){
+  if(window._glowAnimId)cancelAnimationFrame(window._glowAnimId);
+  window._glowAnimId=null;window._glowPoly=null;
+  _glowMaskCanvas=null;_glowRingCanvas=null;
+  if(c3)c3.getContext('2d').clearRect(0,0,c3.width,c3.height);
+}
+function drawGlowFrame(){
+  if(!c3)return;
+  if(!_glowMaskCanvas&&!window._glowPoly)return;
+  var ctx=c3.getContext('2d');
+  var w=c3.width,h=c3.height;
+  ctx.clearRect(0,0,w,h);
+  window._glowPhase=(window._glowPhase||0)+0.045;
+  var pulse=(Math.sin(window._glowPhase)+1)/2;
+  ctx.fillStyle='rgba(0,0,0,0.55)';
+  ctx.fillRect(0,0,w,h);
+  if(_glowMaskCanvas){
+    ctx.save();ctx.globalCompositeOperation='destination-out';
+    ctx.drawImage(_glowMaskCanvas,0,0);ctx.restore();
+    if(_glowRingCanvas){
+      ctx.save();ctx.globalAlpha=0.55+0.38*pulse;
+      ctx.drawImage(_glowRingCanvas,0,0);ctx.restore();
+    }
+  }else{
+    var off=window._imgOff||{x:0,y:0,w:w,h:h};
+    var pts=window._glowPoly;
+    ctx.save();ctx.globalCompositeOperation='destination-out';
+    ctx.beginPath();
+    for(var i=0;i<pts.length;i++){var px=off.x+pts[i][0]/1000*off.w,py=off.y+pts[i][1]/1000*off.h;if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}
+    ctx.closePath();ctx.fill();ctx.restore();
+    var layers=[{w:18,a:0.06+0.04*pulse},{w:9,a:0.18+0.08*pulse},{w:4,a:0.55+0.2*pulse},{w:2,a:0.85+0.12*pulse}];
+    for(var li=0;li<layers.length;li++){
+      ctx.save();ctx.strokeStyle='rgba(255,255,255,'+layers[li].a+')';ctx.lineWidth=layers[li].w;ctx.lineJoin='round';
+      ctx.beginPath();for(var j=0;j<pts.length;j++){var qx=off.x+pts[j][0]/1000*off.w,qy=off.y+pts[j][1]/1000*off.h;if(j===0)ctx.moveTo(qx,qy);else ctx.lineTo(qx,qy);}ctx.closePath();
+      ctx.stroke();ctx.restore();
+    }
+  }
+  window._glowAnimId=requestAnimationFrame(drawGlowFrame);
+}
+
+function onCanvasTap(e){
+  if(!c1||!cf)return;
+  var rect=c1.getBoundingClientRect();
+  var sx=c1.width/rect.width;
+  var sy=c1.height/rect.height;
+  var cx=(e.clientX-rect.left)*sx;
+  var cy=(e.clientY-rect.top)*sy;
+  var off=window._imgOff||{x:0,y:0,w:c1.width,h:c1.height};
+  var tapX=Math.round(Math.max(0,Math.min(1000,(cx-off.x)/off.w*1000)));
+  var tapY=Math.round(Math.max(0,Math.min(1000,(cy-off.y)/off.h*1000)));
+  showMaskState('detecting');
+  var _detectStart=Date.now();
+  var _detectTick=setInterval(function(){
+    var lbl=document.querySelector('.detect-label');
+    if(lbl){var s=Math.round((Date.now()-_detectStart)/1000);lbl.textContent=t('wandLoading')+' ('+s+'s)';}
+  },1000);
+  window._detectTick=_detectTick;
+  callSegmentSubject(tapX,tapY);
+}
+
+async function callSegmentSubject(tapX,tapY){
+  await getIdToken();
+  var fd=new FormData();
+  fd.append('image',cf);
+  if(tapX!==undefined){fd.append('tapX',tapX);fd.append('tapY',tapY);}
+  fetch('/segment-subject',{method:'POST',body:fd,headers:getAuthHeaders()})
+    .then(function(r){return r.json();})
+    .then(function(data){
+      if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
+      if(data.found&&data.maskPng){
+        applyMaskPng(data.maskPng, data.subject);
+      }else if(data.found&&data.grid){
+        applyGeminiGrid(data.grid, data.gridSize||30);
+        var lbl=document.getElementById('confirmedSubjectLabel');
+        var subj=data.subject||'Subject';
+        if(lbl)lbl.textContent=subj.charAt(0).toUpperCase()+subj.slice(1)+' ✓';
+        showMaskState('confirmed');
+        if(navigator.vibrate)navigator.vibrate([30,30,60]);
+        var bar=document.getElementById('maskConfirmBar');
+        if(bar) setTimeout(function(){bar.scrollIntoView({behavior:'smooth',block:'nearest'});},120);
+      }else if(data.found&&Array.isArray(data.polygon)&&data.polygon.length>=6){
+        applyGeminiPolygon(data.polygon);
+        startGlowAnimation(data.polygon);
+        var lbl=document.getElementById('confirmedSubjectLabel');
+        var subj=data.subject||'Subject';
+        if(lbl)lbl.textContent=subj.charAt(0).toUpperCase()+subj.slice(1)+' ✓';
+        showMaskState('confirmed');
+        if(navigator.vibrate)navigator.vibrate([30,30,60]);
+      }else{
+        showMaskState('error',t('wandNotFound'));
+        setTimeout(function(){showMaskState('idle');},2800);
+      }
+    })
+    .catch(function(){
+      if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
+      showMaskState('error',t('wandNotFound'));
+      setTimeout(function(){showMaskState('idle');},2800);
+    });
+}
+
+function confirmSubjectAndAnalyze(){
+  stopGlowAnimation();
+  showMaskState('done');
+  document.getElementById('st').innerHTML='';
+  analyze();
+}
+function redoSubjectDetection(){
+  stopGlowAnimation();
+  clearMask();
+  window._confirmedPolygon=null;
+  showMaskState('idle');
+}
+function skipMaskAndAnalyze(){
+  stopGlowAnimation();
+  clearMask();
+  analyze();
+}
+function toggleManualTools(){
+  var panel=document.getElementById('manualToolsPanel');
+  var arrow=document.getElementById('manualArrow');
+  var open=panel.classList.toggle('open');
+  if(arrow)arrow.style.transform=open?'rotate(180deg)':'';
+}
+var prevMaskDataURL=null;
+function undoWand(){
+  if(!prevMaskDataURL||!mX)return;
+  var img=new Image();
+  img.onload=function(){
+    mX.clearRect(0,0,mX.canvas.width,mX.canvas.height);
+    mX.drawImage(img,0,0);
+    document.getElementById('st').innerHTML='<p>↩ '+t('wandUndone')+'</p>';
+    prevMaskDataURL=null;
+    hm=false;
+  };
+  img.src=prevMaskDataURL;
+}
+function applyGeminiGrid(grid, gridSize){
+  if(!c1||!mX||!grid)return;
+  var w=c1.width, h=c1.height;
+  var off=window._imgOff||{x:0,y:0,w:w,h:h};
+  var GRID=gridSize||30;
+  var cellW=off.w/GRID, cellH=off.h/GRID;
+  var raw=document.createElement('canvas');
+  raw.width=w; raw.height=h;
+  var rctx=raw.getContext('2d');
+  rctx.fillStyle='black';
+  for(var i=0;i<GRID*GRID&&i<grid.length;i++){
+    if(grid[i]==='1'){
+      var col=i%GRID, row=Math.floor(i/GRID);
+      rctx.fillRect(Math.floor(off.x+col*cellW)-1, Math.floor(off.y+row*cellH)-1, Math.ceil(cellW)+2, Math.ceil(cellH)+2);
+    }
+  }
+  var smooth=document.createElement('canvas');
+  smooth.width=w; smooth.height=h;
+  var sc=smooth.getContext('2d');
+  sc.filter='blur(12px)';
+  sc.drawImage(raw,0,0);
+  sc.filter='none';
+  var bd=sc.getImageData(0,0,w,h);
+  for(var i=3;i<bd.data.length;i+=4) bd.data[i]=bd.data[i]>40?255:0;
+  sc.putImageData(bd,0,0);
+  prevMaskDataURL=mX.canvas.toDataURL();
+  applyPersonCanvas(smooth);
+  startGlowAnimationFromMask(smooth);
+}
+function applyMaskPng(base64Png, subject){
+  var img=new Image();
+  img.onload=function(){
+    var w=c1.width,h=c1.height;
+    var off=window._imgOff||{x:0,y:0,w:w,h:h};
+    var temp=document.createElement('canvas');
+    temp.width=w;temp.height=h;
+    var tctx=temp.getContext('2d');
+    tctx.drawImage(img,off.x,off.y,off.w,off.h);
+    var id=tctx.getImageData(0,0,w,h),d=id.data;
+    for(var i=0;i<d.length;i+=4){
+      var a=d[i+3];
+      d[i]=0;d[i+1]=0;d[i+2]=0;
+      d[i+3]=a>128?255:0;
+    }
+    tctx.putImageData(id,0,0);
+    prevMaskDataURL=mX.canvas.toDataURL();
+    applyPersonCanvas(temp);
+    startGlowAnimationFromMask(temp);
+    var lbl=document.getElementById('confirmedSubjectLabel');
+    var subj=(subject||'Subject');
+    if(lbl)lbl.textContent=subj.charAt(0).toUpperCase()+subj.slice(1)+' ✓';
+    showMaskState('confirmed');
+    if(navigator.vibrate)navigator.vibrate([30,30,60]);
+    var bar=document.getElementById('maskConfirmBar');
+    if(bar)setTimeout(function(){bar.scrollIntoView({behavior:'smooth',block:'nearest'});},120);
+  };
+  img.src='data:image/png;base64,'+base64Png;
+}
+function applyGeminiPolygon(polygon){
+  if(!c1||!mX||!polygon||polygon.length<3)return;
+  var w=c1.width, h=c1.height;
+  var off=window._imgOff||{x:0,y:0,w:w,h:h};
+  var temp=document.createElement('canvas');
+  temp.width=w; temp.height=h;
+  var tc=temp.getContext('2d');
+  tc.beginPath();
+  for(var i=0;i<polygon.length;i++){
+    var px=off.x+polygon[i][0]/1000*off.w;
+    var py=off.y+polygon[i][1]/1000*off.h;
+    if(i===0)tc.moveTo(px,py);else tc.lineTo(px,py);
+  }
+  tc.closePath();
+  tc.fillStyle='black';
+  tc.fill();
+  var smooth=document.createElement('canvas');
+  smooth.width=w;smooth.height=h;
+  var sc=smooth.getContext('2d');
+  sc.filter='blur(2px)';sc.drawImage(temp,0,0);sc.filter='none';
+  var bd=sc.getImageData(0,0,w,h);
+  for(var i=3;i<bd.data.length;i+=4)bd.data[i]=bd.data[i]>20?255:0;
+  sc.putImageData(bd,0,0);
+  prevMaskDataURL=mX.canvas.toDataURL();
+  applyPersonCanvas(smooth);
+}
+function applyPersonCanvas(personCanvas){
+  var w=mX.canvas.width,h=mX.canvas.height;
+  mX.clearRect(0,0,w,h);
+  mX.fillStyle='rgba(255,60,60,0.9)';
+  mX.fillRect(0,0,w,h);
+  mX.globalCompositeOperation='destination-out';
+  mX.drawImage(personCanvas,0,0);
+  mX.globalCompositeOperation='source-over';
+  hm=true;
+}
+
+async function analyze(){
+  if(!cf)return;
+  var btn=document.getElementById('aB');
+  btn.disabled=true;
+  document.getElementById('st').innerHTML='<p>'+t('analyzing')+'</p>';
+  var fd=new FormData();
+  fd.append('image',cf);
+  fd.append('mode',designMode);
+  fd.append('canvasSize',designSize);
+  fd.append('colorCount',colorCount);
+  if(hm){
+    c2.toBlob(function(b){
+      if(b)fd.append('mask',b,'mask.png');
+      doAnalyze(fd);
+    },'image/png');
+  }else{
+    doAnalyze(fd);
+  }
+}
+
+async function doAnalyze(fd){
+  await getIdToken();
+  var xhr=new XMLHttpRequest();
+  xhr.open('POST','/detect-shapes',true);
+  var h=getAuthHeaders();
+  for(var k in h) xhr.setRequestHeader(k,h[k]);
+  xhr.onload=function(){
+    document.getElementById('aB').disabled=false;
+    if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">'+t('errHttp')+' '+xhr.status+'</div>';return}
+    var d;
+    try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">'+t('errInvalid')+'</div>';return}
+    if(!d.success){document.getElementById('st').innerHTML='<div class="error">'+(d.error||t('errUnknown'))+'</div>';return}
+    if(!Array.isArray(d.colors)||d.colors.length===0){document.getElementById('st').innerHTML='<div class="error">'+t('errNoRegions')+'</div>';return}
+    if(!Array.isArray(d.shapes)||d.shapes.length===0){document.getElementById('st').innerHTML='<div class="error">'+t('errNoStitches')+'</div>';return}
+    dd=d;ci=d.detectionId;
+    initColorState();
+    var psb = document.getElementById('paletteSourceBadge');
+    if (psb) {
+      if (d.paletteSource === 'gemini') {
+        psb.innerHTML = ' <span class="palette-source gemini">' + t('paletteSrcGemini') + '</span>';
+      } else if (d.paletteSource === 'buckets') {
+        psb.innerHTML = ' <span class="palette-source buckets">' + t('paletteSrcBuckets') + '</span>';
+      } else {
+        psb.innerHTML = '';
+      }
+    }
+    var cg=document.getElementById('cg');
+    cg.innerHTML='';
+    for(var i=0;i<d.colors.length;i++){
+      var c=d.colors[i];
+      cg.innerHTML+=
+        '<div class="c-item on" id="ci-'+i+'" onclick="tC('+i+')">'+
+          '<div class="c-item-top">'+
+            '<div class="c-box" style="background:'+c+'"></div>'+
+            '<div style="flex:1;min-width:0">'+
+              '<div class="c-name">'+gN(c)+'</div>'+
+              '<div class="c-hex">'+c+'</div>'+
+            '</div>'+
+            '<div class="c-merge-dot" id="cmt-'+i+'"></div>'+
+            '<button class="c-lock-btn" id="cl-'+i+'" title="'+t('lockTitle')+'" '+
+              'onclick="event.stopPropagation();tLock('+i+')">🔓</button>'+
+          '</div>'+
+          '<div class="c-actions" style="display:none">'+
+            '<button class="c-act-btn c-act-remove" onclick="event.stopPropagation();doRemoveColor('+i+')">✕ '+t('removeColor')+'</button>'+
+            '<button class="c-act-btn c-act-merge" onclick="event.stopPropagation();doMergeColor('+i+')">⇒ '+t('mergeColor')+'</button>'+
+          '</div>'+
+        '</div>';
+    }
+    document.getElementById('sn').textContent=d.shapes.length;
+    var sg=document.getElementById('sg');
+    sg.innerHTML='';
+    for(var i=0;i<d.shapes.length;i++){
+      try{
+        var s=d.shapes[i];
+        var w=Math.round(s.bounds&&s.bounds.w||0),h=Math.round(s.bounds&&s.bounds.h||0);
+        var scolor=s.color||'#000000', stype=s.type||'fill';
+        sg.innerHTML+='<div class="s-item" id="si-'+i+'" data-c="'+scolor+'">'+
+          '<input type="checkbox" id="cb-'+i+'" checked onchange="tS('+i+')">'+
+          '<div class="s-box" style="background:'+scolor+'"></div>'+
+          '<div class="s-info"><strong>#'+(i+1)+'</strong> '+gN(scolor)+' — '+w+'×'+h+'px</div>'+
+          '<span class="s-tag tag-'+(stype[0]||'f')+'">'+stype+'</span></div>';
+      }catch(e){ console.error('Shape render err',e); }
+    }
+    updateBulkCounts();
+    document.getElementById('sc').style.display='block';
+    document.getElementById('sc').scrollIntoView({behavior:'smooth'});
+    var s = d.shapes.length !== 1 ? 's' : '';
+    document.getElementById('st').innerHTML='<p class="ok">'+t('foundShapes',{n:d.shapes.length,s:s,mm:d.designMm})+'</p>';
+  };
+  xhr.onerror=function(){document.getElementById('aB').disabled=false;document.getElementById('st').innerHTML='<div class="error">'+t('errNetwork')+'</div>'};
+  xhr.send(fd);
+}
+
+function initColorState(){
+  if(!dd)return;
+  colorState=dd.colors.map(function(){return'on';});
+  colorMerges={};
+  colorLocked=dd.colors.map(function(){return false;});
+}
+var colorState=[],colorMerges={},colorLocked=[];
+function syncShapesForColor(hex,enabled){
+  var rows=document.querySelectorAll('.s-item');
+  for(var j=0;j<rows.length;j++){
+    if(rows[j].dataset.c===hex){
+      var cb=rows[j].querySelector('input[type=checkbox]');
+      cb.checked=enabled;rows[j].classList.toggle('off',!enabled);cb.disabled=!enabled;
+    }
+  }
+}
+function renderColorItem(i){
+  var el=document.getElementById('ci-'+i);
+  if(!el)return;
+  var st=colorState[i]||'on';
+  var locked=!!colorLocked[i];
+  el.className='c-item';
+  if(st==='on')el.classList.add('on');
+  if(st==='pending')el.classList.add('on','pending');
+  if(st.indexOf('merged:')===0)el.classList.add('merged');
+  if(locked)el.classList.add('locked');
+  syncShapesForColor(dd.colors[i], st==='on'||st==='pending');
+  var dot=el.querySelector('.c-merge-dot');
+  if(dot){
+    if(st.indexOf('merged:')===0){
+      var tgt=st.replace('merged:','');
+      dot.style.background=tgt;dot.title='→ '+tgt;dot.style.display='block';
+    }else{dot.style.display='none';}
+  }
+  var lockBtn=document.getElementById('cl-'+i);
+  if(lockBtn){
+    lockBtn.textContent = locked ? '🔒' : '🔓';
+    lockBtn.title = locked ? t('unlockTitle') : t('lockTitle');
+    lockBtn.classList.toggle('on', locked);
+  }
+  var acts=el.querySelector('.c-actions');
+  if(acts){
+    acts.style.display=(st==='pending')?'flex':'none';
+    var mb=acts.querySelector('.c-act-merge');
+    if(mb)mb.disabled=locked;
+  }
+  updateBulkCounts();
+}
+function tLock(i){
+  colorLocked[i]=!colorLocked[i];
+  if(colorLocked[i]){
+    var st=colorState[i]||'on';
+    if(st.indexOf('merged:')===0){
+      delete colorMerges[dd.colors[i]];
+      colorState[i]='on';
+      syncShapesForColor(dd.colors[i], true);
+    }
+  }
+  renderColorItem(i);
+}
+function tC(i){
+  var st=colorState[i]||'on';
+  if(st==='on'){
+    var others=colorState.filter(function(s,j){return j!==i&&s==='on';}).length;
+    if(others===0){alert(t('keepColor'));return;}
+    colorState[i]='pending';
+  }else if(st==='pending'){
+    colorState[i]='on';
+  }else{
+    delete colorMerges[dd.colors[i]];
+    colorState[i]='on';
+  }
+  renderColorItem(i);
+}
+function doRemoveColor(i){
+  colorState[i]='removed';
+  syncShapesForColor(dd.colors[i],false);
+  renderColorItem(i);
+}
+function hexToLabSimple(hex){
+  var m=(hex||'').match(/^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/);
+  if(!m)return{l:0,a:0,b:0};
+  var r=parseInt(m[1],16)/255,g=parseInt(m[2],16)/255,b=parseInt(m[3],16)/255;
+  r=r>0.04045?Math.pow((r+0.055)/1.055,2.4):r/12.92;
+  g=g>0.04045?Math.pow((g+0.055)/1.055,2.4):g/12.92;
+  b=b>0.04045?Math.pow((b+0.055)/1.055,2.4):b/12.92;
+  var x=r*0.4124+g*0.3576+b*0.1805,y=r*0.2126+g*0.7152+b*0.0722,z=r*0.0193+g*0.1192+b*0.9505;
+  var f=function(v){return v>0.008856?Math.cbrt(v):7.787*v+16/116;};
+  return{l:116*f(y)-16,a:500*(f(x/0.95047)-f(y)),b:200*(f(y)-f(z/1.08883))};
+}
+function labDist(a,b){return Math.sqrt(Math.pow(a.l-b.l,2)+Math.pow(a.a-b.a,2)+Math.pow(a.b-b.b,2));}
+function doMergeColor(i){
+  if(colorLocked[i]){
+    alert(t('lockTitle'));
+    return;
+  }
+  var src=dd.colors[i];
+  var srcL=hexToLabSimple(src);
+  var bestJ=-1,bestD=Infinity;
+  for(var j=0;j<dd.colors.length;j++){
+    if(j===i||(colorState[j]||'on')!=='on'||colorLocked[j])continue;
+    var d=labDist(srcL,hexToLabSimple(dd.colors[j]));
+    if(d<bestD){bestD=d;bestJ=j;}
+  }
+  if(bestJ<0){alert(t('noOtherColor')||'No other active unlocked color to merge into.');return;}
+  colorMerges[src]=dd.colors[bestJ];
+  colorState[i]='merged:'+dd.colors[bestJ];
+  syncShapesForColor(src,false);
+  renderColorItem(i);
+}
+function tS(i){var cb=document.getElementById('cb-'+i);document.getElementById('si-'+i).classList.toggle('off',!cb.checked);updateBulkCounts();}
+function allC(on){
+  if(!dd)return;
+  if(on){
+    for(var i=0;i<dd.colors.length;i++){
+      delete colorMerges[dd.colors[i]];
+      colorState[i]='on';
+      renderColorItem(i);
+    }
+  }else{
+    var keepIdx=-1;
+    for(var i=0;i<dd.colors.length;i++){
+      if(colorLocked[i]&&(colorState[i]||'on')==='on'){ keepIdx=i; break; }
+    }
+    if(keepIdx===-1){
+      for(var i=0;i<dd.colors.length;i++){
+        if((colorState[i]||'on')==='on'){ keepIdx=i; break; }
+      }
+    }
+    if(keepIdx===-1){alert(t('keepColor'));return;}
+    for(var i=0;i<dd.colors.length;i++){
+      if(i===keepIdx) continue;
+      if(colorLocked[i]) continue;
+      if((colorState[i]||'on')==='on'){
+        colorState[i]='removed';
+        syncShapesForColor(dd.colors[i],false);
+        renderColorItem(i);
+      }
+    }
+  }
+}
+function invC(){
+  if(!dd)return;
+  var willBeOn=[];
+  for(var i=0;i<dd.colors.length;i++){
+    if(colorLocked[i]){ if((colorState[i]||'on')==='on') willBeOn.push(i); continue; }
+    var st=colorState[i]||'on';
+    if(st==='removed') willBeOn.push(i);
+  }
+  if(willBeOn.length===0){alert(t('keepColor'));return;}
+  for(var i=0;i<dd.colors.length;i++){
+    if(colorLocked[i]) continue;
+    var st=colorState[i]||'on';
+    if(st==='removed'){
+      colorState[i]='on';
+    }else{
+      delete colorMerges[dd.colors[i]];
+      colorState[i]='removed';
+      syncShapesForColor(dd.colors[i],false);
+    }
+    renderColorItem(i);
+  }
+}
+function allS(on){
+  var rows=document.querySelectorAll('.s-item');
+  for(var i=0;i<rows.length;i++){
+    var cb=rows[i].querySelector('input[type=checkbox]');
+    if(cb.disabled) continue;
+    cb.checked=on;
+    rows[i].classList.toggle('off',!on);
+  }
+  updateBulkCounts();
+}
+function invS(){
+  var rows=document.querySelectorAll('.s-item');
+  for(var i=0;i<rows.length;i++){
+    var cb=rows[i].querySelector('input[type=checkbox]');
+    if(cb.disabled) continue;
+    cb.checked=!cb.checked;
+    rows[i].classList.toggle('off',!cb.checked);
+  }
+  updateBulkCounts();
+}
+function selectShapesForActiveColors(){
+  if(!dd)return;
+  var activeHex={};
+  for(var i=0;i<dd.colors.length;i++){
+    if((colorState[i]||'on')==='on') activeHex[dd.colors[i].toLowerCase()]=1;
+  }
+  var rows=document.querySelectorAll('.s-item');
+  for(var i=0;i<rows.length;i++){
+    var c=(rows[i].dataset.c||'').toLowerCase();
+    var cb=rows[i].querySelector('input[type=checkbox]');
+    var should=!!activeHex[c];
+    cb.checked=should;
+    cb.disabled=!should;
+    rows[i].classList.toggle('off',!should);
+  }
+  updateBulkCounts();
+}
+function updateBulkCounts(){
+  if(!dd) return;
+  var on=0,removed=0,merged=0,locked=0;
+  for(var i=0;i<dd.colors.length;i++){
+    var st=colorState[i]||'on';
+    if(st==='on'||st==='pending') on++;
+    else if(st==='removed') removed++;
+    else if(st.indexOf('merged:')===0) merged++;
+    if(colorLocked[i]) locked++;
+  }
+  var cc=document.getElementById('cCount');
+  if(cc) cc.textContent=t('colorCountLabel',{on:on,removed:removed,merged:merged,locked:locked});
+  var sRows=document.querySelectorAll('.s-item');
+  var sOn=0;
+  for(var i=0;i<sRows.length;i++){
+    var cb=sRows[i].querySelector('input[type=checkbox]');
+    if(cb&&cb.checked&&!cb.disabled) sOn++;
+  }
+  var sc=document.getElementById('sCount');
+  if(sc) sc.textContent=t('shapeCountLabel',{on:sOn,total:sRows.length});
+}
+
+function generate(){
+  if(!ci||!dd)return;
+  for(var i=0;i<dd.shapes.length;i++){
+    if(document.getElementById('cb-'+i).checked){
+      var shapeColor=dd.shapes[i].color;
+      var colorOn=false;
+      for(var j=0;j<dd.colors.length;j++){
+        var _st2=colorState[j]||'on';
+        if(_st2==='on' && dd.colors[j]===shapeColor){colorOn=true;break;}
+      }
+      if(!colorOn){
+        alert(t('shapeColorMismatch',{n:(i+1)}));
+        return;
+      }
+    }
+  }
+  var sc=[],ss=[];
+  var _seen=new Set();
+  for(var i=0;i<dd.colors.length;i++){
+    var _st=colorState[i]||'on';
+    if(_st==='on'&&!_seen.has(dd.colors[i])){sc.push(dd.colors[i]);_seen.add(dd.colors[i]);}
+  }
+  if(!sc.length){alert(t('selColor'));return}
+  for(var i=0;i<dd.shapes.length;i++){if(document.getElementById('cb-'+i).checked)ss.push(i)}
+  if(!ss.length){alert(t('selShape'));return}
+  var btn=document.getElementById('gB');
+  btn.disabled=true;btn.textContent='⚡ '+t('generating');
+  document.getElementById('st').innerHTML='<p>'+t('generating')+'</p>';
+  var fd=new FormData();
+  fd.append('image',cf);
+  fd.append('mode',designMode);
+  fd.append('canvasSize',designSize);
+  fd.append('colorCount',colorCount);
+  fd.append('detectionId',ci);
+  fd.append('selectedColors',JSON.stringify(sc));
+  fd.append('selectedShapes',JSON.stringify(ss));
+  fd.append('fabric',document.getElementById('fb').value);
+  fd.append('machine',document.getElementById('mb').value);
+  fd.append('hoop',document.getElementById('hp').value);
+  fd.append('density',document.getElementById('ds').value);
+  var bBox=document.getElementById('bastingBox');
+  if(bBox&&bBox.checked)fd.append('bastingBox','1');
+  if(Object.keys(colorMerges).length>0)fd.append('colorMerges',JSON.stringify(colorMerges));
+  var locked=[];
+  for(var i=0;i<dd.colors.length;i++){
+    if(colorLocked[i]) locked.push(dd.colors[i]);
+  }
+  if(locked.length>0) fd.append('lockedColors',JSON.stringify(locked));
+  if(hm){
+    c2.toBlob(function(b){
+      if(b)fd.append('mask',b,'mask.png');
+      doGen(fd,sc,ss,btn);
+    },'image/png');
+  }else{
+    doGen(fd,sc,ss,btn);
+  }
+}
+
+async function doGen(fd,sc,ss,btn){
+  await getIdToken();
+  var xhr=new XMLHttpRequest();
+  xhr.open('POST','/generate-embroidery',true);
+  var h=getAuthHeaders();
+  for(var k in h) xhr.setRequestHeader(k,h[k]);
+  xhr.onload=function(){
+    btn.disabled=false;btn.textContent='⚡ '+t('generate');
+    if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">'+t('errHttp')+' '+xhr.status+'</div>';return}
+    var d;
+    try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">'+t('errInvalid')+'</div>';return}
+    if(!d.success){document.getElementById('st').innerHTML='<div class="error">'+(d.error||t('errUnknown'))+'</div>';return}
+    jid=d.id;
+    document.getElementById('ri').src=d.previewImageUrl+'?t='+Date.now();
+    var meta=t('stitchCount',{n:d.stitchCount.toLocaleString()})+' · '+t('regionsCount',{n:d.shapes.length})+' · '+t('colorsCount',{n:d.colors.length})+' · '+t('designSize',{mm:d.designSize.mm});
+    if(d.qa&&d.qa.avgStitchMM) meta+=' · '+t('avgStitch',{n:d.qa.avgStitchMM});
+    document.getElementById('rm').textContent=meta;
+    var sewText = d.sewTime ? t('sewTime',{time:d.sewTime,machine:(d.specs?.machine || 'generic')}) : '';
+    document.getElementById('sew').textContent=sewText;
+    document.getElementById('rc').style.display='block';
+    document.getElementById('rc').scrollIntoView({behavior:'smooth'});
+    document.getElementById('st').innerHTML='<p class="ok">'+t('done')+'</p>';
+    setTimeout(function(){showPWASheet();},1200);
+  };
+  xhr.onerror=function(){btn.disabled=false;btn.textContent='⚡ '+t('generate');document.getElementById('st').innerHTML='<div class="error">'+t('errNetwork')+'</div>'};
+  xhr.send(fd);
+}
+
+async function dl(){
+  if(!jid){alert(t('download'));return;}
+  var fmt=document.getElementById('fs')?document.getElementById('fs').value:'dst';
+  await getIdToken();
+  fetch('/download/'+jid+'?fmt='+fmt,{headers:getAuthHeaders()})
+    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.blob();})
+    .then(function(b){
+      var url=URL.createObjectURL(b);
+      var ts=new Date().toISOString().slice(0,16).replace(/[:T]/g,'-');
+      var a=document.createElement('a');
+      a.href=url;
+      a.download='stichai-'+ts+'.'+fmt;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function(){URL.revokeObjectURL(url);},30000);
+    })
+    .catch(function(e){alert(t('errNetwork')+': '+e.message);});
+}
+
+/* ========== NEW ADDITIONS ========== */
 let maskHistory = [];
 let maskHistoryIndex = -1;
 function saveMaskState() {
@@ -392,8 +1654,8 @@ function cancelGeneration() {
   if (cancelBtn) cancelBtn.disabled = true;
 }
 async function batchDownload() {
-  if (!currentJobId) return;
-  window.open(`/download-batch/${currentJobId}`, '_blank');
+  if (!jid) return;
+  window.open(`/download-batch/${jid}`, '_blank');
 }
 let previewDiv = null;
 function showBrushPreview(x,y) {
@@ -414,27 +1676,28 @@ document.addEventListener('mousemove', (e) => {
   else hideBrushPreview();
 });
 document.addEventListener('mouseup', hideBrushPreview);
-// Modify generate function
+/* Modify generate to show/hide cancel and batch buttons */
 const originalGenerate = window.generate;
-window.generate = async function() {
-  // Store original button text and disable
-  const btn = document.getElementById('gB');
-  const originalText = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '⚡ Generating...';
-  document.getElementById('cancelBtn').style.display = 'inline-block';
-  document.getElementById('batchDownloadBtn').style.display = 'none';
-  // Call original generate logic (which sets jid, etc.)
-  // We need to hook into the original generate's fetch response.
-  // For simplicity, we override the global generate function completely.
-  // I'll rewrite generate to include the WebSocket subscription.
-  // But given the complexity, I'll assume you will copy the original generate and add the lines:
-  // currentJobId = data.id;
-  // socket.emit('subscribe', data.id);
-  // inside the successful response handler.
+window.generate = function() {
+  currentJobId = null;
+  const cancelBtn = document.getElementById('cancelBtn');
+  const batchBtn = document.getElementById('batchDownloadBtn');
+  if (cancelBtn) cancelBtn.style.display = 'inline-block';
+  if (batchBtn) batchBtn.style.display = 'none';
+  // Call original generate, but we need to set currentJobId after response.
+  // Since original generate uses doGen, we can override doGen temporarily.
+  const originalDoGen = window.doGen;
+  window.doGen = async function(fd,sc,ss,btn) {
+    await originalDoGen(fd,sc,ss,btn);
+    currentJobId = jid;
+    if (socket) socket.emit('subscribe', jid);
+    if (cancelBtn) cancelBtn.style.display = 'none';
+    if (batchBtn) batchBtn.style.display = 'inline-block';
+    window.doGen = originalDoGen;
+  };
+  originalGenerate();
+  window.doGen = originalDoGen;
 };
-// For brevity, I'm not rewriting the whole generate here. You must merge this manually.
-// === END SCRIPT ===
 </script>
 </body>
 </html>
