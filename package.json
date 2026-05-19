@@ -1,6 +1,6 @@
 {
   "name": "stichai-bot",
-  "version": "68.2",
+  "version": "72.0",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
@@ -12,7 +12,9 @@
     "sharp": "^0.33.0",
     "firebase-admin": "^12.0.0",
     "@imgly/background-removal-node": "^1.4.5",
-    "stripe": "^14.0.0"
+    "stripe": "^14.0.0",
+    "socket.io": "^4.7.2",
+    "pdfkit": "^0.14.0"
   },
   "engines": {
     "node": ">=18.0.0"
