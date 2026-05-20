@@ -1004,6 +1004,8 @@ function onCanvasTap(e){
   var tapX=Math.round(Math.max(0,Math.min(1000,(cx-off.x)/off.w*1000)));
   var tapY=Math.round(Math.max(0,Math.min(1000,(cy-off.y)/off.h*1000)));
   showMaskState('detecting');
+  /* Clear any running timer from a previous tap before starting a new one */
+  if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
   var _detectStart=Date.now();
   var _detectTick=setInterval(function(){
     var lbl=document.querySelector('.detect-label');
@@ -1015,12 +1017,22 @@ function onCanvasTap(e){
 
 async function callSegmentSubject(tapX,tapY){
   await getIdToken();
+  /* Cancel any in-flight segmentation request so taps replace each other
+     instead of racing. Without this, a second tap fires a second fetch and
+     whichever returns last wins — including the stale one from the cancelled tap. */
+  if(window._segAbort){ try{ window._segAbort.abort(); }catch(e){} }
+  var ac = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  window._segAbort = ac;
+  var myReqId = ++window._segReqId;
+
   var fd=new FormData();
   fd.append('image',cf);
   if(tapX!==undefined){fd.append('tapX',tapX);fd.append('tapY',tapY);}
-  fetch('/segment-subject',{method:'POST',body:fd,headers:getAuthHeaders()})
+  fetch('/segment-subject',{method:'POST',body:fd,headers:getAuthHeaders(),signal:ac?ac.signal:undefined})
     .then(function(r){return r.json();})
     .then(function(data){
+      /* Ignore stale responses if a newer tap has been made */
+      if(myReqId !== window._segReqId) return;
       if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
       if(data.found&&data.maskPng){
         applyMaskPng(data.maskPng, data.subject);
@@ -1046,12 +1058,16 @@ async function callSegmentSubject(tapX,tapY){
         setTimeout(function(){showMaskState('idle');},2800);
       }
     })
-    .catch(function(){
+    .catch(function(err){
+      /* AbortError = user tapped again, not a real error → don't show error UI */
+      if(err && err.name === 'AbortError') return;
+      if(myReqId !== window._segReqId) return;
       if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
       showMaskState('error',t('wandNotFound'));
       setTimeout(function(){showMaskState('idle');},2800);
     });
 }
+window._segReqId = 0;
 
 function confirmSubjectAndAnalyze(){
   stopGlowAnimation();
@@ -1108,11 +1124,17 @@ function applyGeminiGrid(grid, gridSize){
   var smooth=document.createElement('canvas');
   smooth.width=w; smooth.height=h;
   var sc=smooth.getContext('2d');
-  sc.filter='blur(12px)';
+  /* Blur radius scales with cell size — bigger cells need less blur, smaller
+     cells (higher resolution grids like 40×40) need more to hide stair-steps.
+     0.85× of cell size gives smooth organic edges at any grid resolution. */
+  var blurRadius = Math.max(8, Math.round(Math.min(cellW, cellH) * 0.85));
+  sc.filter='blur(' + blurRadius + 'px)';
   sc.drawImage(raw,0,0);
   sc.filter='none';
+  /* Threshold at 50 (not 40) — slightly tighter to prevent the blur from
+     puffing the mask outwards beyond the real subject edge */
   var bd=sc.getImageData(0,0,w,h);
-  for(var i=3;i<bd.data.length;i+=4) bd.data[i]=bd.data[i]>40?255:0;
+  for(var i=3;i<bd.data.length;i+=4) bd.data[i]=bd.data[i]>50?255:0;
   sc.putImageData(bd,0,0);
   prevMaskDataURL=mX.canvas.toDataURL();
   applyPersonCanvas(smooth);
@@ -1559,17 +1581,29 @@ function generate(){
 
 async function doGen(fd,sc,ss,btn){
   await getIdToken();
+  /* Show cancel, hide batch download while generating */
+  const cancelBtn = document.getElementById('cancelBtn');
+  const batchBtn  = document.getElementById('batchDownloadBtn');
+  if(cancelBtn) cancelBtn.style.display='inline-block';
+  if(batchBtn)  batchBtn.style.display='none';
+  currentJobId = null;
+
   var xhr=new XMLHttpRequest();
   xhr.open('POST','/generate-embroidery',true);
   var h=getAuthHeaders();
   for(var k in h) xhr.setRequestHeader(k,h[k]);
   xhr.onload=function(){
     btn.disabled=false;btn.textContent='⚡ '+t('generate');
+    if(cancelBtn) cancelBtn.style.display='none';
     if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">'+t('errHttp')+' '+xhr.status+'</div>';return}
     var d;
     try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">'+t('errInvalid')+'</div>';return}
     if(!d.success){document.getElementById('st').innerHTML='<div class="error">'+(d.error||t('errUnknown'))+'</div>';return}
     jid=d.id;
+    currentJobId=jid;
+    /* Subscribe to WebSocket progress for this job */
+    if(socket) socket.emit('subscribe', jid);
+    if(batchBtn) batchBtn.style.display='inline-block';
     document.getElementById('ri').src=d.previewImageUrl+'?t='+Date.now();
     var meta=t('stitchCount',{n:d.stitchCount.toLocaleString()})+' · '+t('regionsCount',{n:d.shapes.length})+' · '+t('colorsCount',{n:d.colors.length})+' · '+t('designSize',{mm:d.designSize.mm});
     if(d.qa&&d.qa.avgStitchMM) meta+=' · '+t('avgStitch',{n:d.qa.avgStitchMM});
@@ -1581,7 +1615,11 @@ async function doGen(fd,sc,ss,btn){
     document.getElementById('st').innerHTML='<p class="ok">'+t('done')+'</p>';
     setTimeout(function(){showPWASheet();},1200);
   };
-  xhr.onerror=function(){btn.disabled=false;btn.textContent='⚡ '+t('generate');document.getElementById('st').innerHTML='<div class="error">'+t('errNetwork')+'</div>'};
+  xhr.onerror=function(){
+    btn.disabled=false;btn.textContent='⚡ '+t('generate');
+    if(cancelBtn) cancelBtn.style.display='none';
+    document.getElementById('st').innerHTML='<div class="error">'+t('errNetwork')+'</div>';
+  };
   xhr.send(fd);
 }
 
@@ -1676,28 +1714,6 @@ document.addEventListener('mousemove', (e) => {
   else hideBrushPreview();
 });
 document.addEventListener('mouseup', hideBrushPreview);
-/* Modify generate to show/hide cancel and batch buttons */
-const originalGenerate = window.generate;
-window.generate = function() {
-  currentJobId = null;
-  const cancelBtn = document.getElementById('cancelBtn');
-  const batchBtn = document.getElementById('batchDownloadBtn');
-  if (cancelBtn) cancelBtn.style.display = 'inline-block';
-  if (batchBtn) batchBtn.style.display = 'none';
-  // Call original generate, but we need to set currentJobId after response.
-  // Since original generate uses doGen, we can override doGen temporarily.
-  const originalDoGen = window.doGen;
-  window.doGen = async function(fd,sc,ss,btn) {
-    await originalDoGen(fd,sc,ss,btn);
-    currentJobId = jid;
-    if (socket) socket.emit('subscribe', jid);
-    if (cancelBtn) cancelBtn.style.display = 'none';
-    if (batchBtn) batchBtn.style.display = 'inline-block';
-    window.doGen = originalDoGen;
-  };
-  originalGenerate();
-  window.doGen = originalDoGen;
-};
 </script>
 </body>
 </html>
