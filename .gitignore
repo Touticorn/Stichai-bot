@@ -1,11 +1,8 @@
-node_modules/
-package-lock.json
-.env
-.env.local
-*.log
-logs/
-.baileys_auth/
-*.auth.json
-.DS_Store
-.vscode/
-.idea/
+
+# AI Pipeline artifacts
+.ai-council/
+.ai-archive/
+**/Old/
+
+.ai-council/
+.ai-archive/
