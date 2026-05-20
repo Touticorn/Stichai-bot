@@ -412,8 +412,13 @@ function getStitchParams(specs, canvasSize) {
   const hoop = (s.hoop || "5x7").toLowerCase();
 
   const limits = MACHINE_LIMITS[machine] || MACHINE_LIMITS.generic;
-  const pxPerMm = canvasSize / 800;
-  const maxStitchLenPx = Math.max(20, Math.round(getMaxStitchPx(machine, pxPerMm) * pxPerMm));
+  /* The canvas is always rendered at 10 px/mm — design mm = canvas / 10.
+     So actual pixels-per-mm is a fixed 10 regardless of canvasSize.
+     Previously this was `canvasSize/800` which gave a *scale factor*, not
+     px/mm, and was then multiplied by itself causing a double-scale bug
+     (Math.max(20, …) was hiding it by clamping). */
+  const pxPerMm = 10;
+  const maxStitchLenPx = Math.max(20, getMaxStitchPx(machine, pxPerMm));
 
   const p = {
     tatamiRow: 4, tatamiLen: 42, tatamiUl: 25, pull: 2,
@@ -467,18 +472,39 @@ async function preprocessImage(buffer, canvasSize, mode) {
     .resize(canvasSize, canvasSize, {fit:"contain",background:{r:255,g:255,b:255,alpha:1}});
 
   if (mode === 'cartoon') {
+    /* Cartoon fallback used when Gemini image generation fails.
+       NOTE: sharp.posterize() was added in v0.32. Railway's sharp may be older,
+       so we do manual posterization: median+blur creates flat regions, modulate
+       boosts saturation for cartoon colours, linear pushes contrast.
+       This works on every sharp version since v0.20. */
     pipeline = pipeline
-      .median(1)
+      .median(3)
+      .blur(0.5)
+      .modulate({ saturation: 1.7, brightness: 1.05 })
       .sharpen({ sigma: 2.0 })
-      .linear(1.6, -30)
-      .posterize(5);
-  } else {
-    pipeline = pipeline
-      .median(2)
-      .sharpen({ sigma: 1.0 })
-      .linear(1.2, -15);
+      .linear(1.5, -28);
+
+    /* Manual color quantization via raw pixel access — round each channel
+       to N levels. This is what posterize() does internally and works
+       universally. */
+    const raw = await pipeline.raw().toBuffer({ resolveWithObject: true });
+    const { data, info } = raw;
+    const LEVELS = 5;
+    const step = 255 / (LEVELS - 1);
+    for (let i = 0; i < data.length; i += info.channels) {
+      data[i]   = Math.round(data[i]   / step) * step;
+      data[i+1] = Math.round(data[i+1] / step) * step;
+      data[i+2] = Math.round(data[i+2] / step) * step;
+    }
+    return sharp(data, { raw: { width: info.width, height: info.height, channels: info.channels } })
+      .toFormat('png')
+      .toBuffer();
   }
 
+  pipeline = pipeline
+    .median(2)
+    .sharpen({ sigma: 1.0 })
+    .linear(1.2, -15);
   return pipeline.toBuffer();
 }
 
@@ -773,15 +799,21 @@ Return ONLY valid JSON, no markdown:
 GRID — ${GRID} rows × ${GRID} columns covering the ENTIRE image:
 - Row 0 = very top of image, row ${GRID-1} = very bottom
 - Column 0 = very left of image, column ${GRID-1} = very right
-- '1' = this cell contains part of the MAIN SUBJECT (baby/person/animal)
-- '0' = background: sky, water, sand, other people, shadows, ground${strictNote}
+- '1' = this cell contains part of the MAIN SUBJECT body, clothing, hair, or held objects
+- '0' = everything else: sky, water, sand, grass, floor, walls, furniture, OTHER people
+- '0' = shadows cast BY the subject onto the background — shadows are NOT part of the subject
+- '0' = reflections in water or glass — reflections are NOT part of the subject
+- '0' = blurry or out-of-focus background elements even if they overlap the subject's silhouette${strictNote}
 - Include the COMPLETE subject: head, hat, all clothing, hands, feet — all must be '1'
 - Each of the ${GRID} rows must be exactly ${GRID} characters of '0' or '1', no spaces
-${hasPoint ? `- The cell at that tap point must be '1'` : ''}
+${hasPoint ? `- The cell at row/col nearest the tap point MUST be '1'` : ''}
 
-If no clear subject: {"found": false}`;
+If no clear subject found: {"found": false}`;
 
-    for (const model of ["gemini-2.5-pro", "gemini-2.5-flash"]) {
+    /* Use Flash first — it's fast and accurate enough for grid segmentation.
+       Pro is slower (~2× latency) with no meaningful gain on this binary grid task.
+       Fall back to Pro only if Flash fails or quota is exhausted. */
+    for (const model of ["gemini-2.5-flash", "gemini-2.5-pro"]) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
       try {
         const res = await axios.post(url, {
@@ -789,8 +821,11 @@ If no clear subject: {"found": false}`;
             { text: prompt },
             { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
           ]}],
+          /* thinkingBudget: 2048 is sufficient for spatial grid layout —
+             the model doesn't need deep reasoning, just pattern recognition.
+             12000 was wasting ~12s of latency with no quality gain. */
           generationConfig: { temperature: 0.0, maxOutputTokens: 8192, responseMimeType: "application/json",
-            thinkingConfig: { thinkingBudget: 12000 } }
+            thinkingConfig: { thinkingBudget: 2048 } }
         }, { timeout: 60000 });
         if (!res) continue;
         const raw = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
@@ -848,6 +883,38 @@ If no clear subject: {"found": false}`;
         }
       }
       nr = ra.map(r => r.join(''));
+
+      /* Flood-fill: keep only the connected component that contains the tap
+         cell. Gemini sometimes marks background patches (toys, furniture, a
+         second person) as '1'. Any island not connected to the tap point is
+         discarded. Uses 4-connectivity so diagonals don't bleed across gaps. */
+      const visited = new Uint8Array(GRID * GRID);
+      const queue = [tapRow * GRID + tapCol];
+      visited[tapRow * GRID + tapCol] = 1;
+      const grid2d = nr.map(r => r.split(''));
+      while (queue.length) {
+        const idx = queue.shift();
+        const fy = Math.floor(idx / GRID), fx = idx % GRID;
+        for (const [fdy, fdx] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+          const ny2 = fy + fdy, nx2 = fx + fdx;
+          if (ny2 >= 0 && ny2 < GRID && nx2 >= 0 && nx2 < GRID) {
+            const ni = ny2 * GRID + nx2;
+            if (!visited[ni] && grid2d[ny2][nx2] === '1') {
+              visited[ni] = 1;
+              queue.push(ni);
+            }
+          }
+        }
+      }
+      /* Zero-out any '1' cell not reachable from the tap point */
+      for (let fy = 0; fy < GRID; fy++) {
+        for (let fx = 0; fx < GRID; fx++) {
+          if (grid2d[fy][fx] === '1' && !visited[fy * GRID + fx]) {
+            grid2d[fy][fx] = '0';
+          }
+        }
+      }
+      nr = grid2d.map(r => r.join(''));
     }
     /* Bbox validation */
     let minCol = GRID, maxCol = -1, minRow = GRID, maxRow = -1;
@@ -915,53 +982,67 @@ If no clear subject: {"found": false}`;
 
 
 /* ─── CARTOON IMAGE GENERATION ───────────────────────────
-   Uses gemini-2.0-flash-exp with responseModalities:IMAGE
+   Uses gemini-2.5-flash-image (Nano Banana, stable as of 2026)
    to convert a real photo into a flat cartoon illustration
    optimised for embroidery digitizing.
    Returns {buffer, mime} or null on failure.
+
+   NOTE on model choice (2026):
+   - gemini-2.5-flash-image     ← stable, free tier, ~$0.039/img
+   - gemini-3.1-flash-image-preview ← newer, better quality, ~$0.045/img
+   - gemini-2.0-flash-exp       ← DEPRECATED, returns 404
 ────────────────────────────────────────────────────────── */
+const CARTOON_MODELS = ["gemini-2.5-flash-image", "gemini-3.1-flash-image-preview"];
+
 async function convertToCartoonWithGemini(imageBuffer, mime, colorCount) {
   if (!GEMINI_API_KEY) return null;
   const b64 = imageBuffer.toString("base64");
 
-  const prompt = `You are an embroidery digitizing assistant. Convert this photo into a flat cartoon illustration optimised for machine embroidery stitching:
-- Use exactly ${colorCount} solid flat colours — NO gradients, NO shadows, NO photographic textures
+  const prompt = `Convert this photo into a flat cartoon illustration optimised for machine embroidery stitching:
+- Use approximately ${colorCount} solid flat colours — NO gradients, NO shadows, NO photographic textures
 - Create sharp, crisp boundaries between each colour area
 - Simplify fur, fabric, and skin textures into solid colour blocks
 - Keep the main subject clearly recognisable and centred
 - Style: bold vector sticker / appliqué illustration
 - Background: plain white or a single flat colour
-- Remove all photographic noise and subtle shading
-The output must be the cartoon image itself.`;
+- Remove all photographic noise and subtle shading`;
 
-  try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`;
-    const res = await axios.post(url, {
-      contents: [{ role:"user", parts:[
-        { text: prompt },
-        { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
-      ]}],
-      generationConfig: {
-        responseModalities: ["IMAGE"],
-        temperature: 0.3,
-        maxOutputTokens: 8192
-      }
-    }, { timeout: 60000 });
+  for (const model of CARTOON_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+      const res = await axios.post(url, {
+        contents: [{ role: "user", parts: [
+          { text: prompt },
+          { inlineData: { mimeType: mime || "image/jpeg", data: b64 } }
+        ]}],
+        generationConfig: {
+          /* CRITICAL: image-generation models require BOTH text and image modalities.
+             Passing only ["IMAGE"] silently returns no image. */
+          responseModalities: ["TEXT", "IMAGE"],
+          temperature: 0.3
+        }
+      }, { timeout: 90000 });
 
-    const parts = res.data?.candidates?.[0]?.content?.parts || [];
-    for (const part of parts) {
-      if (part.inlineData?.data) {
-        const buf = Buffer.from(part.inlineData.data, "base64");
-        console.log(`[cartoon] Gemini generated ${buf.length} bytes (${part.inlineData.mimeType})`);
-        return { buffer: buf, mime: part.inlineData.mimeType || "image/png" };
+      const parts = res.data?.candidates?.[0]?.content?.parts || [];
+      for (const part of parts) {
+        if (part.inlineData?.data) {
+          const buf = Buffer.from(part.inlineData.data, "base64");
+          console.log(`[cartoon] ${model} generated ${buf.length} bytes (${part.inlineData.mimeType})`);
+          return { buffer: buf, mime: part.inlineData.mimeType || "image/png" };
+        }
       }
+      console.warn(`[cartoon] ${model} returned no image, trying next model`);
+    } catch(e) {
+      const status = e.response?.status;
+      const errMsg = e.response?.data?.error?.message || e.message;
+      console.warn(`[cartoon] ${model} failed: ${status} ${errMsg}`);
+      /* On 404 (model not found), try next; on other errors also try next */
+      continue;
     }
-    console.warn("[cartoon] Gemini returned no image — will use posterized fallback");
-    return null;
-  } catch(e) {
-    console.error(`[cartoon] Generation failed: ${e.response?.status} ${e.response?.data?.error?.message || e.message}`);
-    return null;
   }
+
+  console.error("[cartoon] All cartoon models failed — falling back to posterized photo");
+  return null;
 }
 
 /* ─── GEMINI (metadata only) ─────────────────────────────*/
@@ -3297,11 +3378,13 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
        image-generation API is unavailable. */
     let sourceBuffer = imgFile.buffer;
     let sourceMime   = imgFile.mimetype || "image/jpeg";
+    let cartoonImageGenerated = false;  /* track whether we got a real flat cartoon image */
     if (mode === 'cartoon') {
       const cartoon = await convertToCartoonWithGemini(imgFile.buffer, sourceMime, colorCount);
       if (cartoon) {
         sourceBuffer = cartoon.buffer;
         sourceMime   = cartoon.mime;
+        cartoonImageGenerated = true;
         console.log(`[${rid}] Cartoon image generated OK`);
       } else {
         console.warn(`[${rid}] Cartoon generation failed — using posterized fallback`);
@@ -3312,10 +3395,19 @@ app.post("/detect-shapes", requireAuth, checkDownloadQuota, upload.fields([{name
 
     /* Ask Gemini and the bucket extractor in parallel, then pick a winner.
        Gemini's palette is preferred when it returns ≥3 distinct valid hexes;
-       otherwise we fall back to the classic bucket extraction. */
+       otherwise we fall back to the classic bucket extraction.
+
+       EXCEPTION: for cartoon mode where Gemini image gen FAILED, do NOT run
+       analyzeWithGemini on the original photo — Gemini would re-interpret the
+       photo's colours creatively (proposing what it THINKS the cartoon should
+       look like) rather than reflecting the actual posterized pixel values.
+       In that case buckets are strictly more accurate. */
+    const skipGeminiPalette = (mode === 'cartoon' && !cartoonImageGenerated);
     const [bucketColors, gem] = await Promise.all([
       extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount),
-      analyzeWithGemini(sourceBuffer, sourceMime, colorCount).catch(() => null)
+      skipGeminiPalette
+        ? Promise.resolve(null)
+        : analyzeWithGemini(sourceBuffer, sourceMime, colorCount).catch(() => null)
     ]);
 
     let colors;
