@@ -139,4 +139,4 @@
     all: all,
     count: count,
   };
-})(typeof window !== "undefined" ? window : this);
+})(typeof globalThis !== "undefined" ? globalThis : global);
