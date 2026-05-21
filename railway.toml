@@ -1,9 +1,2 @@
-[build]
-builder = "DOCKERFILE"
-
 [deploy]
-startCommand = "node bot.js"
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 3
-healthcheckPath = "/health"
-healthcheckTimeout = 30
+startCommand = "node index.js"
