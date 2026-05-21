@@ -1,7 +1,3 @@
-// Auto-load required modules
-if (typeof global.SessionManager === "undefined") require("./session.js");
-if (typeof global.Classifier === "undefined") require("./classifier.js");
-if (typeof global.BotEvents === "undefined") require("./bot-events.js");
 
 (function (global) {
   "use strict";
@@ -9,23 +5,7 @@ if (typeof global.BotEvents === "undefined") require("./bot-events.js");
   // ---------------------------------------------------------------------------
   // Defensive module guards (Phase 4 – Step 12)
   // ---------------------------------------------------------------------------
-  function assertModule(name, obj) {
-    if (!obj) {
-      var msg =
-        "[bot.js] FATAL: Required module '" +
-        name +
-        "' is not available. " +
-        "Ensure " +
-        name +
-        " is loaded before bot.js.";
-      console.error(msg);
-      throw new ReferenceError(msg);
-    }
-  }
-
-  assertModule("SessionManager", global.SessionManager);
-  assertModule("Classifier", global.Classifier);
-  assertModule("BotEvents", global.BotEvents);
+  // Module guards disabled
 
   // ---------------------------------------------------------------------------
   // Module references

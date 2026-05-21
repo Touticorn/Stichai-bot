@@ -1,9 +1,9 @@
 {
   "name": "stichai-bot",
   "version": "72.0",
-  "main": "index.js",
+  "main": "bot.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node bot.js"
   },
   "dependencies": {
     "express": "^4.18.2",
