@@ -221,8 +221,7 @@
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = BotEvents;
-  } else {
-    global.BotEvents = BotEvents;
   }
+  globalThis.BotEvents = BotEvents;
 
 }(typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : this));

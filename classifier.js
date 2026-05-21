@@ -224,8 +224,7 @@
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = Classifier;
-  } else {
-    global.Classifier = Classifier;
   }
+  globalThis.Classifier = Classifier;
 
 }(typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : this));
