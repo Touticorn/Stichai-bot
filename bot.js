@@ -1,3 +1,8 @@
+// Auto-load required modules
+if (typeof global.SessionManager === "undefined") require("./session.js");
+if (typeof global.Classifier === "undefined") require("./classifier.js");
+if (typeof global.BotEvents === "undefined") require("./bot-events.js");
+
 (function (global) {
   "use strict";
 
