@@ -1,310 +1,97 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-    <title>Bot Assistant</title>
-    <style>
-      /* -----------------------------------------------------------------------
-         Base reset & layout
-      ----------------------------------------------------------------------- */
-      *,
-      *::before,
-      *::after {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
+async function startConversion() {
+  if (!uploadedFile) {
+    showError("Please upload an image first.");
+    return;
+  }
+
+  if (uploadedFile.size > 10 * 1024 * 1024) {
+    showError("File is too large. Max allowed size is 10MB.");
+    return;
+  }
+
+  // prevent duplicate submissions
+  if (convertBtn) convertBtn.disabled = true;
+  if (cancelBtn) cancelBtn.disabled = false;
+
+  // reset state for new job
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  currentJobId = null;
+  socketReadyTimedOut = false;
+
+  const socket = window.__socket;
+  const connected = !!(socket && socket.connected && window.__socketId);
+
+  // allow socket to connect briefly, then fallback to polling
+  if (!connected) {
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      const t = setTimeout(() => {
+        socketReadyTimedOut = true;
+        finish();
+      }, 3000);
+
+      if (socket) {
+        const onConnect = () => {
+          clearTimeout(t);
+          socketReadyTimedOut = false;
+          socket.off("connect", onConnect);
+          finish();
+        };
+        socket.on("connect", onConnect);
+      } else {
+        finish();
       }
+    });
+  }
 
-      body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          Helvetica, Arial, sans-serif;
-        background: #f0f2f5;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        min-height: 100vh;
-        padding: 1rem;
-      }
+  try {
+    setStatus("Submitting conversion job...");
 
-      /* -----------------------------------------------------------------------
-         Chat widget
-      ----------------------------------------------------------------------- */
-      .chat-widget {
-        display: flex;
-        flex-direction: column;
-        width: 100%;
-        max-width: 640px;
-        height: 80vh;
-        max-height: 720px;
-        background: #ffffff;
-        border-radius: 12px;
-        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
-        overflow: hidden;
-      }
+    const fd = buildFormData("convert");
+    if (window.__socketId) fd.set("socketId", window.__socketId);
 
-      /* Header */
-      .chat-header {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        padding: 1rem 1.25rem;
-        background: #4f46e5;
-        color: #ffffff;
-        flex-shrink: 0;
-      }
+    const res = await fetch("/generate-embroidery", {
+      method: "POST",
+      body: fd
+    });
 
-      .chat-header__avatar {
-        width: 36px;
-        height: 36px;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, 0.25);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 1.1rem;
-        flex-shrink: 0;
-      }
+    const data = await res.json().catch(() => ({}));
+    await handleAuthOrThrow(res, data);
 
-      .chat-header__title {
-        font-size: 1rem;
-        font-weight: 600;
-        line-height: 1.2;
-      }
+    const jobId = data.jobId || data.id;
+    if (!jobId) throw new Error("Server did not return a jobId.");
 
-      .chat-header__subtitle {
-        font-size: 0.75rem;
-        opacity: 0.8;
-      }
+    currentJobId = jobId;
 
-      /* Message list */
-      #chat-messages {
-        flex: 1;
-        overflow-y: auto;
-        padding: 1rem 1.25rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.75rem;
-        scroll-behavior: smooth;
-      }
+    // subscribe only after currentJobId is assigned
+    if (window.__socket && window.__socket.connected) {
+      window.__socket.emit("subscribe", currentJobId);
+    } else {
+      socketReadyTimedOut = true;
+    }
 
-      #chat-messages::-webkit-scrollbar {
-        width: 6px;
-      }
+    // polling fallback (or primary if socket unavailable)
+    if (socketReadyTimedOut) {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(() => {
+        if (!currentJobId) return;
+        pollJobStatus(currentJobId);
+      }, 1000);
+      pollJobStatus(currentJobId);
+    }
 
-      #chat-messages::-webkit-scrollbar-thumb {
-        background: #d1d5db;
-        border-radius: 3px;
-      }
-
-      /* Message rows */
-      .chat-message {
-        display: flex;
-        max-width: 80%;
-      }
-
-      .chat-message--user {
-        align-self: flex-end;
-        flex-direction: row-reverse;
-      }
-
-      .chat-message--bot {
-        align-self: flex-start;
-      }
-
-      /* Bubbles */
-      .chat-bubble {
-        display: inline-block;
-        padding: 0.55rem 0.9rem;
-        border-radius: 18px;
-        font-size: 0.9rem;
-        line-height: 1.45;
-        word-break: break-word;
-        white-space: pre-wrap;
-      }
-
-      .chat-message--user .chat-bubble {
-        background: #4f46e5;
-        color: #ffffff;
-        border-bottom-right-radius: 4px;
-      }
-
-      .chat-message--bot .chat-bubble {
-        background: #f3f4f6;
-        color: #111827;
-        border-bottom-left-radius: 4px;
-      }
-
-      /* Input area */
-      .chat-footer {
-        flex-shrink: 0;
-        border-top: 1px solid #e5e7eb;
-        padding: 0.75rem 1rem;
-        background: #ffffff;
-      }
-
-      #chat-form {
-        display: flex;
-        gap: 0.5rem;
-        align-items: flex-end;
-      }
-
-      #chat-input {
-        flex: 1;
-        resize: none;
-        border: 1px solid #d1d5db;
-        border-radius: 8px;
-        padding: 0.55rem 0.85rem;
-        font-size: 0.9rem;
-        font-family: inherit;
-        line-height: 1.45;
-        outline: none;
-        transition: border-color 0.15s;
-        min-height: 42px;
-        max-height: 120px;
-        overflow-y: auto;
-      }
-
-      #chat-input:focus {
-        border-color: #4f46e5;
-        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
-      }
-
-      #chat-input:disabled {
-        background: #f9fafb;
-        color: #9ca3af;
-        cursor: not-allowed;
-      }
-
-      #chat-send {
-        flex-shrink: 0;
-        width: 42px;
-        height: 42px;
-        border: none;
-        border-radius: 8px;
-        background: #4f46e5;
-        color: #ffffff;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.15s, transform 0.1s;
-        font-size: 1.1rem;
-      }
-
-      #chat-send:hover:not(:disabled) {
-        background: #4338ca;
-      }
-
-      #chat-send:active:not(:disabled) {
-        transform: scale(0.95);
-      }
-
-      #chat-send:disabled {
-        background: #a5b4fc;
-        cursor: not-allowed;
-      }
-
-      /* Status bar */
-      .chat-status {
-        font-size: 0.7rem;
-        color: #6b7280;
-        text-align: center;
-        padding: 0.35rem 0 0;
-        min-height: 1.2em;
-      }
-
-      /* -----------------------------------------------------------------------
-         Accessibility: focus-visible ring
-      ----------------------------------------------------------------------- */
-      :focus-visible {
-        outline: 2px solid #4f46e5;
-        outline-offset: 2px;
-      }
-
-      /* -----------------------------------------------------------------------
-         Responsive
-      ----------------------------------------------------------------------- */
-      @media (max-width: 480px) {
-        .chat-widget {
-          height: 100vh;
-          max-height: none;
-          border-radius: 0;
-        }
-
-        body {
-          padding: 0;
-          align-items: stretch;
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <!-- -----------------------------------------------------------------------
-         Chat widget markup
-    ------------------------------------------------------------------------ -->
-    <main class="chat-widget" role="main" aria-label="Chat Assistant">
-      <!-- Header -->
-      <header class="chat-header">
-        <div class="chat-header__avatar" aria-hidden="true">🤖</div>
-        <div>
-          <div class="chat-header__title">Assistant</div>
-          <div class="chat-header__subtitle">Online · Typically replies instantly</div>
-        </div>
-      </header>
-
-      <!-- Message list -->
-      <section
-        id="chat-messages"
-        role="log"
-        aria-live="polite"
-        aria-label="Conversation"
-        aria-relevant="additions"
-      ></section>
-
-      <!-- Input area -->
-      <footer class="chat-footer">
-        <form id="chat-form" novalidate autocomplete="off">
-          <textarea
-            id="chat-input"
-            name="message"
-            rows="1"
-            placeholder="Type a message…"
-            aria-label="Message input"
-            maxlength="2000"
-            spellcheck="true"
-          ></textarea>
-          <button
-            id="chat-send"
-            type="submit"
-            aria-label="Send message"
-            title="Send message"
-          >
-            &#10148;
-          </button>
-        </form>
-        <p class="chat-status" id="chat-status" role="status" aria-live="polite"></p>
-      </footer>
-    </main>
-
-    <!-- -----------------------------------------------------------------------
-         Script load order — strict dependency chain (Phase 3 – Steps 9 & 10)
-
-         Load strategy: plain <script> tags at end-of-body (no defer/async) to
-         guarantee synchronous, sequential evaluation in document order:
-
-           1. session.js      — SessionManager global
-           2. classifier.js   — Classifier global
-           3. bot-events.js   — BotEvents global
-           4. bot.js          — Bot orchestrator (depends on all three above)
-
-         DO NOT reorder, add async, or move these tags into <head> without
-         updating the dependency guards in bot.js.
-    ------------------------------------------------------------------------ -->
-    <script src="session.js"></script>
-    <script src="classifier.js"></script>
-    <script src="bot-events.js"></script>
-    <script src="bot.js"></script>
-  </body>
-</html>
+    setStatus("Job queued...");
+  } catch (err) {
+    showError(err.message || "Conversion failed.");
+    if (convertBtn) convertBtn.disabled = false;
+    if (cancelBtn) cancelBtn.disabled = true;
+  }
+}
