@@ -935,14 +935,6 @@ function computeGlowRing(mask){
   rc.globalCompositeOperation='source-over';
   return ring;
 }
-function startGlowAnimationFromMask(mask){
-  _glowMaskCanvas=mask;
-  _glowRingCanvas=computeGlowRing(mask);
-  window._glowPoly=null;
-  window._glowPhase=0;
-  if(window._glowAnimId)cancelAnimationFrame(window._glowAnimId);
-  drawGlowFrame();
-}
 function startGlowAnimation(poly){
   window._glowPoly=poly;
   _glowMaskCanvas=null;_glowRingCanvas=null;
@@ -1010,52 +1002,7 @@ function onCanvasTap(e){
   callSegmentSubject(tapX,tapY);
 }
 
-async function callSegmentSubject(tapX,tapY){
-  await getIdToken();
-  var fd=new FormData();
-  fd.append('image',cf);
-  if(tapX!==undefined){fd.append('tapX',tapX);fd.append('tapY',tapY);}
-  fetch('/segment-subject',{method:'POST',body:fd,headers:getAuthHeaders()})
-    .then(function(r){return r.json();})
-    .then(function(data){
-      if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
-      if(data.found&&data.maskPng){
-        applyMaskPng(data.maskPng, data.subject);
-      }else if(data.found&&data.grid){
-        applyGeminiGrid(data.grid, data.gridSize||30);
-        var lbl=document.getElementById('confirmedSubjectLabel');
-        var subj=data.subject||'Subject';
-        if(lbl)lbl.textContent=subj.charAt(0).toUpperCase()+subj.slice(1)+' ✓';
-        showMaskState('confirmed');
-        if(navigator.vibrate)navigator.vibrate([30,30,60]);
-        var bar=document.getElementById('maskConfirmBar');
-        if(bar) setTimeout(function(){bar.scrollIntoView({behavior:'smooth',block:'nearest'});},120);
-      }else if(data.found&&Array.isArray(data.polygon)&&data.polygon.length>=6){
-        applyGeminiPolygon(data.polygon);
-        startGlowAnimation(data.polygon);
-        var lbl=document.getElementById('confirmedSubjectLabel');
-        var subj=data.subject||'Subject';
-        if(lbl)lbl.textContent=subj.charAt(0).toUpperCase()+subj.slice(1)+' ✓';
-        showMaskState('confirmed');
-        if(navigator.vibrate)navigator.vibrate([30,30,60]);
-      }else{
-        showMaskState('error',t('wandNotFound'));
-        setTimeout(function(){showMaskState('idle');},2800);
-      }
-    })
-    .catch(function(){
-      if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
-      showMaskState('error',t('wandNotFound'));
-      setTimeout(function(){showMaskState('idle');},2800);
-    });
-}
 
-function confirmSubjectAndAnalyze(){
-  stopGlowAnimation();
-  showMaskState('done');
-  document.getElementById('st').innerHTML='';
-  analyze();
-}
 function redoSubjectDetection(){
   stopGlowAnimation();
   clearMask();
