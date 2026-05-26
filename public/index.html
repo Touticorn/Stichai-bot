@@ -1723,3 +1723,116 @@ function connectWebSocket(){
   socket.on('disconnect', function(){});
   return socket;
 }
+
+// Added by supreme: callSegmentSubject
+async function callSegmentSubject(tapX,tapY){
+  try{
+    if(!cf){ showMaskState('error','No image loaded'); return null; }
+
+    showMaskState('working', t('detectingSubject') || 'Detecting subject…');
+
+    var fd = new FormData();
+    fd.append('image', cf);
+    fd.append('tapX', String(tapX));
+    fd.append('tapY', String(tapY));
+
+    var res = await fetch('/segment-subject',{method:'POST',body:fd,headers:getAuthHeaders()});
+    var response = await res.json();
+    if(!res.ok) throw new Error((response && response.error) || ('HTTP '+res.status));
+
+    const {
+      mask,
+      maskPng,
+      polygon,
+      confidence = 1.0,
+      method = 'unknown',
+      boundingBox,
+      subject = null,
+      grid,
+      gridSize,
+      personCanvas
+    } = (response || {});
+
+    const finalMask = mask || maskPng || null;
+    dd = {
+      ...(response || {}),
+      mask: finalMask,
+      polygon: polygon || null,
+      confidence: Number(confidence),
+      method: method,
+      boundingBox: boundingBox || null,
+      subject: subject
+    };
+    window._lastSubjectDetection = dd;
+
+    console.log('[segment-subject]', { method: dd.method, confidence: dd.confidence, boundingBox: dd.boundingBox });
+
+    if(finalMask){
+      applyMaskPng(finalMask, subject);
+      startGlowAnimationFromMask(finalMask);
+    }else if(Array.isArray(polygon) && polygon.length){
+      applyGeminiPolygon(polygon);
+      startGlowAnimation(polygon);
+    }else if(grid){
+      applyGeminiGrid(grid, gridSize || 0);
+    }else if(personCanvas){
+      applyPersonCanvas(personCanvas);
+    }
+
+    if(dd.confidence < 0.6){
+      showMaskState('warning', t('lowConfidenceMask') || 'Low confidence selection. You can continue or redo.');
+    }else{
+      showMaskState('ok', t('subjectReady') || 'Subject detected.');
+    }
+
+    return dd;
+  }catch(err){
+    console.error('callSegmentSubject error:', err);
+    showMaskState('error', (t('errNetwork') || 'Detection failed') + ': ' + (err && err.message ? err.message : 'unknown'));
+    return null;
+  }
+}
+
+// Added by supreme: confirmSubjectAndAnalyze
+function confirmSubjectAndAnalyze(){
+  var det = window._lastSubjectDetection || dd || null;
+
+  if(det && typeof det.confidence === 'number' && det.confidence < 0.6){
+    console.info('[telemetry] low-confidence-subject-confirmed', {
+      confidence: det.confidence,
+      method: det.method || 'unknown'
+    });
+  }
+
+  if(det && det.subject){
+    var lbl = document.getElementById('confirmedSubjectLabel');
+    if(lbl) lbl.textContent = det.subject;
+  }
+
+  analyze();
+}
+
+// Added by supreme: startGlowAnimationFromMask
+function startGlowAnimationFromMask(mask){
+  var ring = computeGlowRing(mask);
+  var det = window._lastSubjectDetection || dd || null;
+  var bb = det && det.boundingBox ? det.boundingBox : null;
+
+  if(bb && bb.w>0 && bb.h>0){
+    var cx = bb.x + bb.w/2;
+    var cy = bb.y + bb.h/2;
+    var hw = bb.w * 0.54;
+    var hh = bb.h * 0.54;
+    var bbPoly = [
+      [cx-hw, cy-hh],
+      [cx+hw, cy-hh],
+      [cx+hw, cy+hh],
+      [cx-hw, cy+hh]
+    ];
+    if(!ring || !ring.length) ring = bbPoly;
+  }
+
+  if(ring && ring.length){
+    startGlowAnimation(ring);
+  }
+}
