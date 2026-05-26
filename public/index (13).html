@@ -789,28 +789,31 @@ dz.addEventListener('drop', function(e){
 });
 
 function handleFile(f){
-  if(!f) return;
-  var okTypes=['image/jpeg','image/png','image/webp'];
-  if(okTypes.indexOf((f.type||'').toLowerCase())===-1){
-    alert((typeof t==='function'&&t('invalidFile'))||'Invalid file type');
+  if(!f.type.match(/^image\//)){
+    document.getElementById('st').innerHTML='<div class="error">'+t('errFileType')+'</div>';
     return;
   }
-  if((f.size||0) > 10*1024*1024){
-    alert((typeof t==='function'&&t('invalidFile'))||'File too large (max 10MB)');
+  if(f.size > 10*1024*1024){
+    document.getElementById('st').innerHTML='<div class="error">'+t('errFileSize')+'</div>';
     return;
   }
   cf=f;
-  var fr=new FileReader();
-  fr.onload=function(e){
+  stopGlowAnimation();
+  if(c3) c3.getContext('2d').clearRect(0,0,c3.width,c3.height);
+  hm=false;
+  window._confirmedPolygon=null;
+  if(document.getElementById('maskIdleOverlay')) showMaskState('idle');
+  document.getElementById('st').innerHTML='<p class="ok">'+t('ready')+' <strong>'+f.name+'</strong> ('+(f.size/1024).toFixed(0)+'KB)</p>';
+  var r=new FileReader();
+  r.onload=function(e){
     cdu=e.target.result;
+    document.getElementById('oi').src=cdu;
+    document.getElementById('pw').style.display='block';
+    document.getElementById('modeCard').style.display='block';
     initMask(cdu);
   };
-  fr.onerror=function(){
-    alert((typeof t==='function'&&t('invalidFile'))||'Failed to read file');
-  };
-  fr.readAsDataURL(f);
+  r.readAsDataURL(f);
 }
-
 
 function setMode(m){
   designMode=m;
@@ -1698,28 +1701,3 @@ window.generate = function() {
 </script>
 </body>
 </html>
-
-// Added by supreme: connectWebSocket
-function connectWebSocket(){
-  if(socket && !socket.disconnected) return socket;
-  socket = io();
-
-  socket.on('connect', function(){
-    if(jid) socket.emit('subscribe', jid);
-  });
-
-  socket.on('progress', function(data){
-    if(!data || !data.jobId || (jid && data.jobId!==jid)) return;
-    var prog=document.getElementById('progressBar');
-    if(prog) prog.style.width=(data.progress||0)+'%';
-    var msgDiv=document.getElementById('progressMsg');
-    if(msgDiv) msgDiv.innerText=data.message||('Progress: '+(data.progress||0)+'%');
-    if(data.message==='cancelled' || data.message==='Cancelled'){
-      var cbtn=document.getElementById('cancelBtn');
-      if(cbtn) cbtn.style.display='none';
-    }
-  });
-
-  socket.on('disconnect', function(){});
-  return socket;
-}
