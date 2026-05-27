@@ -2718,3 +2718,427 @@ function showMaskState(state, msg){
   el.className = 'mask-state ' + (state || 'empty');
   el.textContent = txt;
 }
+
+// Added by supreme: callSegmentSubject
+async function callSegmentSubject(fileOrBlob, { tapX, tapY, mode, signal } = {}) {
+  const flagKey = '_segmentInFlight';
+  if (window[flagKey]) return { ok: false, error: 'in_flight' };
+  window[flagKey] = true;
+  stopGlowAnimation();
+
+  let timeoutId;
+  let internalAbort = new AbortController();
+
+  const fd = new FormData();
+  fd.append('image', fileOrBlob);
+  if (tapX !== undefined) fd.append('tapX', tapX);
+  if (tapY !== undefined) fd.append('tapY', tapY);
+  if (mode) fd.append('mode', mode);
+
+  const doFetch = async (ctrl) => {
+    let abortHandler = null;
+    if (signal) {
+      abortHandler = () => ctrl.abort();
+      signal.addEventListener('abort', abortHandler);
+    }
+    timeoutId = setTimeout(() => ctrl.abort(), 30000);
+    try {
+      const res = await fetch('/segment-subject', {
+        method: 'POST',
+        body: fd,
+        headers: getAuthHeaders(),
+        signal: ctrl.signal
+      });
+      return res;
+    } finally {
+      clearTimeout(timeoutId);
+      if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+    }
+  };
+
+  let res;
+  try {
+    res = await doFetch(internalAbort);
+  } catch (e) {
+    if ((e instanceof TypeError || (res && res.status >= 500)) && (!signal || !signal.aborted)) {
+      internalAbort = new AbortController();
+      try {
+        res = await doFetch(internalAbort);
+      } catch (e2) {
+        window[flagKey] = false;
+        return { ok: false, error: e2.message || 'Network error after retry' };
+      }
+    } else {
+      window[flagKey] = false;
+      return { ok: false, error: e.message || 'Fetch failed' };
+    }
+  }
+
+  if (!res || !res.ok) {
+    window[flagKey] = false;
+    let errMsg = 'Server error';
+    try { const errData = await res.json(); errMsg = errData.error || errMsg; } catch(e){}
+    return { ok: false, error: errMsg };
+  }
+
+  let result;
+  try { result = await res.json(); } catch(e) {
+    window[flagKey] = false;
+    return { ok: false, error: 'Invalid JSON' };
+  }
+
+  window[flagKey] = false;
+  stopGlowAnimation();
+
+  let applied = false;
+  if (result.mask) {
+    applied = await applyMaskPng(result.mask);
+    if (!applied) result.mask = null;
+  }
+  if (!applied && result.polygon) {
+    applied = applyGeminiPolygon(result.polygon);
+  }
+  if (!applied && result.personCanvas) {
+    applied = await applyPersonCanvas(result.personCanvas);
+    if (!applied) result.personCanvas = null;
+  }
+  if (!applied && result.grid) {
+    applied = applyGeminiGrid(result.grid, result.gridSize || 32);
+  }
+
+  if (!applied) {
+    showMaskState('fallback', 'Masking failed. Please use manual brush.');
+    return { ok: true, fallback: true, ...result };
+  }
+
+  window._cachedSegmentationResult = result;
+  return { ok: true, ...result };
+}
+
+// Added by supreme: applyMaskPng
+async function applyMaskPng(base64Png) {
+  if (!base64Png) return false;
+  return new Promise((resolve) => {
+    var img = new Image();
+    img.onload = function() {
+      if (img.width !== 800 || img.height !== 800) return resolve(false);
+      mX.clearRect(0,0,800,800);
+      mX.drawImage(img,0,0);
+      var data = mX.getImageData(0,0,800,800).data;
+      var hasPixels = false;
+      for(var i=3; i<data.length; i+=4) {
+        if(data[i] > 10) { hasPixels = true; break; }
+      }
+      if(!hasPixels) {
+        mX.clearRect(0,0,800,800);
+        return resolve(false);
+      }
+      hm = true;
+      startGlowAnimation();
+      resolve(true);
+    };
+    img.onerror = () => resolve(false);
+    img.src = "data:image/png;base64," + base64Png.replace(/^data:image\/png;base64,/, '');
+  });
+}
+
+// Added by supreme: applyPersonCanvas
+async function applyPersonCanvas(personData) {
+  if (!personData) return false;
+  return new Promise((resolve) => {
+    var img = new Image();
+    img.onload = function() {
+      mX.clearRect(0,0,800,800);
+      mX.drawImage(img,0,0,800,800);
+      var data = mX.getImageData(0,0,800,800).data;
+      var hasPixels = false;
+      for(var i=3; i<data.length; i+=4) {
+        if(data[i] > 10) { hasPixels = true; break; }
+      }
+      if(!hasPixels) {
+        mX.clearRect(0,0,800,800);
+        return resolve(false);
+      }
+      hm = true;
+      startGlowAnimation();
+      resolve(true);
+    };
+    img.onerror = () => resolve(false);
+    img.src = personData;
+  });
+}
+
+// Added by supreme: applyGeminiPolygon
+function applyGeminiPolygon(polygon) {
+  if (!polygon || polygon.length < 3) return false;
+  mX.clearRect(0,0,800,800);
+  mX.fillStyle = 'rgba(255,0,0,0.5)';
+  mX.beginPath();
+  for(var i=0; i<polygon.length; i++){
+    var pt = polygon[i];
+    var px = Math.max(0, Math.min(800, pt.y !== undefined ? pt.y : pt[0]));
+    var py = Math.max(0, Math.min(800, pt.x !== undefined ? pt.x : pt[1]));
+    if(i===0) mX.moveTo(px, py);
+    else mX.lineTo(px, py);
+  }
+  mX.closePath();
+  mX.fill();
+  hm = true;
+  startGlowAnimation();
+  return true;
+}
+
+// Added by supreme: applyGeminiGrid
+function applyGeminiGrid(grid, gridSize) {
+  if (!grid || !gridSize || grid.length !== gridSize * gridSize) return false;
+  mX.clearRect(0,0,800,800);
+  var cellW = 800 / gridSize;
+  var cellH = 800 / gridSize;
+  mX.fillStyle = 'rgba(255,0,0,0.5)';
+  for(var r=0; r<gridSize; r++){
+    for(var c=0; c<gridSize; c++){
+      if(grid[r * gridSize + c] > 0){
+        mX.fillRect(c * cellW, r * cellH, cellW, cellH);
+      }
+    }
+  }
+  hm = true;
+  startGlowAnimation();
+  return true;
+}
+
+// Added by supreme: analyze
+async function analyze() {
+  if(!cf) return;
+  var btn = document.getElementById('aB');
+  btn.disabled = true;
+  document.getElementById('st').innerHTML = '';
+
+  if (window._cartoonMode || designMode === 'cartoon') {
+    document.getElementById('st').innerHTML = '<div style="color:var(--text);font-size:14px">Cartoonizing...</div>';
+    var fd = new FormData();
+    fd.append('image', cf);
+    fd.append('mode', 'cartoon');
+    fd.append('canvasSize', designSize);
+    fd.append('colorCount', colorCount);
+    doAnalyze(fd);
+    return;
+  }
+
+  document.getElementById('mP').style.display = 'block';
+  btn.textContent = 'Analyzing...';
+
+  var res = await callSegmentSubject(cf);
+  if(!res.ok){
+    showMaskState('error', res.error);
+    btn.disabled = false;
+    btn.textContent = '✨ '+t('analyze');
+    return;
+  }
+
+  btn.disabled = false;
+  btn.textContent = '✨ '+t('analyze');
+  if(!res.fallback) {
+    document.getElementById('mP').style.display = 'block';
+  }
+}
+
+// Added by supreme: doAnalyze
+async function doAnalyze(fd){
+  if(!window._cartoonMode && hm && mC){
+    var blob = await new Promise(r => mC.toBlob(r, 'image/png'));
+    if(blob) fd.append('mask', blob);
+  }
+  if(window._cartoonMode) {
+    fd.append('mode', 'cartoon');
+  }
+  var btn=document.getElementById('aB');
+  btn.disabled=true;
+  var xhr=new XMLHttpRequest();
+  xhr.open('POST','/detect-shapes',true);
+  xhr.setRequestHeader('Authorization','Bearer '+(await getIdToken()));
+  xhr.onload=function(){
+    btn.disabled=false;
+    btn.textContent='✨ '+t('analyze');
+    if(xhr.status!=200){document.getElementById('st').innerHTML='<div class="error">'+t('errHttp')+' '+xhr.status+'</div>';return}
+    try{d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">'+t('errInvalid')+'</div>';return}
+    if(d.error){document.getElementById('st').innerHTML='<div class="error">'+d.error+'</div>';return}
+    if(d.fallback){document.getElementById('st').innerHTML+='<div class="warning">Notice: Cartoon conversion failed, falling back.</div>';}
+    document.getElementById('mP').style.display='none';
+    document.getElementById('sc').style.display='block';
+    ci=d.colors;
+    dd=d;
+    initColorState();
+    renderColorItem(0);
+    setTimeout(function(){document.getElementById('sc').scrollIntoView({behavior:'smooth'});},100);
+  };
+  xhr.onerror=function(){
+    btn.disabled=false;
+    btn.textContent='✨ '+t('analyze');
+    document.getElementById('st').innerHTML='<div class="error">'+t('errNetwork')+'</div>';
+  };
+  xhr.send(fd);
+}
+
+// Added by supreme: confirmSubjectAndAnalyze
+async function confirmSubjectAndAnalyze(){
+  var fd=new FormData();
+  fd.append('image',cf);
+  fd.append('canvasSize',designSize);
+  fd.append('colorCount',colorCount);
+  doAnalyze(fd);
+}
+
+// Added by supreme: onCanvasTap
+async function onCanvasTap(e){
+  if(designMode==='cartoon'||window._segmentInFlight) return;
+  var rect=c1.getBoundingClientRect();
+  var rx=e.clientX-rect.left, ry=e.clientY-rect.top;
+  var scaleX=800/rect.width, scaleY=800/rect.height;
+  var tapX=Math.floor(rx*scaleX), tapY=Math.floor(ry*scaleY);
+  lx=tapX; ly=tapY;
+  var now=Date.now();
+  if(window._lastTap && now-window._lastTap<300)return;
+  window._lastTap=now;
+  showMaskState('loading','');
+  var res=await callSegmentSubject(cf,{tapX,tapY});
+  if(!res.ok) showMaskState('error',res.error);
+  else if(!res.fallback) showMaskState('success','');
+}
+
+// Added by supreme: redoSubjectDetection
+async function redoSubjectDetection(){
+  clearMask();
+  showMaskState('loading','');
+  var res=await callSegmentSubject(cf,{tapX:lx,tapY:ly});
+  if(!res.ok) showMaskState('error',res.error);
+  else if(!res.fallback) showMaskState('success','');
+}
+
+// Added by supreme: setMode
+function setMode(m){
+  designMode=m;
+  var bL=document.getElementById('btnLogo'),bP=document.getElementById('btnPhoto'),bC=document.getElementById('btnCartoon');
+  if(bL)bL.classList.remove('on');
+  if(bP)bP.classList.remove('on');
+  if(bC)bC.classList.remove('on');
+  if(m==='logo'){if(bL)bL.classList.add('on'); document.getElementById('ds').value='medium'; window._cartoonMode=false; }
+  else if(m==='photo'){if(bP)bP.classList.add('on'); document.getElementById('ds').value='high'; window._cartoonMode=false; }
+  else if(m==='cartoon'){
+    if(bC)bC.classList.add('on');
+    window._cartoonMode=true;
+    if(!window._colorCountUserSet) {
+       colorCount = 6;
+       var fs=document.getElementById('fs');
+       if(fs) fs.value = 6;
+    }
+    clearMask();
+  }
+  var mt = document.getElementById('maskTools');
+  if(mt) mt.style.display = window._cartoonMode ? 'none' : 'block';
+}
+
+// Added by supreme: clearMask
+function clearMask(){
+  stopGlowAnimation();
+  if(!mX)return;
+  mX.clearRect(0,0,800,800);
+  hm=false;
+}
+
+// Added by supreme: computeGlowRing
+function computeGlowRing(mask){
+  if(!hm || !mask)return null;
+  var w=800,h=800;
+  var ring=new Uint8Array(w*h);
+  for(var y=1;y<h-1;y++){
+    for(var x=1;x<w-1;x++){
+      var idx=(y*w+x)*4+3;
+      if(mask[idx]>128){
+        if(mask[idx-4]<128||mask[idx+4]<128||mask[idx-w*4]<128||mask[idx+w*4]<128) ring[y*w+x]=1;
+      }
+    }
+  }
+  return ring;
+}
+
+// Added by supreme: drawGlowFrame
+function drawGlowFrame(){
+  if(!hm) { stopGlowAnimation(); return; }
+  if(!window._glowRing||!c3)return;
+  var ctx=c3.getContext('2d');
+  ctx.clearRect(0,0,800,800);
+  var t=Date.now()/500;
+  var r=Math.floor(Math.sin(t)*127+128);
+  var g=Math.floor(Math.sin(t+2)*127+128);
+  var b=Math.floor(Math.sin(t+4)*127+128);
+  var img=ctx.createImageData(800,800);
+  var data=img.data;
+  var ring=window._glowRing;
+  for(var i=0;i<640000;i++){
+    if(ring[i]){
+      var idx=i*4;
+      data[idx]=r;data[idx+1]=g;data[idx+2]=b;data[idx+3]=255;
+    }
+  }
+  ctx.putImageData(img,0,0);
+  window._glowAnimId=requestAnimationFrame(drawGlowFrame);
+}
+
+// Added by supreme: stopGlowAnimation
+function stopGlowAnimation(){
+  if(window._glowAnimId){
+    cancelAnimationFrame(window._glowAnimId);
+    window._glowAnimId=null;
+  }
+  if(c3){
+    var ctx=c3.getContext('2d');
+    ctx.clearRect(0,0,800,800);
+  }
+}
+
+// Added by supreme: cancelGeneration
+function cancelGeneration() {
+  stopGlowAnimation();
+  if (socket && currentJobId) socket.emit('cancel', currentJobId);
+  const cancelBtn = document.getElementById('cancelBtn');
+  if (cancelBtn) cancelBtn.disabled = true;
+}
+
+// Added by supreme: doGen
+async function doGen(fd,sc,ss,btn){
+  btn.disabled=true;
+  btn.textContent='Generating...';
+  document.getElementById('cancelBtn').style.display='inline-block';
+  document.getElementById('cancelBtn').disabled=false;
+  var xhr=new XMLHttpRequest();
+  xhr.open('POST','/generate-embroidery',true);
+  xhr.setRequestHeader('Authorization','Bearer '+(await getIdToken()));
+  xhr.onload=function(){
+    btn.disabled=false;
+    btn.textContent='⚡ '+t('generate');
+    document.getElementById('cancelBtn').style.display='none';
+    if(xhr.status!=200){
+      var msg = t('errHttp')+' '+xhr.status;
+      try{ var err = JSON.parse(xhr.responseText); if(err.error) msg = err.error; }catch(e){}
+      document.getElementById('st').innerHTML='<div class="error">'+msg+'</div>';
+      return;
+    }
+    try{var d=JSON.parse(xhr.responseText)}catch(e){document.getElementById('st').innerHTML='<div class="error">'+t('errInvalid')+'</div>';return}
+    if(d.error){
+      document.getElementById('st').innerHTML='<div class="error">'+d.error+'</div>';
+      return;
+    }
+    jid=d.id;
+    currentJobId=jid;
+    if(socket) socket.emit('subscribe', jid);
+    document.getElementById('batchDownloadBtn').style.display='inline-block';
+  };
+  xhr.onerror=function(){
+    btn.disabled=false;
+    btn.textContent='⚡ '+t('generate');
+    document.getElementById('cancelBtn').style.display='none';
+    document.getElementById('st').innerHTML='<div class="error">'+t('errNetwork')+'</div>';
+  };
+  xhr.send(fd);
+}
