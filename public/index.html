@@ -2269,3 +2269,452 @@ async function doAnalyze(fd){
     }
   });
 }
+
+// Added by supreme: callSegmentSubject
+async function callSegmentSubject(file, tapX, tapY, opts){
+  opts = opts || {};
+  var mode = opts.mode || designMode || 'logo';
+  if(!file) return { ok:false, applied:'none', reason:'no_file', raw:{} };
+
+  var supportsAbort = (typeof AbortController !== 'undefined');
+  var ctl = supportsAbort ? new AbortController() : null;
+  if(window.__subjectCtl && window.__subjectCtl.abort){ try{ window.__subjectCtl.abort(); }catch(_){} }
+  window.__subjectCtl = ctl || null;
+
+  async function oneAttempt(attempt){
+    var fd = new FormData();
+    fd.append('image', file);
+    fd.append('file', file);
+    if(typeof tapX === 'number' && isFinite(tapX)) fd.append('tapX', String(tapX));
+    if(typeof tapY === 'number' && isFinite(tapY)) fd.append('tapY', String(tapY));
+    fd.append('mode', mode);
+    fd.append('designMode', mode);
+
+    var timeoutId = null;
+    try{
+      var req = fetch('/segment-subject', {
+        method:'POST',
+        body:fd,
+        headers:getAuthHeaders(),
+        signal:(supportsAbort && ctl) ? ctl.signal : undefined
+      });
+
+      var res;
+      if(supportsAbort && ctl){
+        timeoutId = setTimeout(function(){ try{ ctl.abort(); }catch(_){} }, 30000);
+        res = await req;
+      }else{
+        res = await Promise.race([
+          req,
+          new Promise(function(_,rej){ timeoutId=setTimeout(function(){ rej(new Error('timeout')); },30000); })
+        ]);
+      }
+
+      var raw = {};
+      try{ raw = await res.json(); }catch(_){ raw = {}; }
+
+      if(!res.ok || (raw && (raw.error || raw.message))){
+        var status = res.status || 0;
+        if(attempt===0 && status>=500){
+          await new Promise(function(r){ setTimeout(r,500); });
+          return oneAttempt(1);
+        }
+        return { ok:false, applied:'none', reason:(raw.error||raw.message||('http_'+status)), raw:raw };
+      }
+
+      console.info('[subject-extract] try mask');
+      try{ if(raw.mask_png && await applyMaskPng(raw.mask_png, raw.subject)) return { ok:true, applied:'mask', raw:raw }; }catch(_){}
+
+      console.info('[subject-extract] fallback polygon');
+      try{ if(raw.polygon && await applyGeminiPolygon(raw.polygon)) return { ok:true, applied:'polygon', raw:raw }; }catch(_){}
+
+      console.info('[subject-extract] fallback personCanvas');
+      try{ if(raw.person_canvas && await applyPersonCanvas(raw.person_canvas)) return { ok:true, applied:'person', raw:raw }; }catch(_){}
+
+      console.info('[subject-extract] fallback grid');
+      try{
+        var gs = raw.grid_size || raw.gridSize;
+        if(raw.grid && await applyGeminiGrid(raw.grid, gs)) return { ok:true, applied:'grid', raw:raw };
+      }catch(_){}
+
+      return { ok:false, applied:'none', reason:'no_subject', raw:raw };
+    }catch(err){
+      var aborted = (err && (err.name==='AbortError' || /aborted/i.test(String(err.message||''))));
+      var timedOut = (!aborted && /timeout/i.test(String(err && err.message || '')));
+      if(attempt===0 && !aborted && !timedOut){
+        await new Promise(function(r){ setTimeout(r,500); });
+        return oneAttempt(1);
+      }
+      return { ok:false, applied:'none', reason:aborted?'aborted':(timedOut?'timeout':'network'), raw:{} };
+    }finally{
+      if(timeoutId) clearTimeout(timeoutId);
+    }
+  }
+
+  try{
+    return await oneAttempt(0);
+  }catch(_){
+    return { ok:false, applied:'none', reason:'network', raw:{} };
+  }finally{
+    if(window.__subjectCtl===ctl) window.__subjectCtl = null;
+  }
+}
+
+// Added by supreme: onCanvasTap
+function onCanvasTap(e){
+  if(!cf || !mC || !mX) return;
+  var p = gp(e); lx = p.x; ly = p.y;
+  if(tl!=='brush' && tl!=='wand') return;
+  if(window.__subjectTapBusy) return;
+  window.__subjectTapBusy = true;
+  showMaskState('loading', t('detecting_subject') || 'Detecting subject...');
+
+  (async function(){
+    var r = await callSegmentSubject(cf, lx, ly, { mode:designMode });
+    if(r.ok){
+      hm = true;
+      showMaskState('ok', t('subject_detected') || 'Subject detected');
+    }else if(r.reason==='aborted'){
+      showMaskState('empty', '');
+    }else if(r.reason==='no_subject'){
+      showMaskState('warn', t('no_subject_found') || 'No subject found');
+    }else{
+      showMaskState('error', t('errNetwork') || 'Network error');
+    }
+  })().finally(function(){
+    setTimeout(function(){ window.__subjectTapBusy = false; }, 250);
+  });
+}
+
+// Added by supreme: confirmSubjectAndAnalyze
+async function confirmSubjectAndAnalyze(){
+  if(!cf) return;
+  showMaskState('loading', t('detecting_subject') || 'Detecting subject...');
+  var r = await callSegmentSubject(cf, lx, ly, { mode:designMode });
+
+  if(r.ok){
+    hm = true;
+    showMaskState('ok', t('subject_detected') || 'Subject detected');
+    return analyze();
+  }
+
+  if(r.reason === 'aborted'){
+    return;
+  }
+
+  if(r.reason === 'no_subject'){
+    showMaskState('warn', t('no_subject_found') || 'No subject found');
+    var host = document.getElementById('csl');
+    if(host){
+      host.innerHTML =
+        (t('no_subject_found') || 'No subject found') + ' ' +
+        '<button class="btn btn-secondary btn-sm" onclick="redoSubjectDetection()">'+(t('retry')||'Retry')+'</button> ' +
+        '<button class="btn btn-secondary btn-sm" onclick="skipMaskAndAnalyze()">'+(t('continue')||'Continue')+'</button>';
+    }
+    return;
+  }
+
+  showMaskState('error', (t('errNetwork') || 'Network error'));
+  var h = document.getElementById('csl');
+  if(h){
+    h.innerHTML = (t('errNetwork') || 'Network error') +
+      ' <button class="btn btn-secondary btn-sm" onclick="confirmSubjectAndAnalyze()">'+(t('retry')||'Retry')+'</button>';
+  }
+}
+
+// Added by supreme: analyze
+async function analyze(){
+  var aB = document.getElementById('aB');
+  if(aB) aB.disabled = true;
+
+  try{
+    if(!cf){
+      if(aB) aB.disabled = false;
+      return;
+    }
+
+    if(designMode !== 'photo'){
+      showMaskState('loading', t('detecting_subject') || 'Detecting subject...');
+      var seg = await callSegmentSubject(cf, lx, ly, { mode:designMode });
+      if(!seg.ok){
+        if(seg.reason !== 'aborted'){
+          showMaskState(seg.reason==='no_subject'?'warn':'error',
+            seg.reason==='no_subject' ? (t('no_subject_found')||'No subject found') : (t('errNetwork')||'Network error'));
+        }
+        return;
+      }
+      hm = true;
+      showMaskState('ok', t('subject_detected') || 'Subject detected');
+    }else{
+      hm = false;
+    }
+
+    var fd = new FormData();
+    fd.append('image', cf);
+    fd.append('file', cf);
+    fd.append('size', String(designSize || '800'));
+    fd.append('mode', String(designMode || 'logo'));
+    fd.append('designMode', String(designMode || 'logo'));
+
+    if(hm && mC){
+      try{ fd.append('mask', mC.toDataURL('image/png')); }catch(_){}
+    }
+
+    if(designMode === 'cartoon'){
+      var cc = parseInt(colorCount, 10);
+      if(!isFinite(cc) || cc < 1) cc = 8;
+      cc = Math.max(4, Math.min(12, cc));
+      colorCount = cc;
+      fd.append('colorCount', String(cc));
+      fd.set('designMode', 'cartoon');
+      fd.set('mode', 'cartoon');
+    }
+
+    await doAnalyze(fd);
+  }finally{
+    if(aB) aB.disabled = false;
+  }
+}
+
+// Added by supreme: doAnalyze
+async function doAnalyze(fd){
+  var aB = document.getElementById('aB');
+  return new Promise(function(resolve){
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST','/detect-shapes',true); // TODO: verify route reads designMode
+    var h = getAuthHeaders ? getAuthHeaders() : {};
+    for(var k in h) xhr.setRequestHeader(k,h[k]);
+
+    xhr.onload = function(){
+      if(aB) aB.disabled = false;
+      var d = {};
+      try{ d = JSON.parse(xhr.responseText || '{}'); }catch(_){}
+      if(xhr.status !== 200){
+        var msg = d.error || d.message || ((t('errHttp') || 'HTTP error') + ' ' + xhr.status);
+        document.getElementById('st').innerHTML = '<div class="error">'+msg+'</div>';
+        return resolve(null);
+      }
+      dd = d;
+      if(typeof initColorState === 'function') initColorState();
+      var sc = document.getElementById('sc');
+      if(sc) sc.style.display = 'block';
+      resolve(d);
+    };
+
+    xhr.onerror = function(){
+      if(aB) aB.disabled = false;
+      document.getElementById('st').innerHTML = '<div class="error">'+(t('errNetwork') || 'Network error')+'</div>';
+      resolve(null);
+    };
+
+    xhr.send(fd);
+  });
+}
+
+// Added by supreme: applyMaskPng
+async function applyMaskPng(base64Png, subject){
+  if(!mC || !mX || typeof base64Png !== 'string') return false;
+  var s = base64Png.trim();
+  if(!s) return false;
+  if(!/^data:image\/png;base64,/.test(s)){
+    if(!/^[A-Za-z0-9+/=\s]+$/.test(s) || s.replace(/\s+/g,'').length < 100) return false;
+    s = 'data:image/png;base64,' + s.replace(/\s+/g,'');
+  }
+
+  var img = await new Promise(function(resolve){
+    var im = new Image();
+    im.onload = function(){ resolve(im); };
+    im.onerror = function(){ resolve(null); };
+    im.src = s;
+  });
+  if(!img) return false;
+
+  var w = mC.width, h = mC.height;
+  mX.clearRect(0,0,w,h);
+  mX.drawImage(img, 0, 0, w, h);
+
+  var alpha = mX.getImageData(0,0,w,h).data;
+  var on = 0;
+  for(var i=3;i<alpha.length;i+=4){ if(alpha[i] > 0) on++; }
+  var coverage = on / (w*h);
+  if(coverage < 0.01 || coverage > 0.99){
+    mX.clearRect(0,0,w,h);
+    return false;
+  }
+
+  hm = true;
+  stopGlowAnimation();
+  computeGlowRing(subject || null);
+  startGlowAnimation();
+  return true;
+}
+
+// Added by supreme: applyGeminiPolygon
+function applyGeminiPolygon(polygon){
+  if(!mC || !mX || !Array.isArray(polygon) || polygon.length < 3) return false;
+  var w = mC.width, h = mC.height, maxV = 0, i, p, x, y;
+  for(i=0;i<polygon.length;i++){
+    p = polygon[i] || {};
+    x = Array.isArray(p) ? p[0] : p.x;
+    y = Array.isArray(p) ? p[1] : p.y;
+    maxV = Math.max(maxV, Math.abs(+x||0), Math.abs(+y||0));
+  }
+  var normalized = maxV <= 1.0;
+
+  mX.clearRect(0,0,w,h);
+  mX.beginPath();
+  for(i=0;i<polygon.length;i++){
+    p = polygon[i] || {};
+    x = +(Array.isArray(p) ? p[0] : p.x);
+    y = +(Array.isArray(p) ? p[1] : p.y);
+    if(!isFinite(x) || !isFinite(y)) return false;
+    if(normalized){ x *= w; y *= h; }
+    x = Math.max(0, Math.min(w, x));
+    y = Math.max(0, Math.min(h, y));
+    if(i===0) mX.moveTo(x,y); else mX.lineTo(x,y);
+  }
+  mX.closePath();
+  mX.fillStyle = 'rgba(255,255,255,1)';
+  mX.fill();
+
+  hm = true;
+  stopGlowAnimation();
+  computeGlowRing();
+  startGlowAnimation();
+  return true;
+}
+
+// Added by supreme: applyPersonCanvas
+function applyPersonCanvas(personCanvas){
+  if(!mC || !mX || !personCanvas) return false;
+  var w = mC.width, h = mC.height;
+  var src = null;
+
+  if(personCanvas instanceof HTMLCanvasElement){
+    if(personCanvas.width <= 0 || personCanvas.height <= 0) return false;
+    src = personCanvas;
+  }else if(typeof personCanvas === 'string'){
+    src = document.createElement('canvas');
+    src.width = w; src.height = h;
+    var sx = src.getContext('2d');
+    try{
+      var img = new Image();
+      img.src = personCanvas.indexOf('data:')===0 ? personCanvas : ('data:image/png;base64,'+personCanvas);
+      sx.drawImage(img,0,0,w,h);
+    }catch(_){ return false; }
+  }else{
+    return false;
+  }
+
+  mX.clearRect(0,0,w,h);
+  mX.drawImage(src,0,0,w,h);
+
+  var d = mX.getImageData(0,0,w,h).data, on = 0;
+  for(var i=3;i<d.length;i+=4){ if(d[i] > 0) on++; }
+  if(on < (w*h*0.01)){ mX.clearRect(0,0,w,h); return false; }
+
+  hm = true;
+  stopGlowAnimation();
+  computeGlowRing();
+  startGlowAnimation();
+  return true;
+}
+
+// Added by supreme: applyGeminiGrid
+function applyGeminiGrid(grid, gridSize){
+  if(!mC || !mX || !Array.isArray(grid) || !grid.length) return false;
+  var n = parseInt(gridSize,10);
+  if(!isFinite(n) || n < 2) n = Math.round(Math.sqrt(grid.length));
+  if(n*n !== grid.length) return false;
+
+  var ones = 0, i;
+  for(i=0;i<grid.length;i++){ if(+grid[i]) ones++; }
+  var allZero = ones===0, allOne = ones===grid.length;
+  if(allZero) return false;
+  if(allOne && designMode!=='cartoon') return false;
+
+  var dil = new Array(grid.length).fill(0);
+  for(var y=0;y<n;y++){
+    for(var x=0;x<n;x++){
+      var idx = y*n + x, v = +grid[idx] ? 1 : 0;
+      if(v){ dil[idx]=1; continue; }
+      for(var dy=-1;dy<=1;dy++){
+        for(var dx=-1;dx<=1;dx++){
+          var xx=x+dx, yy=y+dy;
+          if(xx>=0 && yy>=0 && xx<n && yy<n && +grid[yy*n+xx]){ dil[idx]=1; dx=2; dy=2; }
+        }
+      }
+    }
+  }
+
+  var w = mC.width, h = mC.height;
+  var cw = w/n, ch = h/n;
+  mX.clearRect(0,0,w,h);
+  mX.fillStyle = 'rgba(255,255,255,1)';
+  for(y=0;y<n;y++){
+    for(var x2=0;x2<n;x2++){
+      if(!dil[y*n+x2]) continue;
+      mX.fillRect(Math.floor(x2*cw), Math.floor(y*ch), Math.ceil(cw), Math.ceil(ch));
+    }
+  }
+
+  hm = true;
+  stopGlowAnimation();
+  computeGlowRing();
+  startGlowAnimation();
+  return true;
+}
+
+// Added by supreme: setMode
+function setMode(m){
+  designMode = (m==='photo' || m==='cartoon') ? m : 'logo';
+
+  var bLogo = document.getElementById('btnLogo');
+  var bPhoto = document.getElementById('btnPhoto');
+  var bCartoon = document.getElementById('btnCartoon');
+  if(bLogo) bLogo.classList.toggle('on', designMode==='logo');
+  if(bPhoto) bPhoto.classList.toggle('on', designMode==='photo');
+  if(bCartoon) bCartoon.classList.toggle('on', designMode==='cartoon');
+
+  if(window.__subjectCtl && window.__subjectCtl.abort){ try{ window.__subjectCtl.abort(); }catch(_){} window.__subjectCtl=null; }
+  stopGlowAnimation();
+  clearMask();
+
+  var bt = document.getElementById('brushTool');
+  var wt = document.getElementById('wandTool');
+  var hideTools = (designMode === 'cartoon');
+  if(bt) bt.style.display = hideTools ? 'none' : '';
+  if(wt) wt.style.display = hideTools ? 'none' : '';
+
+  if(designMode === 'cartoon'){
+    showMaskState('info', t('cartoon_mode_hint') || 'Cartoon mode uses flat colors. Recommended color count: 4–12.');
+  }else{
+    showMaskState('empty', '');
+  }
+}
+
+// Added by supreme: cancelGeneration
+function cancelGeneration() {
+  if (socket && currentJobId) socket.emit('cancel', currentJobId);
+  if (window.__subjectCtl) { try { window.__subjectCtl.abort(); } catch(_){} window.__subjectCtl = null; }
+  stopGlowAnimation();
+  const cancelBtn = document.getElementById('cancelBtn');
+  if (cancelBtn) cancelBtn.disabled = true;
+}
+
+// Added by supreme: showMaskState
+function showMaskState(state, msg){
+  var el = document.getElementById('csl');
+  if(!el) return;
+  var txt = msg || '';
+  if(!txt){
+    if(state==='loading') txt = t('loading') || 'Loading...';
+    else if(state==='ok') txt = t('ready') || 'Ready';
+    else if(state==='warn') txt = t('no_subject_found') || 'No subject found';
+    else if(state==='error') txt = t('errNetwork') || 'Network error';
+    else if(state==='info') txt = t('info') || 'Info';
+    else txt = '';
+  }
+  el.className = 'mask-state ' + (state || 'empty');
+  el.textContent = txt;
+}
