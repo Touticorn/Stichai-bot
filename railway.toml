@@ -1,3 +1,2 @@
 [deploy]
-startCommand = "node index.js"
-
+startCommand = "node bot.js"
