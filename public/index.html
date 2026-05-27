@@ -2105,3 +2105,167 @@ function pwaDismiss(perm){ return; }
 
 // Added by supreme: triggerInstall
 function triggerInstall(){ return; }
+
+// Added by supreme: handleFile
+function handleFile(f){
+  if(!f) return;
+  cf=f;
+  cdu=null;
+  dd=null;
+  ci=null;
+  jid=null;
+  window.currentJobId=null;
+  window._segmentReqSeq=0;
+  window._tapSourceImg=null;
+  window.tapInFlight=false;
+  clearMask();
+  hm=false;
+
+  var csl=document.getElementById('confirmedSubjectLabel');
+  if(csl) csl.textContent='';
+  showMaskState('idle','');
+
+  var bCartoon=document.getElementById('btnCartoon');
+  if(bCartoon) bCartoon.disabled=true;
+
+  var rd=new FileReader();
+  rd.onload=function(e){
+    cdu=e.target.result;
+    initMask(cdu);
+    if(bCartoon) bCartoon.disabled=false;
+    if(designMode==='cartoon') setMode('cartoon');
+  };
+  rd.onerror=function(){
+    cf=null;
+    cdu=null;
+    if(bCartoon) bCartoon.disabled=true;
+    showMaskState('error','Failed to read image file');
+  };
+  rd.readAsDataURL(f);
+}
+
+// Added by supreme: callSegmentSubject
+async function callSegmentSubject(tapX,tapY,tapNormX,tapNormY){
+  var reqSeq=(window._segmentReqSeq||0)+1;
+  window._segmentReqSeq=reqSeq;
+
+  try{
+    if(!cf){
+      if(reqSeq===window._segmentReqSeq) showMaskState('error','No image selected');
+      return;
+    }
+
+    var fd=new FormData();
+    fd.append('image',cf);
+    if(tapX!=null) fd.append('tapX',String(Math.round(tapX)));
+    if(tapY!=null) fd.append('tapY',String(Math.round(tapY)));
+    if(tapNormX!=null) fd.append('tapNormX',String(tapNormX));
+    if(tapNormY!=null) fd.append('tapNormY',String(tapNormY));
+
+    // TODO: verify route
+    var res=await fetch('/segment-subject',{method:'POST',body:fd,headers:getAuthHeaders()});
+    var data={};
+    try{ data=await res.json(); }catch(_){}
+
+    if(reqSeq!==window._segmentReqSeq) return;
+
+    if(!res.ok){
+      var emsg=(data&&(data.error||data.message))||('HTTP '+res.status);
+      showMaskState('error',emsg);
+      return;
+    }
+
+    if(data && data.maskPng){
+      var maskOk=await applyMaskPng(data.maskPng,data.subject||'');
+      if(reqSeq!==window._segmentReqSeq) return;
+      if(maskOk) return;
+    }
+
+    if(data && data.polygon){
+      applyGeminiPolygon(data.polygon);
+      if(reqSeq!==window._segmentReqSeq) return;
+      if(hm===true) return;
+    }
+
+    if(data && data.grid && data.gridSize){
+      applyGeminiGrid(data.grid,data.gridSize);
+      if(reqSeq!==window._segmentReqSeq) return;
+      if(hm===true) return;
+    }
+
+    if(data && data.personCanvas){
+      var personOk=await applyPersonCanvas(data.personCanvas);
+      if(reqSeq!==window._segmentReqSeq) return;
+      if(personOk) return;
+    }
+
+    showMaskState('error','No subject mask returned. Tap again.');
+  }catch(err){
+    if(reqSeq!==window._segmentReqSeq) return;
+    showMaskState('error',(err&&err.message)?err.message:'Network error');
+  }
+}
+
+// Added by supreme: doAnalyze
+async function doAnalyze(fd){
+  var aB=document.getElementById('aB');
+  if(aB) aB.disabled=true;
+  var st=document.getElementById('st');
+  if(st) st.innerHTML='';
+
+  if(designMode==='cartoon') fd.append('cartoon','true');
+
+  connectWebSocket();
+
+  function renderError(msg){
+    if(st){
+      st.innerHTML='';
+      var el=document.createElement('div');
+      el.className='error';
+      el.textContent=msg||t('errNetwork');
+      st.appendChild(el);
+    }
+    showMaskState('error',msg||t('errNetwork'));
+  }
+
+  return new Promise(async function(resolve){
+    try{
+      var token=await getIdToken();
+      var xhr=new XMLHttpRequest();
+      // TODO: verify route
+      xhr.open('POST','/detect-shapes',true);
+      if(token) xhr.setRequestHeader('Authorization','Bearer '+token);
+
+      xhr.onload=function(){
+        if(aB) aB.disabled=false;
+        var d={};
+        try{ d=JSON.parse(xhr.responseText||'{}'); }catch(_){}
+
+        if(xhr.status!==200){
+          var msg=(d&& (d.error||d.message)) || (t('errHttp')+' '+xhr.status);
+          renderError(msg);
+          return resolve(null);
+        }
+
+        if(d && d.id){
+          jid=d.id;
+          window.currentJobId=d.id;
+          if(socket) socket.emit('subscribe',d.id);
+        }
+        resolve(d);
+      };
+
+      xhr.onerror=function(){
+        if(aB) aB.disabled=false;
+        renderError(t('errNetwork'));
+        resolve(null);
+      };
+
+      xhr.send(fd);
+    }catch(err){
+      if(aB) aB.disabled=false;
+      renderError((err&&err.message)?err.message:t('errNetwork'));
+      resolve(null);
+    }
+  });
+}
