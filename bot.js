@@ -68,6 +68,7 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 /* ── Routes ────────────────────────────────────────────── */
 const routes = require("./routes/index");
+app.use(addSecurityHeaders);
 app.use("/", routes);
 
 /* ── Static files ──────────────────────────────────────── */
