@@ -100,3 +100,28 @@ io.on("connection", (socket) => {
 
 server.timeout         = 120000;
 server.keepAliveTimeout = 65000;
+
+// Added by supreme: addSecurityHeaders
+function addSecurityHeaders(req, res, next) {
+  // Prevent MIME-type sniffing
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  // Clickjacking protection
+  res.setHeader("X-Frame-Options", "DENY");
+  // Explicitly disable the deprecated XSS filter – modern XSS protection comes from CSP
+  res.setHeader("X-XSS-Protection", "0");
+  // Referrer policy: strip path/query when crossing origins
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  // Permissions: deny sensitive browser features by default
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  // COOP: same-origin-allow-popups – required for Google OAuth popups
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+  // Conditional HSTS – emit only for HTTPS (production or proxied)
+  if (process.env.NODE_ENV === "production" || req.secure === true || req.headers["x-forwarded-proto"] === "https") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  next();
+}
+// NOTE: Content-Security-Policy is deliberately omitted pending a full audited allowlist
+// (Google Identity, Stripe, Gemini, Socket.IO would be broken otherwise).
+// This middleware must be registered with app.use(addSecurityHeaders) after body-parser/CORS/logging
+// and before both the static-file middleware and app.use("/", routes).
