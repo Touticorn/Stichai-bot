@@ -1600,3 +1600,54 @@ async function redoSubjectDetection() {
     alert(t('redoFailed'));
   }
 }
+
+// Added by supreme: pwaInstall
+function pwaInstall(){
+  if(_isIOS2 || !deferredPrompt){
+    showPWASheet();
+    return;
+  }
+
+  deferredPrompt.prompt();
+  deferredPrompt.userChoice.then(function(choice){
+    if(choice && choice.outcome === 'accepted'){
+      pwaDismiss(false);
+    }else{
+      showPWASheet();
+    }
+  }).catch(function(){
+    showPWASheet();
+  }).finally(function(){
+    deferredPrompt = null;
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  var btnPhoto = document.getElementById('btnPhoto');
+  if (btnPhoto && !btnPhoto.onclick && !btnPhoto.getAttribute('onclick')) {
+    btnPhoto.addEventListener('click', function() {
+      var fi = document.getElementById('fi');
+      if (fi) {
+        fi.click();
+      }
+    });
+  }
+  var btnEn = document.getElementById('btnEn');
+  if (btnEn && !btnEn.onclick && !btnEn.getAttribute('onclick')) {
+    btnEn.addEventListener('click', function() {
+      setLang('en');
+    });
+  }
+  var btnFr = document.getElementById('btnFr');
+  if (btnFr && !btnFr.onclick && !btnFr.getAttribute('onclick')) {
+    btnFr.addEventListener('click', function() {
+      setLang('fr');
+    });
+  }
+  var btnAr = document.getElementById('btnAr');
+  if (btnAr && !btnAr.onclick && !btnAr.getAttribute('onclick')) {
+    btnAr.addEventListener('click', function() {
+      setLang('ar');
+    });
+  }
+});
