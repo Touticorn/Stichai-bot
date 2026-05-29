@@ -804,384 +804,251 @@ dz.addEventListener('drop', function(e){
 // Added by supreme: applyPersonCanvas
 
 // Added by supreme: doAnalyze
+async var _analyzeRunning = false;
 async function doAnalyze(fd){
-  var pm = document.getElementById('progressMsg');
-  if(pm){
-    pm.innerText = designMode === 'cartoon' ? 'Stylizing subject…' : 'Analyzing image…';
-  }
-
-  var xhr=new XMLHttpRequest();
+  if(_analyzeRunning) return;
+  _analyzeRunning = true;
+  var aB = document.getElementById('aB');
+  if(aB) aB.disabled = true;
+  var xhr = new XMLHttpRequest();
   xhr.open('POST','/detect-shapes',true);
-  var h=getAuthHeaders();
+  var h = getAuthHeaders();
   for(var k in h) xhr.setRequestHeader(k,h[k]);
-
-  xhr.onload=function(){
-    var d={};
-    try{ d=JSON.parse(xhr.responseText||'{}'); }catch(_){}
-    if(xhr.status!=200){
-      document.getElementById('st').innerHTML='<div class="error">'+(d.error||d.message||('HTTP '+xhr.status))+'</div>';
+  xhr.onload = function(){
+    if(xhr.status === 413){
+      var pm = document.getElementById('progressMsg');
+      if(pm) pm.innerHTML = t('imageTooLarge')||'Image too large (max 10MB).';
+      _analyzeRunning = false;
+      if(aB) aB.disabled = false;
       return;
     }
-    dd=d;
-    document.getElementById('st').innerHTML='<div class="ok">Analysis complete.</div>';
-    document.getElementById('sc').style.display='block';
-    if(typeof renderColorItem==='function' && Array.isArray(d.colors)){
-      ci=d.colors.slice();
-      initColorState();
+    var d;
+    try{ d = JSON.parse(xhr.responseText||'{}'); } catch(_){ d = {}; }
+    if(xhr.status != 200){
+      document.getElementById('st').innerHTML = '<div class="error">'+(d.error||d.message||('HTTP '+xhr.status))+'</div>';
+      _analyzeRunning = false;
+      if(aB) aB.disabled = false;
+      return;
     }
+    // original success rendering logic
+    if(typeof applyMaskPng==='function' && d.mask){
+      applyMaskPng(d.mask, d.subject);
+    } else if(typeof applyGeminiPolygon==='function' && d.polygon){
+      applyGeminiPolygon(d.polygon);
+    } else if(typeof applyGeminiGrid==='function' && d.grid){
+      applyGeminiGrid(d.grid, d.gridSize);
+    } else if(typeof applyPersonCanvas==='function' && d.personCanvas){
+      applyPersonCanvas(d.personCanvas);
+    }
+    document.getElementById('st').innerHTML='<div class="ok">Analysis complete.</div>';
+    _analyzeRunning = false;
+    if(aB) aB.disabled = false;
   };
-
-  xhr.onerror=function(){
-    document.getElementById('st').innerHTML='<div class="error">Network error.</div>';
+  xhr.onerror = function(){
+    document.getElementById('st').innerHTML='<div class="error">Network error – please try again.</div>';
+    _analyzeRunning = false;
+    if(aB) aB.disabled = false;
   };
-
   xhr.send(fd);
 }
 
+
 // Added by supreme: confirmSubjectAndAnalyze
-async function confirmSubjectAndAnalyze(){
-  if(!cf){
-    showMaskState('error','Upload an image first.');
-    return;
-  }
-
-  var result = null;
-
-  if(!hm){
-    showMaskState('loading', designMode==='cartoon' ? 'Stylizing subject…' : 'Detecting subject…');
-    result = await callSegmentSubject({ file:cf, mode:designMode });
-
-    if(!result.ok){
-      stopGlowAnimation();
-      showMaskState('error', (result.error && result.error.message) || 'Subject extraction failed.');
-      toggleManualTools();
-      return;
-    }
-
-    var applied = false;
-    try{
-      switch(result.shape){
-        case 'maskPng':
-          applied = await applyMaskPng(result.payload.maskPng, (result.payload && result.payload.subject) || (result.raw && result.raw.subject));
-          break;
-        case 'polygon':
-          applied = !!applyGeminiPolygon(result.payload.polygon);
-          break;
-        case 'grid':
-          applied = !!applyGeminiGrid(result.payload.grid, result.payload.gridSize);
-          break;
-        case 'personCanvas':
-          applied = await applyPersonCanvas(result.payload.personCanvas);
-          break;
-        case 'cartoon':
-          if(result.raw && (result.raw.mask_png || result.raw.maskPng || result.raw.mask)){
-            applied = await applyMaskPng(result.raw.mask_png || result.raw.maskPng || result.raw.mask, result.raw.subject || null);
-          }else if(result.raw && (result.raw.person_canvas || result.raw.personCanvas)){
-            applied = await applyPersonCanvas(result.raw.person_canvas || result.raw.personCanvas);
-          }else{
-            throw new Error('Cartoon stylization unavailable, try logo or photo mode.');
-          }
-          break;
-      }
-    }catch(_){
-      applied = false;
-    }
-
-    if(!applied){
-      stopGlowAnimation();
-      showMaskState('error','Could not apply detected subject.');
-      toggleManualTools();
-      return;
-    }
-  }
-
+async async function confirmSubjectAndAnalyze(){
+  // Double‑submit guard
+  var confirmBtn=document.getElementById('confirmSubjectBtn');
+  if(confirmBtn && confirmBtn.disabled) return;
+  if(confirmBtn) confirmBtn.disabled = true;
   try{
-    var img = mX.getImageData(0,0,800,800).data;
-    var on = 0;
-    for(var i=3;i<img.length;i+=4){
-      if(img[i] > 0) on++;
-    }
-    var coverage = on / (800*800);
-    if(coverage < 0.02){
-      showMaskState('error','Subject too small. Refine mask or tap the subject.');
-      toggleManualTools();
-      return;
-    }
-    if(coverage > 0.98){
-      showMaskState('error','Mask covers almost entire image. Refine before continuing.');
-      toggleManualTools();
-      return;
-    }
-  }catch(_){}
-
-  hm = true;
-  stopGlowAnimation();
-  computeGlowRing();
-  startGlowAnimation();
-
-  var csl = document.getElementById('confirmedSubjectLabel');
-  if(csl){
-    var s = (result && result.raw && result.raw.subject) ? String(result.raw.subject) : csl.textContent || 'Subject selected';
-    csl.textContent = s;
-  }
-
-  await analyze();
-}
-
-// Added by supreme: setMode
-function setMode(m){
-  try{
-    if(window._segmentAbort){ try{ window._segmentAbort.abort(); }catch(_){ } window._segmentAbort=null; }
-    if(window._analyzeAbort){ try{ window._analyzeAbort.abort(); }catch(_){ } window._analyzeAbort=null; }
-  }catch(_){ }
-  window._inFlightSegment=false;
-
-  designMode=m;
-  var bC=document.getElementById('btnCartoon'),bP=document.getElementById('btnPhoto'),bL=document.getElementById('btnLogo');
-  if(bC) bC.classList.toggle('active',m==='cartoon');
-  if(bP) bP.classList.toggle('active',m==='photo');
-  if(bL) bL.classList.toggle('active',m==='logo');
-
-  var bb=document.getElementById('bastingBox');
-  var cs=document.getElementById('cs');
-  var csl=document.getElementById('csl');
-  var conf=document.getElementById('confirmedSubjectLabel');
-
-  if(m==='cartoon'){
-    if(bb){ var br=bb.closest('.basting-row'); if(br) br.style.display='none'; }
-    if(cs) cs.style.display='none';
-    if(csl) csl.style.display='none';
-    if(conf) conf.textContent='';
-    if(typeof window._prevColorCount==='undefined' || window._prevColorCount===null){
-      window._prevColorCount=colorCount;
-    }
-    if(!window._colorCountDirty){
-      colorCount=12;
-      var sl=document.getElementById('cs'); // slider may differ; update display
-      var cc=document.getElementById('cCount'); if(cc) cc.textContent=colorCount;
-    }
-  } else {
-    if(bb){ var br2=bb.closest('.basting-row'); if(br2) br2.style.display=''; }
-    if(cs) cs.style.display='';
-    if(csl) csl.style.display='';
-    if(typeof window._prevColorCount!=='undefined' && window._prevColorCount!==null && !window._colorCountDirty){
-      colorCount=window._prevColorCount;
-      var cc2=document.getElementById('cCount'); if(cc2) cc2.textContent=colorCount;
-      window._prevColorCount=null;
-    }
-  }
-
-  // Clear in-flight subject state
-  cf=null; cdu=null; dd=null; ci=null; jid=null;
-  window._subjectApplied=false; window._subjectMeta=null;
-  try{
-    if(c1&&c1.canvas){ c1.clearRect(0,0,c1.canvas.width,c1.canvas.height); }
-    if(c2&&c2.canvas){ c2.clearRect(0,0,c2.canvas.width,c2.canvas.height); }
-    if(c3&&c3.canvas){ c3.clearRect(0,0,c3.canvas.width,c3.canvas.height); }
-  }catch(_){ }
-  if(conf) conf.textContent='';
-}
-
-// Added by supreme: handleFile
-function handleFile(f){
-  if(!f) return;
-
-  // Unconditional reset
-  try{
-    if(window._segmentAbort){ try{ window._segmentAbort.abort(); }catch(_){ } window._segmentAbort=null; }
-    if(window._analyzeAbort){ try{ window._analyzeAbort.abort(); }catch(_){ } window._analyzeAbort=null; }
-  }catch(_){ }
-  window._inFlightSegment=false;
-  cf=null; cdu=null; dd=null; ci=null; jid=null;
-  window._subjectApplied=false; window._subjectMeta=null;
-  window._redoCount=0;
-  try{
-    if(c1&&c1.canvas){ c1.clearRect(0,0,c1.canvas.width,c1.canvas.height); }
-    if(c2&&c2.canvas){ c2.clearRect(0,0,c2.canvas.width,c2.canvas.height); }
-    if(c3&&c3.canvas){ c3.clearRect(0,0,c3.canvas.width,c3.canvas.height); }
-  }catch(_){ }
-  var conf=document.getElementById('confirmedSubjectLabel'); if(conf) conf.textContent='';
-
-  // Size limits
-  if(f.size > 10*1024*1024){
-    var st=document.getElementById('st'); if(st) st.innerHTML='<div class="error">'+t('fileTooLarge')+'</div>';
-    return;
-  }
-
-  cf=f;
-  var fr=new FileReader();
-  fr.onload=function(ev){
-    cdu=ev.target.result;
-    window._origImageBuffer=cdu;
-    var img=new Image();
-    img.onload=function(){
-      if(img.width<256 || img.height<256){
-        var st=document.getElementById('st'); if(st) st.innerHTML='<div class="error">'+t('imageTooSmall')+'</div>';
-        cf=null; cdu=null; return;
-      }
-      window._loadedImage=img;
-      try{
-        if(mC && mX){
-          mC.width=img.width; mC.height=img.height;
-          mX.drawImage(img,0,0);
-        }
-        if(c2 && c2.canvas){
-          c2.canvas.width=img.width; c2.canvas.height=img.height;
-        }
-      }catch(_){ }
-
-      if(designMode==='cartoon'){
-        // Cartoon: skip subject tap entirely; analyze directly
-        var fd=new FormData();
-        fd.append('image',cf);
-        fd.append('mode','cartoon');
-        fd.append('colorCount',colorCount);
-        doAnalyze(fd);
-      } else {
-        // logo/photo: show subject-tap prompt
-        var cs=document.getElementById('cs'); if(cs) cs.style.display='';
-        var csl=document.getElementById('csl'); if(csl) csl.style.display='';
-      }
-    };
-    img.src=cdu;
-  };
-  fr.readAsDataURL(f);
-}
-
-// Added by supreme: onCanvasTap
-async function onCanvasTap(e){
-  if(designMode==='cartoon') return;
-  if(window._inFlightSegment) return;
-  if(!cf || !cdu){ return; }
-
-  var canvas=(c2&&c2.canvas)?c2.canvas:(e.currentTarget||e.target);
-  if(!canvas || !canvas.getBoundingClientRect) return;
-  var rect=canvas.getBoundingClientRect();
-
-  var clientX = e.clientX!=null ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : null);
-  var clientY = e.clientY!=null ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : null);
-  if(clientX==null || clientY==null) return;
-
-  // Single canonical coord mapping (canvas internal pixels)
-  var px = (clientX - rect.left) * (canvas.width / rect.width);
-  var py = (clientY - rect.top)  * (canvas.height / rect.height);
-
-  // Bounds check
-  if(px<0 || py<0 || px>=canvas.width || py>=canvas.height){
-    var st=document.getElementById('st'); if(st) st.innerHTML='<div class="error">'+t('tapOnSubject')+'</div>';
-    return;
-  }
-
-  // Normalized 0..1 for Gemini prompt
-  var nx = px / canvas.width;
-  var ny = py / canvas.height;
-
-  window._inFlightSegment=true;
-  if(canvas.classList) canvas.classList.add('cs-loading');
-
-  var ac=null;
-  if(typeof AbortController!=='undefined'){
-    ac=new AbortController();
-    window._segmentAbort=ac;
-  }
-  var to=setTimeout(function(){ if(ac){ try{ ac.abort(); }catch(_){ } } }, 30000);
-
-  try{
-    var fd=new FormData();
+    var fd = new FormData();
+    // Use the verified multer field name from routes/index.js: upload.single('image')
     fd.append('image', cf);
-    fd.append('tapX', nx.toFixed(6));
-    fd.append('tapY', ny.toFixed(6));
-    fd.append('tapPxX', Math.round(px));
-    fd.append('tapPxY', Math.round(py));
-    fd.append('canvasWidth', canvas.width);
-    fd.append('canvasHeight', canvas.height);
+    fd.append('colorCount', colorCount);
+    fd.append('designMode', designMode);
     if(jid) fd.append('jid', jid);
-
-    var headers = (typeof getAuthHeaders==='function') ? (getAuthHeaders()||{}) : {};
-    var opts = { method:'POST', body:fd, headers:headers };
-    if(ac) opts.signal=ac.signal;
-
-    var r = await fetch('/segment-subject', opts);
-    if(r.status===401){
-      var st=document.getElementById('st'); if(st) st.innerHTML='<div class="error">'+t('authExpired')+'</div>';
-      return;
+    // Include tap coordinates if available (set by onCanvasTap)
+    if(typeof tapX !== 'undefined' && typeof tapY !== 'undefined'){
+      fd.append('tapX', tapX);
+      fd.append('tapY', tapY);
     }
-    if(!r.ok){
-      var msg=t('noSubjectFound');
-      try{ var ej=await r.json(); if(ej && (ej.error||ej.message)) msg = ej.error||ej.message; }catch(_){ }
-      var st2=document.getElementById('st'); if(st2) st2.innerHTML='<div class="error">'+msg+'</div>';
+    var opts = {
+      method: 'POST',
+      body: fd,
+      headers: getAuthHeaders()
+    };
+    var r = await fetch('/segment-subject', opts);
+    // Handle HTTP 413 explicitly
+    if(r.status === 413){
+      var pm = document.getElementById('progressMsg');
+      if(pm) pm.innerHTML = t('imageTooLarge')||'Image too large (max 10MB).';
       return;
     }
     var data = await r.json();
-    if(data && data.jid) jid=data.jid;
-
-    // Dispatch by response shape: maskPng > polygon > personCanvas > grid
-    if(data && data.maskPng){
-      applyMaskPng(data.maskPng, data.subject);
-    } else if(data && Array.isArray(data.polygon) && data.polygon.length>=3){
-      applyGeminiPolygon(data.polygon);
-    } else if(data && data.personCanvas){
-      applyPersonCanvas(data.personCanvas);
-    } else if(data && data.grid && data.gridSize){
-      applyGeminiGrid(data.grid, data.gridSize);
-    } else {
-      var st3=document.getElementById('st'); if(st3) st3.innerHTML='<div class="error">'+t('noSubjectFound')+'</div>';
+    if(!r.ok){
+      document.getElementById('st').innerHTML = '<div class="error">'+(data.error||data.message||('HTTP '+r.status))+'</div>';
+      return;
     }
-  } catch(err){
-    if(err && err.name==='AbortError'){
-      // silent on abort
-    } else {
-      var st4=document.getElementById('st'); if(st4) st4.innerHTML='<div class="error">'+t('networkError')+'</div>';
-    }
+    // Store job/result id for subsequent steps
+    if(data && data.jid) jid = data.jid;
+    // Call the finalization handler to render subject/mask
+    if(typeof _finalizeSubject==='function') _finalizeSubject(data);
+    if(typeof step==='function') step(2);
+  } catch(e){
+    document.getElementById('st').innerHTML = '<div class="error">Network error – please try again.</div>';
   } finally {
-    clearTimeout(to);
-    window._inFlightSegment=false;
-    window._segmentAbort=null;
-    if(canvas.classList) canvas.classList.remove('cs-loading');
+    if(confirmBtn) confirmBtn.disabled = false;
   }
 }
 
-// Added by supreme: redoSubjectDetection
-async function redoSubjectDetection(){
-  if(window._inFlightSegment) return;
-  if(!cf || !cdu){ return; }
 
-  if(typeof window._redoCount!=='number') window._redoCount=0;
-  if(window._redoCount>=5){
-    var st=document.getElementById('st'); if(st) st.innerHTML='<div class="error">'+t('tooManyRetries')+'</div>';
+// Added by supreme: setMode
+function setMode(m){
+  designMode=m;
+  // Revoke object URL before clearing the variable
+  if(cdu){
+    URL.revokeObjectURL(cdu);
+  }
+  // Reset all shared state
+  cf=null; cdu=null; dd=null; ci=null; jid=null;
+  // Reset UI elements
+  document.getElementById('dz').style.display = (m==='photo') ? 'flex' : 'none';
+  document.getElementById('sc').style.display = 'none';
+  document.getElementById('st').innerHTML='';
+  var c = document.getElementById('c');
+  if(c){ c.width=c.height=0; var ctx=c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height); }
+  // Reset analyze button state
+  var aB=document.getElementById('aB'); if(aB) aB.disabled=false;
+  // Reset photo‑specific bindings
+  if(m==='photo'){
+    var btnPhoto=document.getElementById('btnPhoto');
+    var fi=document.getElementById('fi');
+    if(btnPhoto){
+      btnPhoto.onclick=function(){
+        var fileInput=document.getElementById('fi');
+        if(fileInput) fileInput.click();
+      };
+    }
+    if(fi) fi.onchange=function(e){ handleFile(e.target.files[0]); };
+    // Reset confirm button if it exists
+    var confirmBtn=document.getElementById('confirmSubjectBtn');
+    if(confirmBtn) confirmBtn.disabled=false;
+  }
+  if(typeof step==='function') step(0);
+}
+
+
+// Added by supreme: handleFile
+function handleFile(f){
+  if(!f){
+    // user cancelled file picker – do nothing
     return;
   }
-  window._redoCount++;
-
-  // Redraw base image BEFORE clearing overlays
-  try{
-    if(window._loadedImage && mC && mX){
-      mX.clearRect(0,0,mC.width,mC.height);
-      mX.drawImage(window._loadedImage,0,0);
+  // Validate MIME
+  if(!f.type||!f.type.startsWith('image/')){
+    alert(t('invalidImage')||'Please select an image file.');
+    return;
+  }
+  // Validate size (client‑side, 10 MB = 10 * 1024 * 1024)
+  if(f.size > 10*1024*1024){
+    alert(t('imageTooLarge')||'Image too large (max 10MB).');
+    return;
+  }
+  // Revoke previous object URL to prevent memory leaks
+  if(cdu){
+    URL.revokeObjectURL(cdu);
+    cdu=null;
+  }
+  cf=f;
+  cdu=URL.createObjectURL(f);
+  // Preview on canvas
+  var canvas = document.getElementById('c');
+  var ctx = canvas.getContext('2d');
+  var img = new Image();
+  img.onload = function(){
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.drawImage(img,0,0);
+    // Advance UI state (next step after upload)
+    if(typeof step==='function') step(1);
+    // Re‑enable upload button for a new upload
+    var btnPhoto=document.getElementById('btnPhoto');
+    if(btnPhoto) btnPhoto.disabled=false;
+  };
+  img.onerror = function(){
+    alert(t('corruptImage')||'Could not load image – file may be corrupt.');
+    if(cdu){
+      URL.revokeObjectURL(cdu);
+      cdu=null;
     }
-    if(c1&&c1.canvas){ c1.clearRect(0,0,c1.canvas.width,c1.canvas.height); }
-    if(c2&&c2.canvas){ c2.clearRect(0,0,c2.canvas.width,c2.canvas.height); }
-    if(c3&&c3.canvas){ c3.clearRect(0,0,c3.canvas.width,c3.canvas.height); }
-  }catch(_){ }
-
-  var conf=document.getElementById('confirmedSubjectLabel'); if(conf) conf.textContent='';
-  window._subjectApplied=false; window._subjectMeta=null;
-
-  var cs=document.getElementById('cs'); if(cs) cs.style.display='';
-  var csl=document.getElementById('csl'); if(csl) csl.style.display='';
+    cf=null;
+  };
+  img.src = cdu;
 }
+
+
+// Added by supreme: onCanvasTap
+async async function onCanvasTap(e){
+  // Compute tap coordinates correctly for retina / scaled canvas
+  var canvas = document.getElementById('c');
+  if(!canvas) return;
+  var rect = canvas.getBoundingClientRect();
+  var scaleX = canvas.width / rect.width;   // canvas physical pixel ratio
+  var scaleY = canvas.height / rect.height;
+  // Use clientX/Y or touch coordinates
+  var clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  var clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  var tapCanvasX = (clientX - rect.left) * scaleX;
+  var tapCanvasY = (clientY - rect.top) * scaleY;
+  // Store globally for confirmSubjectAndAnalyze
+  window.tapX = Math.round(tapCanvasX);
+  window.tapY = Math.round(tapCanvasY);
+  // Proceed to subject detection
+  await confirmSubjectAndAnalyze();
+}
+
+
+// Added by supreme: redoSubjectDetection
+async async function redoSubjectDetection(){
+  jid = null;
+  dd = null;
+  // Keep cf (the file object) intact – re‑detection reuses the same image
+  // Clear any existing mask and reset the canvas to the original image
+  var canvas = document.getElementById('c');
+  if(canvas && cdu){
+    var ctx = canvas.getContext('2d');
+    var img = new Image();
+    img.onload = function(){
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img,0,0);
+    };
+    img.src = cdu;
+  }
+  if(typeof step==='function') step(1);
+}
+
 
 // Added by supreme: _finalizeSubject
 function _finalizeSubject(subjectMeta){
-  window._subjectApplied=true;
-  window._subjectMeta=subjectMeta||{type:'unknown'};
-  var conf=document.getElementById('confirmedSubjectLabel');
-  if(conf) conf.textContent=t('subjectConfirmed')||'Subject ready';
-  var ab=document.getElementById('aB'); if(ab){ ab.disabled=false; ab.style.display=''; }
-  var bb=document.getElementById('bB'); if(bb){ bb.disabled=false; }
-  var cs=document.getElementById('cs'); if(cs) cs.style.display='none';
-  var csl=document.getElementById('csl'); if(csl) csl.style.display='none';
+  // Render the subject overlay / mask using existing functions
+  if(!subjectMeta) return;
+  if(subjectMeta.mask && typeof applyMaskPng==='function'){
+    applyMaskPng(subjectMeta.mask, subjectMeta.subject);
+  } else if(subjectMeta.polygon && typeof applyGeminiPolygon==='function'){
+    applyGeminiPolygon(subjectMeta.polygon);
+  } else if(subjectMeta.grid && typeof applyGeminiGrid==='function'){
+    applyGeminiGrid(subjectMeta.grid, subjectMeta.gridSize);
+  } else if(subjectMeta.personCanvas && typeof applyPersonCanvas==='function'){
+    applyPersonCanvas(subjectMeta.personCanvas);
+  }
+  // Update UI state label if present
+  var label = document.getElementById('confirmedSubjectLabel');
+  if(label) label.innerHTML = t('subjectConfirmed')||'Subject confirmed';
+  // Enable next step button
+  var nextBtn = document.getElementById('aB');
+  if(nextBtn) nextBtn.disabled = false;
 }
+
 
 // Added by supreme: applyMaskPng
 function applyMaskPng(base64Png, subject){
