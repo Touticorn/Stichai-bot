@@ -1142,14 +1142,6 @@ async function confirmSubjectAndAnalyze(){
 }
 
 // Added by supreme: redoSubjectDetection
-async function redoSubjectDetection(){
-  var fd = new FormData();
-  // … (keep all existing logic)
-  fd.append('designSize', String(designSize));
-  fd.append('colorCount', String(colorCount));
-  await doAnalyze(fd);
-}
-
 // Added by supreme: _resetState
 // Added by supreme: getIdToken
 var _idTokenPromise = null;
@@ -1203,101 +1195,6 @@ var _pwaMutex = false;
 // Added by supreme: triggerInstall
 // Added by supreme: pwaInstall
 // Added by supreme: apiFetch
-async function apiFetch(url, opts, cfg){
-  opts = opts || {};
-  cfg = cfg || {};
-
-  var timeoutMs = (typeof cfg.timeoutMs === 'number' && cfg.timeoutMs > 0) ? cfg.timeoutMs : 90000;
-  var skipAuth = !!cfg.skipAuth;
-  var retry401 = cfg.retry401 !== false;
-
-  var method = (opts.method || 'GET').toUpperCase();
-  var body = (typeof opts.body === 'undefined') ? undefined : opts.body;
-  var baseHeaders = Object.assign({}, opts.headers || {});
-
-  function canReplayBody(b){
-    if(typeof b === 'undefined' || b === null) return true;
-    if(typeof b === 'string') return true;
-    if(typeof URLSearchParams !== 'undefined' && b instanceof URLSearchParams) return true;
-    if(typeof FormData !== 'undefined' && b instanceof FormData) return true;
-    if(typeof Blob !== 'undefined' && b instanceof Blob) return true;
-    if(typeof ArrayBuffer !== 'undefined' && b instanceof ArrayBuffer) return true;
-    if(typeof ArrayBuffer !== 'undefined' && typeof ArrayBuffer.isView === 'function' && ArrayBuffer.isView(b)) return true;
-    if(Object.prototype.toString.call(b) === '[object Object]') return true;
-    return false;
-  }
-
-  async function attempt(forceToken){
-    var headers = Object.assign({}, baseHeaders);
-    if(!skipAuth){
-      var authHeaders = await getAuthHeaders(!!forceToken);
-      for(var k in authHeaders) headers[k] = authHeaders[k];
-    }
-
-    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-    var timer = null;
-    if(controller){
-      timer = setTimeout(function(){ try{ controller.abort(); }catch(_e){} }, timeoutMs);
-    }
-
-    try{
-      var res = await fetch(url, {
-        method: method,
-        headers: headers,
-        body: body,
-        signal: controller ? controller.signal : undefined
-      });
-
-      if(res.status === 401 && !skipAuth && retry401 && !forceToken){
-        _cachedIdToken = null;
-        try{
-          sessionStorage.removeItem('id_token');
-          sessionStorage.removeItem('id_token_ts');
-        }catch(_s){}
-
-        if(!canReplayBody(body)){
-          var unsafeErr = new Error('Session expired. Please retry.');
-          unsafeErr.status = 401;
-          unsafeErr.code = 'AUTH_RETRY_UNSAFE';
-          throw unsafeErr;
-        }
-
-        await getIdToken(true);
-        return attempt(true);
-      }
-
-      var raw = '';
-      try{ raw = await res.text(); }catch(_rt){}
-      var data = {};
-      if(raw){
-        try{ data = JSON.parse(raw); }
-        catch(_jp){ data = { message: raw }; }
-      }
-
-      if(!res.ok){
-        var msg = (data && (data.error || data.message)) ? String(data.error || data.message) : ('HTTP ' + res.status);
-        var err = new Error(msg);
-        err.status = res.status;
-        err.payload = data;
-        throw err;
-      }
-
-      return data || {};
-    }catch(err){
-      if(err && err.name === 'AbortError'){
-        var toErr = new Error('Request timed out. Please try again.');
-        toErr.code = 'ETIMEDOUT';
-        throw toErr;
-      }
-      throw err;
-    }finally{
-      if(timer) clearTimeout(timer);
-    }
-  }
-
-  return attempt(false);
-}
-
 // Added by supreme: getIdToken
 async function getIdToken(force){
   force = !!force;
@@ -1494,26 +1391,6 @@ function triggerInstall(){
 }
 
 // Added by supreme: pwaInstall
-function pwaInstall(){
-  if(_isIOS2 || !deferredPrompt){
-    showPWASheet();
-    return;
-  }
-
-  deferredPrompt.prompt();
-  deferredPrompt.userChoice.then(function(choice){
-    if(choice && choice.outcome === 'accepted'){
-      pwaDismiss(false);
-    }else{
-      showPWASheet();
-    }
-  }).catch(function(){
-    showPWASheet();
-  }).finally(function(){
-    deferredPrompt = null;
-  });
-}
-
 // Added by supreme: apiFetch
 async function apiFetch(url, opts, cfg) {
   cfg = cfg || {};
@@ -1651,3 +1528,37 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 });
+
+// Added by supreme: init
+function init() {
+  // Upload button wiring
+  var btnPhoto = document.getElementById('btnPhoto');
+  var fi = document.getElementById('fi');
+  if (btnPhoto && fi) {
+    btnPhoto.onclick = function () {
+      fi.click();
+    };
+  }
+  // File input change – calls existing handleFile, resets to allow re‑selection
+  if (fi) {
+    fi.onchange = function (e) {
+      if (e.target.files && e.target.files[0]) {
+        handleFile(e.target.files[0]);
+      }
+      // Allow same‑file re‑selection
+      this.value = '';
+    };
+  }
+  // Language button wiring – uses idempotent property assignment
+  function wireLang(id, lang) {
+    var btn = document.getElementById(id);
+    if (btn) {
+      btn.onclick = function () { setLang(lang); };
+    }
+  }
+  wireLang('btnEn', 'en');
+  wireLang('btnFr', 'fr');
+  wireLang('btnAr', 'ar');
+}
+// Run once the DOM is ready
+document.addEventListener('DOMContentLoaded', init);
