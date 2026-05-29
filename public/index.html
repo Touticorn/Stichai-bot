@@ -804,7 +804,7 @@ dz.addEventListener('drop', function(e){
 // Added by supreme: applyPersonCanvas
 
 // Added by supreme: doAnalyze
-async var _analyzeRunning = false;
+var _analyzeRunning = false;
 async function doAnalyze(fd){
   if(_analyzeRunning) return;
   _analyzeRunning = true;
@@ -854,7 +854,7 @@ async function doAnalyze(fd){
 
 
 // Added by supreme: confirmSubjectAndAnalyze
-async async function confirmSubjectAndAnalyze(){
+async function confirmSubjectAndAnalyze(){
   // Double‑submit guard
   var confirmBtn=document.getElementById('confirmSubjectBtn');
   if(confirmBtn && confirmBtn.disabled) return;
@@ -987,7 +987,7 @@ function handleFile(f){
 
 
 // Added by supreme: onCanvasTap
-async async function onCanvasTap(e){
+async function onCanvasTap(e){
   // Compute tap coordinates correctly for retina / scaled canvas
   var canvas = document.getElementById('c');
   if(!canvas) return;
@@ -1008,7 +1008,7 @@ async async function onCanvasTap(e){
 
 
 // Added by supreme: redoSubjectDetection
-async async function redoSubjectDetection(){
+async function redoSubjectDetection(){
   jid = null;
   dd = null;
   // Keep cf (the file object) intact – re‑detection reuses the same image
