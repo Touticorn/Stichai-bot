@@ -408,7 +408,8 @@ var T = {
     wandNotFound:"Nothing found — try tapping directly on the subject.",
     wandTooBig:"Area too large — tap a more specific spot.",
     wandUndo:"Undo", wandUndone:"Undone",
-    wandLoading:"Detecting…"
+    wandLoading:"Detecting…",
+    imageTooSmall:"Image too small — minimum 256x256 pixels"
   },
   fr: {
     navFeatures:"Fonctionnalités", navPricing:"Tarifs", navTool:"Essayer", install:"Installer",
@@ -491,7 +492,8 @@ var T = {
     wandNotFound:"Rien trouvé — appuyez directement sur le sujet.",
     wandTooBig:"Zone trop grande — appuyez plus précisément.",
     wandUndo:"Annuler", wandUndone:"Annulé",
-    wandLoading:"Détection…"
+    wandLoading:"Détection…",
+    imageTooSmall:"Image trop petite — 256x256 pixels minimum"
   },
   ar: {
     navFeatures:"المميزات", navPricing:"الأسعار", navTool:"جرّب", install:"تثبيت",
@@ -575,13 +577,21 @@ var T = {
     wandNotFound:"لم يُعثر على شيء — اضغط مباشرة على الكائن.",
     wandTooBig:"منطقة كبيرة — اضغط بدقة أكثر.",
     wandUndo:"تراجع", wandUndone:"تم التراجع",
-    wandLoading:"جاري الكشف…"
+    wandLoading:"جاري الكشف…",
+    imageTooSmall:"الصورة صغيرة جداً — الحد الأدنى 256x256 بكسل"
   }
 };
 
 var currentLang='en';
+var _prevObjectUrl = null;
 
 function detectLanguage(){
+  // Respect saved user preference – only auto-detect on first visit
+  var saved = localStorage.getItem('lang');
+  if (saved && (saved === 'en' || saved === 'fr' || saved === 'ar')) {
+    setLang(saved);
+    return;
+  }
   var arCC=['SA','AE','EG','QA','KW','BH','OM','JO','IQ','LY','SD','SY','YE','PS','LB','MR','SO','DJ','DZ','MA','TN'];
   var frCC=['FR','BE','CH','LU','MC','CA','SN','CI','ML','BF','NE','TG','BJ','GN','CD','CG','GA','CM','CF','GQ','RW','BI','MG','MU','SC','HT'];
   fetch('https://ipapi.co/json/')
@@ -602,6 +612,7 @@ function detectLanguage(){
 
 function setLang(lang){
   currentLang=lang;
+  localStorage.setItem('lang', lang);
   document.documentElement.lang=lang;
   document.body.setAttribute('dir',lang==='ar'?'rtl':'ltr');
   document.getElementById('btnEn').className=lang==='en'?'on':'';
@@ -810,7 +821,9 @@ async function doAnalyze(fd){
   var btn = document.getElementById('aB'); if(btn) btn.disabled = true;
 
   try {
-    var headers = getAuthHeaders();
+    var headers = {};
+    var token = await getIdToken(true);
+    if (token) headers['Authorization'] = 'Bearer ' + token;
     var opts = { method:'POST', body:fd, headers:headers };
     var r = await fetch('/detect-shapes', opts);
     var d = {};
@@ -993,6 +1006,13 @@ function setMode(m){
 function handleFile(f){
   if(!f) return;
 
+  // MIME validation – explicit allow-list including iOS HEIC/HEIF
+  var allowedTypes = ['image/jpeg','image/png','image/webp','image/heic','image/heif'];
+  if (f.type && allowedTypes.indexOf(f.type) === -1) {
+    var st=document.getElementById('st'); if(st) st.innerHTML='<div class="error">'+t('errFileType')+'</div>';
+    return;
+  }
+
   // Unconditional reset
   try{
     if(window._segmentAbort){ try{ window._segmentAbort.abort(); }catch(_){ } window._segmentAbort=null; }
@@ -1009,11 +1029,14 @@ function handleFile(f){
   }catch(_){ }
   var conf=document.getElementById('confirmedSubjectLabel'); if(conf) conf.textContent='';
   var pw=document.getElementById('pw'); if(pw) pw.style.display='block';
-  var oi=document.getElementById('oi'); if(oi) oi.src='';
+  var oi=document.getElementById('oi'); if(oi) {
+    if(_prevObjectUrl) URL.revokeObjectURL(_prevObjectUrl);
+    oi.src='';
+  }
 
   // Size limits
   if(f.size > 10*1024*1024){
-    var st=document.getElementById('st'); if(st) st.innerHTML='<div class="error">'+t('fileTooLarge')+'</div>';
+    var st=document.getElementById('st'); if(st) st.innerHTML='<div class="error">'+t('errFileSize')+'</div>';
     return;
   }
 
@@ -1037,7 +1060,11 @@ function handleFile(f){
         if(c2 && c2.canvas){
           c2.canvas.width=img.width; c2.canvas.height=img.height;
         }
-        if(oi) oi.src = URL.createObjectURL(f);
+        if(oi) {
+          if(_prevObjectUrl) URL.revokeObjectURL(_prevObjectUrl);
+          _prevObjectUrl = URL.createObjectURL(f);
+          oi.src = _prevObjectUrl;
+        }
       }catch(_){ }
 
       // Show mode card early so user can adjust settings
@@ -1436,7 +1463,9 @@ async function generate(){
   var abortController = new AbortController();
   window._generationAbort = abortController;
   try {
-    var headers = getAuthHeaders();
+    var headers = {};
+    var token = await getIdToken(true);
+    if (token) headers['Authorization'] = 'Bearer ' + token;
     headers['X-Socket-Id'] = (window.socket && window.socket.id) || '';
     var res = await fetch('/generate-embroidery', {
       method: 'POST',
