@@ -26,15 +26,37 @@ const MAX_CANVAS_SIZE = 2400;
 
 function dropBackgroundRegions(regions, canvasSize) {
   if (!Array.isArray(regions) || !regions.length) return regions;
-  const edge = Math.max(2, Math.round(canvasSize * 0.01));
+  const edge = Math.max(2, Math.round(canvasSize * 0.015));
+
+  // The TRUE outer background wraps the subject: it touches MANY edges/corners
+  // AND its bounding box spans almost the whole canvas. A white GOWN is large but
+  // does NOT span the full canvas width+height the way the surrounding backdrop does.
+  // We only drop a region if it looks like that wrapping backdrop — never just
+  // "large and white" (which wrongly deleted white clothing).
+  const span = canvasSize;
+  function edgeScore(r) {
+    let s = 0;
+    if (r.mnx <= edge) s++;
+    if (r.mny <= edge) s++;
+    if (r.mxx >= span - edge) s++;
+    if (r.mxy >= span - edge) s++;
+    return s;                      // 0..4 edges touched
+  }
+
   return regions.filter(r => {
     const { r: rr, g: gg, b: bb } = hexToRgb(r.color || "#000000");
-    const nearWhite = rr > 235 && gg > 235 && bb > 235;
-    if (!nearWhite) return true;
-    const touchesEdge = r.mnx <= edge || r.mny <= edge || r.mxx >= canvasSize - edge || r.mxy >= canvasSize - edge;
-    const area = (r.mxx - r.mnx + 1) * (r.mxy - r.mny + 1);
-    const big = area > (canvasSize * canvasSize) * 0.12;
-    return !(touchesEdge && big);
+    const nearWhite = rr > 240 && gg > 240 && bb > 240;
+    if (!nearWhite) return true;                       // keep all non-white
+
+    const bw = r.mxx - r.mnx + 1, bh = r.mxy - r.mny + 1;
+    const spansWidth  = bw > span * 0.92;
+    const spansHeight = bh > span * 0.92;
+    const wrapsSubject = edgeScore(r) >= 3;            // touches 3-4 edges = surrounds subject
+
+    // Drop ONLY if it both spans nearly the whole canvas in both axes AND wraps
+    // the subject on most edges — i.e. it is the outer backdrop, not clothing.
+    const isBackdrop = nearWhite && spansWidth && spansHeight && wrapsSubject;
+    return !isBackdrop;
   });
 }
 
@@ -424,8 +446,19 @@ router.get("/download/:id", requireAuth, checkDownloadQuota, async (req, res) =>
   if (fmt === "dst") {
     const dstBuf  = encodeDST(d.stitches, d.params?.machineLimits);
     const NAMES   = ["Black","White","Yellow","Orange","Red","Burgundy","Pink","Light Pink","Gold","Dark Gold","Brown","Dark Brown","Olive Green","Green","Dark Green","Sky Blue","Light Blue","Blue","Dark Blue","Purple","Light Purple","Lavender","Silver","Grey","Dark Grey","Beige","Light Beige","Tan","Caramel","Dark Caramel","Orange Red","Light Orange"];
-    const infLines = ["[Version]","Major=1","Minor=0","","[Parameters]",`ST=${d.stitches.filter(s => s.type !== "trim" && s.type !== "jump" && s.type !== "color-change").length}`,`CO=${d.colors.length}`,"AX=+    0","AY=+    0","MX=+    0","MY=+    0","PD=******","","[Threads]",`Count=${d.colors.length}`, ""];
-    d.colors.forEach((hex, idx) => {
+    // Use the REAL counts/colours encodeDST actually wrote, so the .inf always
+    // matches the .dst (previously they were computed separately and disagreed).
+    const meta = dstBuf.meta || {};
+    // Colours actually sewn, de-duplicated in first-use order.
+    const seen = new Set();
+    const infColors = (meta.usedColors || d.colors).filter(h => {
+      const k = (h || "").toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+    const infStitchCount = meta.stitchCount != null ? meta.stitchCount : d.stitches.filter(s => s.type !== "trim" && s.type !== "jump" && s.type !== "color-change").length;
+    const infLines = ["[Version]","Major=1","Minor=0","","[Parameters]",`ST=${infStitchCount}`,`CO=${infColors.length}`,"AX=+    0","AY=+    0","MX=+    0","MY=+    0","PD=******","","[Threads]",`Count=${infColors.length}`, ""];
+    infColors.forEach((hex, idx) => {
       const rgb    = hexToRgb(hex);
       const nearIdx = findNearestThread(rgb, JEF_THREADS);
       infLines.push(`[thread${idx + 1}]`, `Color=${rgb.r},${rgb.g},${rgb.b}`, `Name=${NAMES[nearIdx] || hex}`, `ID=${String(nearIdx + 1).padStart(3, "0")}`, `Hex=${hex}`, "");
