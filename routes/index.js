@@ -45,12 +45,12 @@ function dropBackgroundRegions(regions, canvasSize) {
 
   return regions.filter(r => {
     const { r: rr, g: gg, b: bb } = hexToRgb(r.color || "#000000");
-    const nearWhite = rr > 240 && gg > 240 && bb > 240;
+    const nearWhite = rr >= 232 && gg >= 232 && bb >= 232;
     if (!nearWhite) return true;                       // keep all non-white
 
     const bw = r.mxx - r.mnx + 1, bh = r.mxy - r.mny + 1;
-    const spansWidth  = bw > span * 0.92;
-    const spansHeight = bh > span * 0.92;
+    const spansWidth  = bw > span * 0.85;
+    const spansHeight = bh > span * 0.85;
     const wrapsSubject = edgeScore(r) >= 3;            // touches 3-4 edges = surrounds subject
 
     // Drop ONLY if it both spans nearly the whole canvas in both axes AND wraps
