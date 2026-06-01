@@ -413,12 +413,20 @@ router.post("/generate-embroidery",
 
 function buildFilteredPixMap(filteredRegions, selectedColors, canvasSize, pixMap, colors) {
   const filtPm = new Int16Array(canvasSize * canvasSize).fill(-1);
+  // Respect the kept regions (background/excluded already removed) but paint
+  // each region by matching the pixMap value to the region's COLOUR index,
+  // not a possibly-stale reg.ci. We resolve the region's colour to its index
+  // in the ORIGINAL palette and fill every pixel of that colour in the bbox.
   for (const reg of filteredRegions) {
     const newCi = selectedColors.findIndex(c => normHex(c) === normHex(reg.color));
     if (newCi < 0) continue;
+    // The pixMap stores ORIGINAL palette indices. Find this region's colour there.
+    const origCi = colors.findIndex(c => normHex(c) === normHex(reg.color));
+    if (origCi < 0) continue;
     for (let y = reg.mny; y <= reg.mxy; y++) {
+      const row = y * canvasSize;
       for (let x = reg.mnx; x <= reg.mxx; x++) {
-        if (pixMap[y * canvasSize + x] === reg.ci) filtPm[y * canvasSize + x] = newCi;
+        if (pixMap[row + x] === origCi) filtPm[row + x] = newCi;
       }
     }
   }
