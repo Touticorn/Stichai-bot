@@ -183,9 +183,9 @@ router.post("/detect-shapes",
       const rawRegions = extractRegions(pixMap, colors, canvasSize, effectiveMode);
       let regions     = mergeAdjacentRegions(rawRegions, canvasSize);
       if (body.extractedSubject === "1" || body.extractedSubject === true) {
-        const _before = regions.length;
+        const _b = regions.length;
         regions = dropBackgroundRegions(regions, canvasSize);
-        if (regions.length !== _before) console.log(`[${rid}] dropped ${_before - regions.length} background region(s)`);
+        if (regions.length !== _b) console.log(`[${rid}] dropped ${_b - regions.length} background region(s)`);
       }
 
       if (!regions.length) return res.status(500).json({ error: "No stitchable regions found" });
@@ -357,7 +357,7 @@ router.post("/generate-embroidery",
       progressCb(85, "Rendering preview…");
 
       let previewBuf = null;
-      try { previewBuf = await renderPreviewFast(filteredRegions, selectedColors, canvasSize); }
+      try { previewBuf = await renderPreviewFast(filteredRegions, selectedColors, canvasSize, pixMap); }
       catch (e) { console.error("Preview render failed:", e.message); }
 
       const qa      = validateQuality(stitches, params.machineLimits);
@@ -535,10 +535,7 @@ router.post("/admin/grant", async (req, res) => {
 });
 
 /* ── Segment subject ────────────────────────────────────── */
-router.post("/extract-subject",
-  requireAuth,
-  upload.single("image"),
-  async (req, res) => {
+router.post("/extract-subject", requireAuth, upload.single("image"), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No image uploaded", ok: false });
     if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: "Gemini not configured", ok: false });
     const rid  = Math.random().toString(36).slice(2, 6);
@@ -550,17 +547,11 @@ router.post("/extract-subject",
       if (!out) return res.status(502).json({ error: "Extraction failed", ok: false });
       console.log(`[${rid}] OK model=${out.model} (${out.buffer.length} bytes)`);
       return res.json({ ok: true, image: `data:${out.mime};base64,${out.buffer.toString("base64")}`, model: out.model });
-    } catch (e) {
-      console.error(`[${rid}] EXTRACT crash:`, e.message);
-      return res.status(500).json({ error: e.message, ok: false });
-    }
+    } catch (e) { console.error(`[${rid}] EXTRACT crash:`, e.message); return res.status(500).json({ error: e.message, ok: false }); }
   }
 );
 
-router.post("/extract-cartoon",
-  requireAuth,
-  upload.single("image"),
-  async (req, res) => {
+router.post("/extract-cartoon", requireAuth, upload.single("image"), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No image uploaded", ok: false });
     if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: "Gemini not configured", ok: false });
     const rid        = Math.random().toString(36).slice(2, 6);
@@ -573,10 +564,7 @@ router.post("/extract-cartoon",
       if (!out) return res.status(502).json({ error: "Cartoon extraction failed", ok: false });
       console.log(`[${rid}] OK model=${out.model} colors=${out.colorCount} (${out.buffer.length} bytes)`);
       return res.json({ ok: true, image: `data:${out.mime};base64,${out.buffer.toString("base64")}`, colorCount: out.colorCount, model: out.model });
-    } catch (e) {
-      console.error(`[${rid}] CARTOON crash:`, e.message);
-      return res.status(500).json({ error: e.message, ok: false });
-    }
+    } catch (e) { console.error(`[${rid}] CARTOON crash:`, e.message); return res.status(500).json({ error: e.message, ok: false }); }
   }
 );
 
