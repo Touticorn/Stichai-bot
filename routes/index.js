@@ -346,27 +346,33 @@ router.post("/generate-embroidery",
       // Stitch generation
       let stitches, colorCounts;
       const useV71 = body.useV71 === "1" || body.useV71 === "true";
-      if (effectiveMode === "logo" || !useV71) {
-        const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
-        stitches     = legacy.stitches;
-        colorCounts  = legacy.colorCounts;
-      } else if (effectiveMode === "photo") {
+      // Cartoon mode now uses the V70 generator (proper PCA fill angles, cleaner
+      // fills on complex/concave shapes) instead of the legacy generator, which
+      // produced fan/starburst artefacts on cartoon subjects.
+      const useV70ForCartoon = (mode === "cartoon");
+      if (mode === "photo" && useV71) {
         const filtPm = buildFilteredPixMap(filteredRegions, selectedColors, canvasSize, pixMap, colors);
         const result = v71_generatePhotoStitch(filtPm, selectedColors, canvasSize, params);
         stitches     = result.stitches;
         colorCounts  = result.colorCounts;
-      } else {
+      } else if (useV70ForCartoon || (effectiveMode !== "logo" && useV71)) {
         const filtPm   = buildFilteredPixMap(filteredRegions, selectedColors, canvasSize, pixMap, colors);
         const v70Shapes = v70_buildShapes(filtPm, selectedColors, canvasSize, 10);
         if (v70Shapes.length > 0) {
           const result = v70_generateStitches(v70Shapes, selectedColors, params, canvasSize);
           stitches     = result.stitches;
           colorCounts  = result.colorCounts;
+          console.log(`[${rid}] used V70 generator (${v70Shapes.length} shapes)`);
         } else {
           const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
           stitches     = legacy.stitches;
           colorCounts  = legacy.colorCounts;
+          console.log(`[${rid}] V70 found no shapes, fell back to legacy`);
         }
+      } else {
+        const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
+        stitches     = legacy.stitches;
+        colorCounts  = legacy.colorCounts;
       }
       progressCb(70, "Adding basting…");
 
