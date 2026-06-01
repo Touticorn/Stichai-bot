@@ -1010,7 +1010,11 @@ function onCanvasTap(e){
     if(lbl){var s=Math.round((Date.now()-_detectStart)/1000);lbl.textContent=t('wandLoading')+' ('+s+'s)';}
   },1000);
   window._detectTick=_detectTick;
-  callSegmentSubject(tapX,tapY);
+  // Route by mode: cartoon → extract+cartoonize (best for embroidery);
+  // photo → extract clean subject image; logo → classic Gemini grid mask.
+  if(designMode==='cartoon'){ callExtractSubject(tapX,tapY,true); }
+  else if(designMode==='photo'){ callExtractSubject(tapX,tapY,false); }
+  else { callSegmentSubject(tapX,tapY); }
 }
 
 async function callSegmentSubject(tapX,tapY){
@@ -1051,6 +1055,46 @@ async function callSegmentSubject(tapX,tapY){
       showMaskState('error',t('wandNotFound'));
       setTimeout(function(){showMaskState('idle');},2800);
     });
+}
+
+/* ── NEW: Gemini image extraction (cartoon = best for embroidery) ──────
+   Replaces the working image with the extracted subject. Cartoon mode
+   flattens to the chosen colour count in one call — ideal digitiser input. */
+async function callExtractSubject(tapX,tapY,asCartoon){
+  await getIdToken();
+  showMaskState('detecting');
+  var fd=new FormData();
+  fd.append('image',cf);
+  if(tapX!==undefined){fd.append('tapX',tapX);fd.append('tapY',tapY);}
+  var url='/extract-subject';
+  if(asCartoon){ url='/extract-cartoon'; fd.append('colorCount',colorCount); }
+  try{
+    var r=await fetch(url,{method:'POST',body:fd,headers:getAuthHeaders()});
+    var data=await r.json();
+    if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
+    if(!data.ok||!data.image){
+      showMaskState('error',t('wandNotFound'));
+      setTimeout(function(){showMaskState('idle');},2800);
+      return;
+    }
+    // Convert the returned data: URL into a File so the rest of the
+    // pipeline (analyse/generate) keeps working with cf as usual.
+    var resp=await fetch(data.image);
+    var blob=await resp.blob();
+    cf=new File([blob],'subject.png',{type:blob.type||'image/png'});
+    // Load extracted image into the canvas as the new working image
+    initMask(data.image);
+    var lbl=document.getElementById('confirmedSubjectLabel');
+    if(lbl)lbl.textContent=(asCartoon?'Cartoon subject':'Subject')+' ✓';
+    showMaskState('confirmed');
+    if(navigator.vibrate)navigator.vibrate([30,30,60]);
+    var bar=document.getElementById('maskConfirmBar');
+    if(bar) setTimeout(function(){bar.scrollIntoView({behavior:'smooth',block:'nearest'});},120);
+  }catch(e){
+    if(window._detectTick){clearInterval(window._detectTick);window._detectTick=null;}
+    showMaskState('error',t('wandNotFound'));
+    setTimeout(function(){showMaskState('idle');},2800);
+  }
 }
 
 function confirmSubjectAndAnalyze(){
