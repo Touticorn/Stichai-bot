@@ -797,7 +797,7 @@ function handleFile(f){
     document.getElementById('st').innerHTML='<div class="error">'+t('errFileSize')+'</div>';
     return;
   }
-  cf=f;
+  cf=f; window._extractedSubject=false;
   stopGlowAnimation();
   if(c3) c3.getContext('2d').clearRect(0,0,c3.width,c3.height);
   hm=false;
@@ -1082,6 +1082,7 @@ async function callExtractSubject(tapX,tapY,asCartoon){
     var resp=await fetch(data.image);
     var blob=await resp.blob();
     cf=new File([blob],'subject.png',{type:blob.type||'image/png'});
+    window._extractedSubject=true;   // flag: background should be dropped at analyse
     // Load extracted image into the canvas as the new working image
     initMask(data.image);
     var lbl=document.getElementById('confirmedSubjectLabel');
@@ -1238,6 +1239,7 @@ async function analyze(){
   fd.append('mode',designMode);
   fd.append('canvasSize',designSize);
   fd.append('colorCount',colorCount);
+  if(window._extractedSubject)fd.append('extractedSubject','1');
   if(hm){
     c2.toBlob(function(b){
       if(b)fd.append('mask',b,'mask.png');

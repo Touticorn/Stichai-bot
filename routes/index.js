@@ -12,7 +12,7 @@ const upload  = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 
 const { requireAuth, checkDownloadQuota, checkQuota, recordDownload, buildPrices, PLANS, getOrCreateUser, getPeriodStart } = require("../lib/auth");
 const { enqueueJob, cancelJob, activeJobs }                = require("../lib/jobs");
-const { segmentSubjectWithGemini, convertToCartoonWithGemini, analyzeWithGemini, extractSubjectImage, extractSubjectAsCartoon } = require("../lib/gemini");
+const { segmentSubjectWithGemini, convertToCartoonWithGemini, analyzeWithGemini } = require("../lib/gemini");
 const { preprocessImage, extractColorsFromUnmasked, buildPixelMap, removeBackgroundImgly, renderPreviewFast, hexToRgb, rgbToLab, dE, normHex } = require("../lib/image");
 const { getStitchParams, generateStitchesFromRegions, v70_buildShapes, v70_generateStitches, v71_generatePhotoStitch, validateQuality, calculateSewTime, extractRegions, mergeAdjacentRegions, applyColorMerges, generateBastingBox } = require("../lib/stitch");
 const { encodeDST, encodeJEF, encodePES, buildZipStore, generateColorChartPdf, findNearestThread, JEF_THREADS } = require("../lib/export");
@@ -23,6 +23,27 @@ const CACHE_MAX_SIZE = 50;
 const jobs       = new LRUMap(CACHE_MAX_SIZE);   // completed job results
 const detections = new LRUMap(CACHE_MAX_SIZE);   // detect-shapes results
 const MAX_CANVAS_SIZE = 2400;
+
+/* Drop the background fill region: near-white, touches image edges, and large.
+   Used for Gemini-extracted subjects placed on a white background so we don't
+   waste thread stitching the backdrop. Returns filtered region array. */
+function dropBackgroundRegions(regions, canvasSize) {
+  if (!Array.isArray(regions) || !regions.length) return regions;
+  const edge = Math.max(2, Math.round(canvasSize * 0.01));
+  return regions.filter(r => {
+    const { r: rr, g: gg, b: bb } = hexToRgb(r.color || "#000000");
+    const nearWhite = rr > 235 && gg > 235 && bb > 235;
+    if (!nearWhite) return true;                 // keep all non-white regions
+    const touchesEdge =
+      r.mnx <= edge || r.mny <= edge ||
+      r.mxx >= canvasSize - edge || r.mxy >= canvasSize - edge;
+    const area = (r.mxx - r.mnx + 1) * (r.mxy - r.mny + 1);
+    const big = area > (canvasSize * canvasSize) * 0.12;   // >12% of canvas
+    // Drop only if it's white AND on the edge AND large = clearly the backdrop
+    return !(touchesEdge && big);
+  });
+}
+
 
 /* ── Helpers ────────────────────────────────────────────── */
 let admin = null;
@@ -167,7 +188,15 @@ router.post("/detect-shapes",
 
       const pixMap    = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
       const rawRegions = extractRegions(pixMap, colors, canvasSize, effectiveMode);
-      const regions   = mergeAdjacentRegions(rawRegions, canvasSize);
+      let regions     = mergeAdjacentRegions(rawRegions, canvasSize);
+
+      // If this image is an extracted subject on a white backdrop, drop the
+      // background so we don't stitch a big white fill. Flagged by the client.
+      if (body.extractedSubject === "1" || body.extractedSubject === true) {
+        const before = regions.length;
+        regions = dropBackgroundRegions(regions, canvasSize);
+        if (regions.length !== before) console.log(`[${rid}] dropped ${before - regions.length} background region(s)`);
+      }
 
       if (!regions.length) return res.status(500).json({ error: "No stitchable regions found" });
 
@@ -516,63 +545,6 @@ router.post("/admin/grant", async (req, res) => {
 });
 
 /* ── Segment subject ────────────────────────────────────── */
-/* ── Extract tapped subject as a clean image (Nano Banana) ──────────── */
-router.post("/extract-subject",
-  requireAuth,
-  upload.single("image"),
-  async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: "No image uploaded", ok: false });
-    if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: "Gemini not configured", ok: false });
-
-    const rid  = Math.random().toString(36).slice(2, 6);
-    const tapX = req.body?.tapX !== undefined ? Math.round(parseFloat(req.body.tapX)) : undefined;
-    const tapY = req.body?.tapY !== undefined ? Math.round(parseFloat(req.body.tapY)) : undefined;
-    console.log(`[${rid}] EXTRACT-SUBJECT${tapX !== undefined ? ` tap=[${tapX},${tapY}]` : " (auto)"}`);
-
-    try {
-      const out = await extractSubjectImage(req.file.buffer, req.file.mimetype || "image/jpeg", tapX, tapY);
-      if (!out) {
-        console.log(`[${rid}] extract failed`);
-        return res.status(502).json({ error: "Extraction failed", ok: false });
-      }
-      console.log(`[${rid}] OK model=${out.model} (${out.buffer.length} bytes)`);
-      return res.json({ ok: true, image: `data:${out.mime};base64,${out.buffer.toString("base64")}`, model: out.model });
-    } catch (e) {
-      console.error(`[${rid}] EXTRACT crash:`, e.message);
-      return res.status(500).json({ error: e.message, ok: false });
-    }
-  }
-);
-
-/* ── Extract tapped subject AND cartoonize with N colors ────────────── */
-router.post("/extract-cartoon",
-  requireAuth,
-  upload.single("image"),
-  async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: "No image uploaded", ok: false });
-    if (!process.env.GEMINI_API_KEY) return res.status(503).json({ error: "Gemini not configured", ok: false });
-
-    const rid        = Math.random().toString(36).slice(2, 6);
-    const tapX       = req.body?.tapX !== undefined ? Math.round(parseFloat(req.body.tapX)) : undefined;
-    const tapY       = req.body?.tapY !== undefined ? Math.round(parseFloat(req.body.tapY)) : undefined;
-    const colorCount = req.body?.colorCount !== undefined ? parseInt(req.body.colorCount) : 6;
-    console.log(`[${rid}] EXTRACT-CARTOON colors=${colorCount}${tapX !== undefined ? ` tap=[${tapX},${tapY}]` : " (auto)"}`);
-
-    try {
-      const out = await extractSubjectAsCartoon(req.file.buffer, req.file.mimetype || "image/jpeg", tapX, tapY, colorCount);
-      if (!out) {
-        console.log(`[${rid}] cartoon extract failed`);
-        return res.status(502).json({ error: "Cartoon extraction failed", ok: false });
-      }
-      console.log(`[${rid}] OK model=${out.model} colors=${out.colorCount} (${out.buffer.length} bytes)`);
-      return res.json({ ok: true, image: `data:${out.mime};base64,${out.buffer.toString("base64")}`, colorCount: out.colorCount, model: out.model });
-    } catch (e) {
-      console.error(`[${rid}] CARTOON crash:`, e.message);
-      return res.status(500).json({ error: e.message, ok: false });
-    }
-  }
-);
-
 router.post("/segment-subject",
   requireAuth,
   upload.single("image"),
