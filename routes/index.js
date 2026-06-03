@@ -53,9 +53,18 @@ function dropBackgroundRegions(regions, canvasSize) {
     const spansHeight = bh > span * 0.85;
     const wrapsSubject = edgeScore(r) >= 3;            // touches 3-4 edges = surrounds subject
 
-    // Drop ONLY if it both spans nearly the whole canvas in both axes AND wraps
-    // the subject on most edges — i.e. it is the outer backdrop, not clothing.
-    const isBackdrop = nearWhite && spansWidth && spansHeight && wrapsSubject;
+    // A true backdrop wraps the subject AND is HOLLOW — the subject sits inside it,
+    // so the backdrop's pixel area is much smaller than its bounding box (it's a
+    // frame, not a solid block). A white GOWN is a SOLID large region: its pixel
+    // area nearly fills its bounding box. Use fill-ratio to tell them apart.
+    const bboxArea = bw * bh;
+    const pixArea  = r.area || (r.pts ? r.pts.length : bboxArea);
+    const fillRatio = pixArea / bboxArea;              // ~1.0 = solid block; low = hollow frame
+    const isHollowFrame = fillRatio < 0.55;            // backdrop surrounds a hole (the subject)
+
+    // Drop ONLY if it spans the canvas, wraps the subject on most edges, AND is a
+    // hollow frame (not a solid garment). This keeps a frame-filling white gown.
+    const isBackdrop = nearWhite && spansWidth && spansHeight && wrapsSubject && isHollowFrame;
     return !isBackdrop;
   });
 }
