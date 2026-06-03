@@ -387,7 +387,7 @@ var T = {
     errFileType:"Please upload an image (JPG, PNG, WEBP)", errFileSize:"File too large — max 10MB",
     ready:"Ready:", analyzing:"Analyzing...", generating:"Generating embroidery file...",
     done:"✅ Done! Download your file below.",
-    errHttp:"HTTP", errInvalid:"Invalid response", errUnknown:"Unknown error", errNetwork:"Network error",
+    errHttp:"HTTP", errInvalid:"Invalid response", errUnknown:"Unknown error", errNetwork:"Network error", errExpired:"This design expired (the server restarted). Please tap Analyze again to regenerate it, then download.",
     errNoRegions:"No stitchable regions found",
     errNoStitches:"Not enough stitches — select more shapes or check contrast",
     errNoRegionsLeft:"No regions left after selection",
@@ -471,7 +471,7 @@ var T = {
     errFileType:"Veuillez importer une image (JPG, PNG, WEBP)", errFileSize:"Fichier trop volumineux — max 10 Mo",
     ready:"Prêt :", analyzing:"Analyse en cours...", generating:"Génération du fichier...",
     done:"✅ Terminé ! Téléchargez votre fichier.",
-    errHttp:"HTTP", errInvalid:"Réponse invalide", errUnknown:"Erreur inconnue", errNetwork:"Erreur réseau",
+    errHttp:"HTTP", errInvalid:"Réponse invalide", errUnknown:"Erreur inconnue", errNetwork:"Erreur réseau", errExpired:"Ce design a expiré (le serveur a redémarré). Appuyez de nouveau sur Analyser pour le régénérer, puis téléchargez.",
     errNoRegions:"Aucune zone brodable trouvée",
     errNoStitches:"Pas assez de points — sélectionnez plus de formes ou vérifiez le contraste",
     errNoRegionsLeft:"Aucune zone restante après sélection",
@@ -556,7 +556,7 @@ var T = {
     ready:"جاهز:", analyzing:"جارٍ التحليل...",
     generating:"جارٍ إنشاء ملف التطريز...",
     done:"✅ تم! قم بتنزيل ملفك.",
-    errHttp:"HTTP", errInvalid:"استجابة غير صالحة", errUnknown:"خطأ غير معروف", errNetwork:"خطأ في الشبكة",
+    errHttp:"HTTP", errInvalid:"استجابة غير صالحة", errUnknown:"خطأ غير معروف", errNetwork:"خطأ في الشبكة", errExpired:"انتهت صلاحية هذا التصميم (أُعيد تشغيل الخادم). اضغط على تحليل مرة أخرى لإعادة إنشائه ثم نزّله.",
     errNoRegions:"لم يُعثر على مناطق قابلة للتطريز",
     errNoStitches:"نقاط غير كافية — حدد مزيداً من الأشكال أو تحقق من التباين",
     errNoRegionsLeft:"لا توجد مناطق متبقية",
@@ -1646,7 +1646,7 @@ async function dl(){
   var fmt=document.getElementById('fs')?document.getElementById('fs').value:'dst';
   await getIdToken();
   fetch('/download/'+jid+'?fmt='+fmt,{headers:getAuthHeaders()})
-    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.blob();})
+    .then(function(r){if(r.status===404)throw new Error('EXPIRED');if(!r.ok)throw new Error('HTTP '+r.status);return r.blob();})
     .then(function(b){
       var url=URL.createObjectURL(b);
       var ts=new Date().toISOString().slice(0,16).replace(/[:T]/g,'-');
@@ -1658,7 +1658,10 @@ async function dl(){
       document.body.removeChild(a);
       setTimeout(function(){URL.revokeObjectURL(url);},30000);
     })
-    .catch(function(e){alert(t('errNetwork')+': '+e.message);});
+    .catch(function(e){
+      if(e.message==='EXPIRED'){alert(t('errExpired'));}
+      else{alert(t('errNetwork')+': '+e.message);}
+    });
 }
 
 /* ========== NEW ADDITIONS ========== */
