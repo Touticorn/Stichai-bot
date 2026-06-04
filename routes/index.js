@@ -24,49 +24,24 @@ const jobs       = new LRUMap(CACHE_MAX_SIZE);   // completed job results
 const detections = new LRUMap(CACHE_MAX_SIZE);   // detect-shapes results
 const MAX_CANVAS_SIZE = 2400;
 
+/* ── Drop background regions ──────────────────────────────────────────────
+   NUCLEAR OPTION: the Gemini prompt reserves pure white (#FFFFFF) for
+   background ONLY and uses warm off-white (#F0E8D8) for white clothing.
+   So we simply drop any region whose colour is very close to pure white.
+   No geometry checks, no edge-counting, no fillRatio — just colour.
+   This eliminates the entire class of "gown vs backdrop" heuristic bugs. */
 function dropBackgroundRegions(regions, canvasSize) {
   if (!Array.isArray(regions) || !regions.length) return regions;
-  const edge = Math.max(2, Math.round(canvasSize * 0.015));
-
-  // The TRUE outer background wraps the subject: it touches MANY edges/corners
-  // AND its bounding box spans almost the whole canvas. A white GOWN is large but
-  // does NOT span the full canvas width+height the way the surrounding backdrop does.
-  // We only drop a region if it looks like that wrapping backdrop — never just
-  // "large and white" (which wrongly deleted white clothing).
-  const span = canvasSize;
-  function edgeScore(r) {
-    let s = 0;
-    if (r.mnx <= edge) s++;
-    if (r.mny <= edge) s++;
-    if (r.mxx >= span - edge) s++;
-    if (r.mxy >= span - edge) s++;
-    return s;                      // 0..4 edges touched
-  }
-
-  return regions.filter(r => {
+  const dominated = regions.filter(r => {
     const { r: rr, g: gg, b: bb } = hexToRgb(r.color || "#000000");
-    const nearWhite = rr >= 232 && gg >= 232 && bb >= 232;
-    if (!nearWhite) return true;                       // keep all non-white
-
-    const bw = r.mxx - r.mnx + 1, bh = r.mxy - r.mny + 1;
-    const spansWidth  = bw > span * 0.85;
-    const spansHeight = bh > span * 0.85;
-    const wrapsSubject = edgeScore(r) >= 3;            // touches 3-4 edges = surrounds subject
-
-    // A true backdrop wraps the subject AND is HOLLOW — the subject sits inside it,
-    // so the backdrop's pixel area is much smaller than its bounding box (it's a
-    // frame, not a solid block). A white GOWN is a SOLID large region: its pixel
-    // area nearly fills its bounding box. Use fill-ratio to tell them apart.
-    const bboxArea = bw * bh;
-    const pixArea  = r.area || (r.pts ? r.pts.length : bboxArea);
-    const fillRatio = pixArea / bboxArea;              // ~1.0 = solid block; low = hollow frame
-    const isHollowFrame = fillRatio < 0.55;            // backdrop surrounds a hole (the subject)
-
-    // Drop ONLY if it spans the canvas, wraps the subject on most edges, AND is a
-    // hollow frame (not a solid garment). This keeps a frame-filling white gown.
-    const isBackdrop = nearWhite && spansWidth && spansHeight && wrapsSubject && isHollowFrame;
-    return !isBackdrop;
+    // Pure white: all channels >= 248 (within 7 of 255).
+    // Warm off-white (#F0E8D8) has B=216, so it won't match.
+    const isPureWhite = rr >= 248 && gg >= 248 && bb >= 248;
+    return !isPureWhite;
   });
+  const dropped = regions.length - dominated.length;
+  if (dropped > 0) console.log(`[bg-drop] removed ${dropped} pure-white region(s)`);
+  return dominated;
 }
 
 /* ── Helpers ────────────────────────────────────────────── */
@@ -213,7 +188,7 @@ router.post("/detect-shapes",
       const pixMap    = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
       const rawRegions = extractRegions(pixMap, colors, canvasSize, effectiveMode);
       let regions     = mergeAdjacentRegions(rawRegions, canvasSize);
-      if (body.extractedSubject === "1" || body.extractedSubject === true) {
+      if (body.extractedSubject === "1" || body.extractedSubject === true || mode === "cartoon") {
         const _b = regions.length;
         regions = dropBackgroundRegions(regions, canvasSize);
         if (regions.length !== _b) console.log(`[${rid}] dropped ${_b - regions.length} background region(s)`);
