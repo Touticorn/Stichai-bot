@@ -37,10 +37,11 @@ function dropBackgroundRegions(regions, canvasSize) {
   if (!Array.isArray(regions) || !regions.length) return regions;
   const dominated = regions.filter(r => {
     const { r: rr, g: gg, b: bb } = hexToRgb(r.color || "#000000");
-    // Chroma-key magenta background: high R, low G, high B (#FF00FF and near).
-    // No skin/hair/clothing is ever magenta, so this is unambiguous.
-    const isMagenta = rr >= 200 && gg <= 80 && bb >= 200;
-    // Pure-white fallback (older cartoons / non-magenta backgrounds).
+    // Chroma-key magenta: the GREEN channel is far below BOTH red and blue.
+    // This catches pure #FF00FF and every quantized/desaturated variant
+    // (#C413AE, #AE0EA2, etc.) that a strict R>=200 test would miss.
+    const isMagenta = gg < rr - 55 && gg < bb - 55 && rr > 110 && bb > 110;
+    // Pure-white fallback for non-magenta backgrounds.
     const isPureWhite = rr >= 248 && gg >= 248 && bb >= 248;
     return !(isMagenta || isPureWhite);
   });
