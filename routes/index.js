@@ -37,13 +37,15 @@ function dropBackgroundRegions(regions, canvasSize) {
   if (!Array.isArray(regions) || !regions.length) return regions;
   const dominated = regions.filter(r => {
     const { r: rr, g: gg, b: bb } = hexToRgb(r.color || "#000000");
-    // Pure white: all channels >= 248 (within 7 of 255).
-    // Warm off-white (#F0E8D8) has B=216, so it won't match.
+    // Chroma-key magenta background: high R, low G, high B (#FF00FF and near).
+    // No skin/hair/clothing is ever magenta, so this is unambiguous.
+    const isMagenta = rr >= 200 && gg <= 80 && bb >= 200;
+    // Pure-white fallback (older cartoons / non-magenta backgrounds).
     const isPureWhite = rr >= 248 && gg >= 248 && bb >= 248;
-    return !isPureWhite;
+    return !(isMagenta || isPureWhite);
   });
   const dropped = regions.length - dominated.length;
-  if (dropped > 0) console.log(`[bg-drop] removed ${dropped} pure-white region(s)`);
+  if (dropped > 0) console.log(`[bg-drop] removed ${dropped} background region(s) (magenta/white)`);
   return dominated;
 }
 
