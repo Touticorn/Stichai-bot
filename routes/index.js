@@ -14,6 +14,9 @@ const { requireAuth, checkDownloadQuota, checkQuota, recordDownload, buildPrices
 const { enqueueJob, cancelJob, activeJobs }                = require("../lib/jobs");
 const { segmentSubjectWithGemini, convertToCartoonWithGemini, analyzeWithGemini, extractSubjectImage, extractSubjectAsCartoon } = require("../lib/gemini");
 const { preprocessImage, extractColorsFromUnmasked, buildPixelMap, removeBackgroundImgly, renderPreviewFast, hexToRgb, rgbToLab, dE, normHex } = require("../lib/image");
+
+// DEBUG: stash the last cartoon PNG so it can be downloaded for offline pipeline testing
+let _lastCartoonBuf = null, _lastCartoonMime = "image/png";
 const { getStitchParams, generateStitchesFromRegions, v70_buildShapes, v70_generateStitches, v71_generatePhotoStitch, v72_buildAndGenerate, validateQuality, calculateSewTime, extractRegions, mergeAdjacentRegions, applyColorMerges, generateBastingBox } = require("../lib/stitch");
 const { encodeDST, encodeJEF, encodePES, buildZipStore, generateColorChartPdf, findNearestThread, JEF_THREADS } = require("../lib/export");
 const { LRUMap } = require("../lib/lru");
@@ -147,6 +150,7 @@ router.post("/detect-shapes",
           sourceMime   = cartoon.mime;
           cartoonOk    = true;
           console.log(`[${rid}] Cartoon generated OK`);
+          _lastCartoonBuf = cartoon.buffer; _lastCartoonMime = cartoon.mime || "image/png";
         } else {
           console.warn(`[${rid}] Cartoon generation failed — posterize fallback`);
         }
@@ -428,6 +432,13 @@ function buildFilteredPixMap(filteredRegions, selectedColors, canvasSize, pixMap
 }
 
 /* ── Preview ────────────────────────────────────────────── */
+router.get("/debug/last-cartoon", (req, res) => {
+  if (!_lastCartoonBuf) return res.status(404).send("no cartoon captured yet — run a cartoon generation first");
+  res.setHeader("Content-Type", _lastCartoonMime);
+  res.setHeader("Content-Disposition", "inline; filename=cartoon.png");
+  return res.send(_lastCartoonBuf);
+});
+
 router.get("/preview/:id", (req, res) => {
   const d = jobs.get(req.params.id);
   if (!d) return res.status(404).json({ error: "Not found" });
