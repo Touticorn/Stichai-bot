@@ -14,7 +14,7 @@ const { requireAuth, checkDownloadQuota, checkQuota, recordDownload, buildPrices
 const { enqueueJob, cancelJob, activeJobs }                = require("../lib/jobs");
 const { segmentSubjectWithGemini, convertToCartoonWithGemini, analyzeWithGemini, extractSubjectImage, extractSubjectAsCartoon } = require("../lib/gemini");
 const { preprocessImage, extractColorsFromUnmasked, buildPixelMap, removeBackgroundImgly, renderPreviewFast, hexToRgb, rgbToLab, dE, normHex } = require("../lib/image");
-const { getStitchParams, generateStitchesFromRegions, v70_buildShapes, v70_generateStitches, v71_generatePhotoStitch, validateQuality, calculateSewTime, extractRegions, mergeAdjacentRegions, applyColorMerges, generateBastingBox } = require("../lib/stitch");
+const { getStitchParams, generateStitchesFromRegions, v70_buildShapes, v70_generateStitches, v71_generatePhotoStitch, v72_buildAndGenerate, validateQuality, calculateSewTime, extractRegions, mergeAdjacentRegions, applyColorMerges, generateBastingBox } = require("../lib/stitch");
 const { encodeDST, encodeJEF, encodePES, buildZipStore, generateColorChartPdf, findNearestThread, JEF_THREADS } = require("../lib/export");
 const { LRUMap } = require("../lib/lru");
 
@@ -341,17 +341,27 @@ router.post("/generate-embroidery",
         colorCounts  = result.colorCounts;
       } else if (useV70ForCartoon || (effectiveMode !== "logo" && useV71)) {
         const filtPm   = buildFilteredPixMap(filteredRegions, selectedColors, canvasSize, pixMap, colors);
-        const v70Shapes = v70_buildShapes(filtPm, selectedColors, canvasSize, 10);
-        if (v70Shapes.length > 0) {
-          const result = v70_generateStitches(v70Shapes, selectedColors, params, canvasSize);
-          stitches     = result.stitches;
-          colorCounts  = result.colorCounts;
-          console.log(`[${rid}] used V70 generator (${v70Shapes.length} shapes)`);
+        // v72 unified portrait engine: outline-removal → whole-region fills +
+        // underlay + tie-offs + back-to-front order + outline on top.
+        const result = v72_buildAndGenerate(filtPm, selectedColors, canvasSize, 10, params);
+        if (result.stitches && result.stitches.filter(s => s.type === "fill").length > 200) {
+          stitches    = result.stitches;
+          colorCounts = result.colorCounts;
+          console.log(`[${rid}] used V72 unified engine`);
         } else {
-          const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
-          stitches     = legacy.stitches;
-          colorCounts  = legacy.colorCounts;
-          console.log(`[${rid}] V70 found no shapes, fell back to legacy`);
+          // Fallback to v70 if v72 somehow under-produced
+          const v70Shapes = v70_buildShapes(filtPm, selectedColors, canvasSize, 10);
+          if (v70Shapes.length > 0) {
+            const r70 = v70_generateStitches(v70Shapes, selectedColors, params, canvasSize);
+            stitches    = r70.stitches;
+            colorCounts = r70.colorCounts;
+            console.log(`[${rid}] V72 under-produced, used V70 (${v70Shapes.length} shapes)`);
+          } else {
+            const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
+            stitches    = legacy.stitches;
+            colorCounts = legacy.colorCounts;
+            console.log(`[${rid}] V72+V70 found nothing, fell back to legacy`);
+          }
         }
       } else {
         const legacy = generateStitchesFromRegions(pixMap, filteredRegions, selectedColors, params, canvasSize);
