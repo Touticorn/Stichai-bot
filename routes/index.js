@@ -33,20 +33,20 @@ const MAX_CANVAS_SIZE = 2400;
    So we simply drop any region whose colour is very close to pure white.
    No geometry checks, no edge-counting, no fillRatio — just colour.
    This eliminates the entire class of "gown vs backdrop" heuristic bugs. */
-function dropBackgroundRegions(regions, canvasSize) {
+function dropBackgroundRegions(regions, canvasSize, dropWhite) {
   if (!Array.isArray(regions) || !regions.length) return regions;
   const dominated = regions.filter(r => {
     const { r: rr, g: gg, b: bb } = hexToRgb(r.color || "#000000");
-    // Chroma-key magenta: the GREEN channel is far below BOTH red and blue.
-    // This catches pure #FF00FF and every quantized/desaturated variant
-    // (#C413AE, #AE0EA2, etc.) that a strict R>=200 test would miss.
+    // Chroma-key magenta: green channel far below both red and blue. (Redundant
+    // with the pixel-level drop in buildPixelMap, kept as defense-in-depth.)
     const isMagenta = gg < rr - 55 && gg < bb - 55 && rr > 110 && bb > 110;
-    // Pure-white fallback for non-magenta backgrounds.
-    const isPureWhite = rr >= 248 && gg >= 248 && bb >= 248;
+    // Pure white is the background only in non-cartoon modes. In cartoon mode the
+    // background is magenta, so pure white is a real subject colour (e.g. a gown).
+    const isPureWhite = dropWhite && rr >= 248 && gg >= 248 && bb >= 248;
     return !(isMagenta || isPureWhite);
   });
   const dropped = regions.length - dominated.length;
-  if (dropped > 0) console.log(`[bg-drop] removed ${dropped} background region(s) (magenta/white)`);
+  if (dropped > 0) console.log(`[bg-drop] removed ${dropped} background region(s) (magenta${dropWhite ? "/white" : ""})`);
   return dominated;
 }
 
@@ -197,7 +197,7 @@ router.post("/detect-shapes",
       let regions     = mergeAdjacentRegions(rawRegions, canvasSize);
       if (body.extractedSubject === "1" || body.extractedSubject === true || mode === "cartoon") {
         const _b = regions.length;
-        regions = dropBackgroundRegions(regions, canvasSize);
+        regions = dropBackgroundRegions(regions, canvasSize, mode !== "cartoon");
         if (regions.length !== _b) console.log(`[${rid}] dropped ${_b - regions.length} background region(s)`);
       }
 
