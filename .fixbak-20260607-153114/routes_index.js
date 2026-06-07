@@ -375,8 +375,6 @@ router.post("/generate-embroidery",
         stitches     = legacy.stitches;
         colorCounts  = legacy.colorCounts;
       }
-      const _trimN = stitches.filter(s => s.type === "trim" || s.type === "jump").length;
-      console.log(`[${rid}] engine output: ${stitches.length} stitches, ${_trimN} trims/jumps (${(100*_trimN/Math.max(1,stitches.length)).toFixed(1)}%)`);
       progressCb(70, "Adding basting…");
 
       if (body.bastingBox === "1" || body.bastingBox === "true") {

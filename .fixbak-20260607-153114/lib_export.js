@@ -5,9 +5,6 @@
  * Thread databases (JEF_THREADS, PEC_THREADS) are defined here.
  */
 
-const { hexToRgb } = require("./image"); // FIX: used but never imported
-const MACHINE_LIMITS = { generic: { maxJump: 121, minStitch: 3 } }; // FIX: fallback for encodeDST default
-
 function dstEncodeXY(dx, dy, isJump) {
   let x = dx;
   let y = -dy;

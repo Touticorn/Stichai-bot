@@ -1790,7 +1790,7 @@ function cancelGeneration() {
 }
 async function batchDownload() {
   if (!jid) return;
-  fetch(`/download-batch/${jid}`,{headers:getAuthHeaders()}).then(r=>r.blob()).then(b=>{var u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download=`stichai-batch-${jid}.zip`;a.click();URL.revokeObjectURL(u);}).catch(e=>alert('Download failed: '+e.message));
+  window.open(`/download-batch/${jid}`, '_blank');
 }
 let previewDiv = null;
 function showBrushPreview(x,y) {

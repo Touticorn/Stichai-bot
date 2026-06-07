@@ -45,8 +45,13 @@ function isNearBlack(hex) { const { r, g, b } = hexToRgb(hex); return r < 40  &&
 
 /* ── Image preprocessing ────────────────────────────────── */
 async function preprocessImage(buffer, canvasSize, mode) {
+  // For cartoons the background is chroma-key magenta; pad with the SAME magenta
+  // so portrait letterbox bars get dropped by the background remover (not filled).
+  const padColor = (mode === "cartoon")
+    ? { r: 255, g: 0, b: 255, alpha: 1 }
+    : { r: 255, g: 255, b: 255, alpha: 1 };
   let pipeline = sharp(buffer)
-    .resize(canvasSize, canvasSize, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } });
+    .resize(canvasSize, canvasSize, { fit: "contain", background: padColor });
 
   if (mode === "cartoon") {
     pipeline = pipeline
@@ -184,6 +189,11 @@ async function buildPixelMap(imageBuffer, maskBuffer, colors, canvasSize) {
         if (mData[mOff] > 140 && mData[mOff + 1] < 90 && mData[mOff + 2] < 90 && (mCh < 4 || mData[mOff + 3] > 30)) continue;
       }
       const lab  = rgbToLab({ r: iData[iOff], g: iData[iOff + 1], b: iData[iOff + 2] });
+      // Chroma-key magenta background: drop the pixel BEFORE nearest-colour mapping.
+      // Otherwise it maps to the nearest palette colour (often red) and survives the
+      // region-level background drop. Magenta = green channel far below red AND blue.
+      const _pr = iData[iOff], _pg = iData[iOff + 1], _pb = iData[iOff + 2];
+      if (_pg < _pr - 55 && _pg < _pb - 55 && _pr > 110 && _pb > 110) { continue; }
       let best = 0, bestD = Infinity;
       for (let c = 0; c < labC.length; c++) {
         const d = dE(lab, labC[c]);
@@ -198,6 +208,9 @@ async function buildPixelMap(imageBuffer, maskBuffer, colors, canvasSize) {
 /* ── imgly background removal ───────────────────────────── */
 let _imglyLib = undefined;
 async function loadImglyBgRemoval() {
+  // Disabled on Railway — model download blocks thread on cold start
+  // Set ENABLE_IMGLY=1 to re-enable
+  if (process.env.ENABLE_IMGLY !== "1") { _imglyLib = null; return null; }
   if (_imglyLib !== undefined) return _imglyLib;
   try {
     _imglyLib = require("@imgly/background-removal-node");
@@ -225,11 +238,41 @@ async function removeBackgroundImgly(imageBuffer, mime) {
 }
 
 /* ── Fast preview render ────────────────────────────────── */
-async function renderPreviewFast(regions, colors, canvasSize) {
+async function renderPreviewFast(regions, colors, canvasSize, pixMap) {
   const size   = Math.min(canvasSize, 800);
   const scale  = size / canvasSize;
   const fabric = { r: 245, g: 240, b: 232 };
 
+  // ACCURATE PATH: render the actual per-pixel shapes from pixMap.
+  // Only pixels belonging to a KEPT region (after background drop) are drawn;
+  // everything else (dropped background, unmatched) shows as fabric. This avoids
+  // the old behaviour of painting each region's whole bounding-box rectangle,
+  // which made a region with a large bbox look like a solid block.
+  if (pixMap && pixMap.length === canvasSize * canvasSize) {
+    try {
+      const ciToRgb = {};
+      for (const r of regions) {
+        if (r && typeof r.ci === "number") ciToRgb[r.ci] = hexToRgb(r.color || "#000000");
+      }
+      const buf = Buffer.alloc(size * size * 3);
+      const sStep = canvasSize / size;
+      for (let y = 0; y < size; y++) {
+        const sy = Math.min(canvasSize - 1, Math.floor(y * sStep));
+        for (let x = 0; x < size; x++) {
+          const sx = Math.min(canvasSize - 1, Math.floor(x * sStep));
+          const ci = pixMap[sy * canvasSize + sx];
+          const col = (ci >= 0 && ciToRgb[ci]) ? ciToRgb[ci] : fabric;
+          const o = (y * size + x) * 3;
+          buf[o] = col.r; buf[o + 1] = col.g; buf[o + 2] = col.b;
+        }
+      }
+      return await sharp(buf, { raw: { width: size, height: size, channels: 3 } }).png().toBuffer();
+    } catch (e) {
+      // fall through to the bbox renderer below
+    }
+  }
+
+  // FALLBACK: legacy bounding-box rectangle render (used only if pixMap absent).
   let preview = await sharp({
     create: { width: size, height: size, channels: 3, background: fabric }
   }).png().toBuffer();

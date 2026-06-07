@@ -671,7 +671,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
      Industry pro file mean stitch length is 3.5mm. To make our mean land near
      that, the subdivision target should be ~3.5mm so any longer stitch gets
      broken into ~equal pieces around the target. */
-  const pSubdiv   = Math.max(20, Math.min(40, Math.round((P.tatamiLen || 35) * pxScale * 0.75)));  /* FIX: capped 4mm */
+  const pSubdiv   = Math.max(20, Math.round((P.tatamiLen || 35) * pxScale * 0.75));  /* ~3.5mm target */
   const pPullComp = Math.round((P.pullComp || 2) * pxScale);
   const pOutline  = pSubdiv;  /* outline step = same target */
   /* Brick offset: stagger alternate rows by a fraction of ROW pitch (not stitch length).
@@ -1030,9 +1030,8 @@ function v72_buildAndGenerate(pixMap, colors, canvasSize, pxPerMm, params) {
      We add the professional features on top: underlay, tie-offs, and
      back-to-front layer ordering. Outline-removal is NOT used — Gemini folds
      linework into the darkest fill, so there's no separable outline colour. */
-  let regions = v70_findRegions(pixMap, canvasSize, canvasSize, minAreaPx);
-  regions = v72_mergeSameColorFragments(regions, Math.max(2, Math.round(0.8 * pxPerMm))); // FIX: bridge fragments split by dark outlines
-  console.log(`[v72] Per-component regions (merged): ${regions.length}`);
+  const regions = v70_findRegions(pixMap, canvasSize, canvasSize, minAreaPx);
+  console.log(`[v72] Per-component regions: ${regions.length}`);
 
   // Identify the darkest colour for an optional definition-outline pass
   let darkCi = -1, darkLum = Infinity;
@@ -1074,7 +1073,7 @@ function v72_buildAndGenerate(pixMap, colors, canvasSize, pxPerMm, params) {
   // stitches laid across the fabric. ~8mm keeps short row transitions stitched
   // but turns long crossings into clean jumps.
   const pMaxBridge= Math.round((P.maxBridgeMm || 7) * pxPerMm);
-  const maxStitch = Math.max(20, Math.round(4.0 * pxPerMm)); // FIX: fixed 4mm cap (was canvas-scaled ~6.7mm)
+  const maxStitch = Math.max(20, Math.round(35 * pxScale * 0.75));
   const ulSpacing = Math.max(pRow * 2, Math.round((P.tatamiUl || 25)));
 
   const out = [];
@@ -1082,20 +1081,12 @@ function v72_buildAndGenerate(pixMap, colors, canvasSize, pxPerMm, params) {
 
   let _lastPt = null;   // running stitch position, used to thread colours together
   const _minFragPx = Math.max(12, Math.round(0.6 * pxPerMm * pxPerMm)); // drop noise specks
-  const _trimGap = 7 * pxPerMm;  // above this gap -> real trim/jump
-  const _travelStep = Math.max(8, Math.round(2.0 * pxPerMm)); // running-stitch pitch for sewn travel
-  // FIX: short hops sewn as small running stitches (pro files ~0.3% jumps), only long moves trim
-  const _travelTo = (nx, ny, color) => {
-    if (!_lastPt) return;
-    const d = Math.hypot(nx - _lastPt.x, ny - _lastPt.y);
-    if (d <= 1) return;
-    if (d > _trimGap) { out.push({ x: _lastPt.x, y: _lastPt.y, color, type: "trim" }); return; }
-    const n = Math.max(1, Math.ceil(d / _travelStep));
-    for (let k = 1; k <= n; k++) {
-      out.push({ x: _lastPt.x + (nx - _lastPt.x) * k / n,
-                 y: _lastPt.y + (ny - _lastPt.y) * k / n, color, type: "running" });
+  const _trimGap = 7 * pxPerMm;  // gap (px) beyond which a transition trims instead of stitching
+  const _trimIfFar = (nx, ny, color) => {
+    if (_lastPt) {
+      const d = Math.hypot(nx - _lastPt.x, ny - _lastPt.y);
+      if (d > _trimGap) out.push({ x: _lastPt.x, y: _lastPt.y, color, type: "trim" });
     }
-    _lastPt = { x: nx, y: ny };
   };
   for (const ci of ciOrder) {
     const group = v72_nnOrder(shapes.filter(s => s.ci === ci), _lastPt);
@@ -1103,7 +1094,7 @@ function v72_buildAndGenerate(pixMap, colors, canvasSize, pxPerMm, params) {
     let _tiedIn = false;   // ensure every colour gets ONE tie-in at its first stitch
     const _tieInAt = (x, y, color) => {
       if (!_tiedIn) {
-        _travelTo(x, y, color);
+        _trimIfFar(x, y, color);
         for (const t of generateTieStitches(x, y, color, 1, 0)) out.push(t);
         _tiedIn = true;
       }
@@ -1117,7 +1108,7 @@ function v72_buildAndGenerate(pixMap, colors, canvasSize, pxPerMm, params) {
         // UNDERLAY (only for fills big enough to need it)
         if (sh.areaMm2 > 8) {
           const ul = generateZigzagUnderlay(pixMap, sh.reg, ci, canvasSize, color, ulSpacing, maxStitch);
-          if (ul.length) _travelTo(ul[0].x, ul[0].y, color);
+          if (ul.length) _trimIfFar(ul[0].x, ul[0].y, color);
           for (const u of ul) { out.push(u); colorCounts[ci].underlay++; }
           if (ul.length) _lastPt = ul[ul.length - 1];
         }
@@ -1125,7 +1116,7 @@ function v72_buildAndGenerate(pixMap, colors, canvasSize, pxPerMm, params) {
         const fs = v70_runsToStitches(scan, color, pBrick, pPullComp, pMaxBridge, maxStitch);
         if (fs.length) {
           if (colorFills.length === 0 && !_tiedIn) _tieInAt(fs[0].x, fs[0].y, color);
-          else _travelTo(fs[0].x, fs[0].y, color);
+          else _trimIfFar(fs[0].x, fs[0].y, color);
           for (const s of fs) { out.push(s); colorCounts[ci].fill++; }
           colorFills.push(fs[fs.length - 1]);
           _lastPt = fs[fs.length - 1];
@@ -1136,7 +1127,7 @@ function v72_buildAndGenerate(pixMap, colors, canvasSize, pxPerMm, params) {
           const os = v70_outlineStitches(path, sh.offX, sh.offY, color, maxStitch);
           if (os.length) {
             if (!_tiedIn) _tieInAt(os[0].x, os[0].y, color);
-            else _travelTo(os[0].x, os[0].y, color);
+            else _trimIfFar(os[0].x, os[0].y, color);
           }
           for (const s of os) { out.push(s); colorCounts[ci].running++; }
           if (os.length) _lastPt = os[os.length - 1];
@@ -1786,7 +1777,7 @@ function generateStitchesFromRegions(pixMap, regions, colors, params, canvasSize
      stitches (the 38k-stitch fill bug). Scale all pixel-based fill params by this. */
   const _resScale = canvasSize / 800;
   const pRow      = Math.max(3, Math.round((P.tatamiRow !== undefined ? P.tatamiRow : 4) * _resScale));
-  const pLen      = Math.max(8, Math.min(40, Math.round((P.tatamiLen !== undefined ? P.tatamiLen : 30) * _resScale))); // FIX: cap 4mm
+  const pLen      = Math.max(8, Math.round((P.tatamiLen !== undefined ? P.tatamiLen : 30) * _resScale));
   const pPull     = P.pull      !== undefined ? P.pull      : 2;
   const pPullComp = P.pullComp  !== undefined ? P.pullComp  : 2;
   const pEdgeUL   = Math.round(18 * _resScale);
