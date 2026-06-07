@@ -13,7 +13,7 @@ const upload  = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 const { requireAuth, checkDownloadQuota, checkQuota, recordDownload, buildPrices, PLANS, getOrCreateUser, getPeriodStart } = require("../lib/auth");
 const { enqueueJob, cancelJob, activeJobs }                = require("../lib/jobs");
 const { segmentSubjectWithGemini, convertToCartoonWithGemini, analyzeWithGemini, extractSubjectImage, extractSubjectAsCartoon } = require("../lib/gemini");
-const { preprocessImage, extractColorsFromUnmasked, buildPixelMap, removeBackgroundImgly, renderPreviewFast, hexToRgb, rgbToLab, dE, normHex } = require("../lib/image");
+const { preprocessImage, extractColorsFromUnmasked, buildPixelMap, buildOutlineMask, removeBackgroundImgly, renderPreviewFast, hexToRgb, rgbToLab, dE, normHex } = require("../lib/image");
 
 // DEBUG: stash the last cartoon PNG so it can be downloaded for offline pipeline testing
 let _lastCartoonBuf = null, _lastCartoonMime = "image/png";
@@ -259,14 +259,14 @@ router.post("/generate-embroidery",
       progressCb(5, "Preparing image…");
 
       const det = body.detectionId ? detections.get(body.detectionId) : null;
-      let pixMap, regions, colors, mode;
+      let pixMap, regions, colors, mode, cleanedBuffer;
 
       if (det) {
-        ({ pixMap, regions, colors, canvasSize, mode } = det);
+        ({ pixMap, regions, colors, canvasSize, mode } = det); cleanedBuffer = det.cleanedBuffer;
       } else {
         mode = body.mode || "logo";
         const colorCount    = Math.min(16, Math.max(3, parseInt(body.colorCount) || (mode === "photo" ? 8 : 12)));
-        const cleanedBuffer = await preprocessImage(imgFile.buffer, canvasSize, mode);
+        cleanedBuffer = await preprocessImage(imgFile.buffer, canvasSize, mode);
         colors              = await extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount);
         pixMap              = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
         const rawRegions    = extractRegions(pixMap, colors, canvasSize, mode);
@@ -350,6 +350,10 @@ router.post("/generate-embroidery",
         const filtPm   = buildFilteredPixMap(filteredRegions, selectedColors, canvasSize, pixMap, colors);
         // v72 unified portrait engine: outline-removal → whole-region fills +
         // underlay + tie-offs + back-to-front order + outline on top.
+        if (mode === "cartoon" && cleanedBuffer) {
+          try { params._outlineMask = await buildOutlineMask(cleanedBuffer, canvasSize, 70); }
+          catch (e) { console.warn("[v72] outline mask failed:", e.message); }
+        }
         const result = v72_buildAndGenerate(filtPm, selectedColors, canvasSize, 10, params);
         if (result.stitches && result.stitches.filter(s => s.type === "fill").length > 200) {
           stitches    = result.stitches;
