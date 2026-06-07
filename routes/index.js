@@ -14,6 +14,7 @@ const { requireAuth, checkDownloadQuota, checkQuota, recordDownload, buildPrices
 const { enqueueJob, cancelJob, activeJobs }                = require("../lib/jobs");
 const { segmentSubjectWithGemini, convertToCartoonWithGemini, analyzeWithGemini, extractSubjectImage, extractSubjectAsCartoon } = require("../lib/gemini");
 const { preprocessImage, extractColorsFromUnmasked, buildPixelMap, buildOutlineMask, removeBackgroundImgly, renderPreviewFast, hexToRgb, rgbToLab, dE, normHex } = require("../lib/image");
+const { vectorizeToDST } = require("../lib/vectorize");
 
 // DEBUG: stash the last cartoon PNG so it can be downloaded for offline pipeline testing
 let _lastCartoonBuf = null, _lastCartoonMime = "image/png";
@@ -350,11 +351,19 @@ router.post("/generate-embroidery",
         const filtPm   = buildFilteredPixMap(filteredRegions, selectedColors, canvasSize, pixMap, colors);
         // v72 unified portrait engine: outline-removal → whole-region fills +
         // underlay + tie-offs + back-to-front order + outline on top.
+        let result;
         if (mode === "cartoon" && cleanedBuffer) {
-          try { params._outlineMask = await buildOutlineMask(cleanedBuffer, canvasSize, 70); }
-          catch (e) { console.warn("[v72] outline mask failed:", e.message); }
+          try {
+            console.log(`[${rid}] using vector pipeline (potrace)`);
+            result = await vectorizeToDST(cleanedBuffer, selectedColors, canvasSize, 10, params);
+          } catch (e) {
+            console.warn(`[${rid}] vectorize failed (${e.message}), falling back to v72`);
+            if (cleanedBuffer) { try { params._outlineMask = await buildOutlineMask(cleanedBuffer, canvasSize, 70); } catch {} }
+            result = v72_buildAndGenerate(filtPm, selectedColors, canvasSize, 10, params);
+          }
+        } else {
+          result = v72_buildAndGenerate(filtPm, selectedColors, canvasSize, 10, params);
         }
-        const result = v72_buildAndGenerate(filtPm, selectedColors, canvasSize, 10, params);
         if (result.stitches && result.stitches.filter(s => s.type === "fill").length > 200) {
           stitches    = result.stitches;
           colorCounts = result.colorCounts;

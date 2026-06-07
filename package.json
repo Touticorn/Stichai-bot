@@ -14,7 +14,8 @@
     "@imgly/background-removal-node": "^1.4.5",
     "stripe": "^14.0.0",
     "socket.io": "^4.7.2",
-    "pdfkit": "^0.14.0"
+    "pdfkit": "^0.14.0",
+    "potrace": ">=0.1.2"
   },
   "engines": {
     "node": ">=18.0.0"
