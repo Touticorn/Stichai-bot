@@ -352,7 +352,7 @@ router.post("/generate-embroidery",
         // v72 unified portrait engine: outline-removal → whole-region fills +
         // underlay + tie-offs + back-to-front order + outline on top.
         let result;
-        if ((mode === "cartoon" || mode === "logo") && cleanedBuffer) {
+        if (cleanedBuffer) { // vec-all-modes
           try {
             console.log(`[${rid}] using vector pipeline (potrace)`);
             result = await vectorizeToDST(cleanedBuffer, selectedColors, canvasSize, 10, params);
