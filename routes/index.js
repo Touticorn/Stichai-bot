@@ -148,7 +148,25 @@ router.post("/detect-shapes",
       let cartoonOk    = false;
 
       if (mode === "cartoon") {
-        const cartoon = await convertToCartoonWithGemini(imgFile.buffer, sourceMime, colorCount);
+        // direct mode: input is already a flat cartoon -> skip Gemini regeneration
+        let alreadyFlat = false;
+        try {
+          const _sharp = require("sharp");
+          const small = await _sharp(imgFile.buffer).resize(64,64,{fit:"fill"}).removeAlpha().raw().toBuffer();
+          const h = new Map();
+          for (let i=0;i<small.length;i+=3){
+            const k=((small[i]>>4)<<8)|((small[i+1]>>4)<<4)|(small[i+2]>>4);
+            h.set(k,(h.get(k)||0)+1);
+          }
+          const counts=[...h.values()].sort((x,y)=>y-x);
+          const tot=counts.reduce((s,c)=>s+c,0);
+          const mass=counts.slice(0,10).reduce((s,c)=>s+c,0)/tot;
+          alreadyFlat = mass >= 0.60;
+          console.log(`[${rid}] flatness: top-10 mass ${(100*mass).toFixed(0)}% -> ${alreadyFlat?"DIRECT (skip Gemini)":"regenerate"}`);
+        } catch(e) {}
+        const cartoon = alreadyFlat
+          ? { buffer: imgFile.buffer, mime: sourceMime }
+          : await convertToCartoonWithGemini(imgFile.buffer, sourceMime, colorCount);
         if (cartoon) {
           sourceBuffer = cartoon.buffer;
           sourceMime   = cartoon.mime;
