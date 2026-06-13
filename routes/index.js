@@ -486,27 +486,33 @@ router.get("/debug/last", async (req, res) => {
   let renderTag = "", gapPct = null;
   try {
     const sharp = require("sharp");
-    const SC = 0.25, w = Math.round(W*SC), h = Math.round(H*SC);
-    const cov = Buffer.alloc(w*h, 0), rgb = Buffer.alloc(w*h*3, 255);
-    const hex = s => { const m=/^#?([0-9a-f]{6})/i.exec(s||""); return m?[parseInt(m[1].slice(0,2),16),parseInt(m[1].slice(2,4),16),parseInt(m[1].slice(4,6),16)]:[0,0,0]; };
-    let px=null, py=null;
-    for (const s of st) {
-      if (s.type==="trim"||s.type==="jump"){ px=null; py=null; continue; }
-      const x=Math.round(s.x*SC), y=Math.round(s.y*SC);
-      if (px!=null){
-        const dx=x-px, dy=y-py, steps=Math.max(1,Math.hypot(dx,dy)|0), c=hex(s.color);
-        for(let k=0;k<=steps;k++){
-          const ix=(px+dx*k/steps)|0, iy=(py+dy*k/steps)|0;
-          if(ix>=0&&ix<w&&iy>=0&&iy<h){ const o=iy*w+ix; rgb[o*3]=c[0];rgb[o*3+1]=c[1];rgb[o*3+2]=c[2]; cov[o]=1; }
-        }
+    const hex = s => /^#?[0-9a-f]{6}/i.test(s||"") ? (s[0]==="#"?s:"#"+s) : "#000000";
+    // bbox of real (non-trim) stitches so the subject fills the frame
+    let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+    for (const s of st){ if(s.type==="trim"||s.type==="jump")continue; if(s.x<x0)x0=s.x; if(s.x>x1)x1=s.x; if(s.y<y0)y0=s.y; if(s.y>y1)y1=s.y; }
+    if (x1<x0){ x0=0;y0=0;x1=W;y1=H; }
+    const pad=20, bw=(x1-x0)+2*pad, bh=(y1-y0)+2*pad;
+    const TARGET=1000, S=TARGET/Math.max(bw,bh);
+    const RW=Math.round(bw*S), RH=Math.round(bh*S);
+    const THREAD=Math.max(1.6, 4*S);                 // 0.4mm thread at this scale
+    const mx=x=>((x-x0+pad)*S).toFixed(1), my=y=>((y-y0+pad)*S).toFixed(1);
+    let lines="", prev=null;
+    const cov = Buffer.alloc(RW*RH, 0);              // for gap%
+    const plot=(ax,ay,bx2,by2)=>{ const steps=Math.max(1,Math.hypot(bx2-ax,by2-ay)|0); for(let k=0;k<=steps;k++){ const ix=(ax+(bx2-ax)*k/steps)|0, iy=(ay+(by2-ay)*k/steps)|0; if(ix>=0&&ix<RW&&iy>=0&&iy<RH) cov[iy*RW+ix]=1; } };
+    for (const s of st){
+      if (s.type==="trim"){ prev=null; continue; }
+      if (prev && prev.color===s.color){
+        lines += `<line x1="${mx(prev.x)}" y1="${my(prev.y)}" x2="${mx(s.x)}" y2="${my(s.y)}" stroke="${hex(s.color)}"/>`;
+        plot(+mx(prev.x),+my(prev.y),+mx(s.x),+my(s.y));
       }
-      px=x; py=y;
+      prev=s;
     }
-    const png = await sharp(rgb,{raw:{width:w,height:h,channels:3}}).png().toBuffer();
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${RW}" height="${RH}"><rect width="${RW}" height="${RH}" fill="#f4f2ee"/><g stroke-width="${THREAD.toFixed(2)}" stroke-linecap="round" fill="none" stroke-opacity="0.92">${lines}</g></svg>`;
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
     renderTag = `<img src="data:image/png;base64,${png.toString("base64")}" style="max-width:48%;border:1px solid #ccc"/>`;
-    const sil = await sharp(Buffer.from(cov),{raw:{width:w,height:h,channels:1}}).blur(4).threshold(40).raw().toBuffer();
-    const dil = await sharp(Buffer.from(cov),{raw:{width:w,height:h,channels:1}}).blur(1).threshold(40).raw().toBuffer();
-    let se=0, ho=0; for(let i=0;i<w*h;i++){ if(sil[i]){ se++; if(!dil[i]) ho++; } }
+    const sil = await sharp(Buffer.from(cov),{raw:{width:RW,height:RH,channels:1}}).blur(4).threshold(40).raw().toBuffer();
+    const dil = await sharp(Buffer.from(cov),{raw:{width:RW,height:RH,channels:1}}).blur(1).threshold(40).raw().toBuffer();
+    let se=0, ho=0; for(let i2=0;i2<RW*RH;i2++){ if(sil[i2]){ se++; if(!dil[i2]) ho++; } }
     gapPct = se? (100*ho/se) : 0;
   } catch(e){ renderTag = `<p>render failed: ${e.message}</p>`; }
   const counts = {};
