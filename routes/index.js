@@ -386,7 +386,7 @@ router.post("/generate-embroidery",
         if (result.stitches && result.stitches.filter(s => s.type === "fill").length > 200) {
           stitches    = result.stitches;
           colorCounts = result.colorCounts;
-          console.log(`[${rid}] used V72 unified engine`);
+          console.log(`[${rid}] used vector engine (potrace)`);
         } else {
           // Fallback to v70 if v72 somehow under-produced
           const v70Shapes = v70_buildShapes(filtPm, selectedColors, canvasSize, 10);
