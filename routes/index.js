@@ -18,6 +18,7 @@ const { vectorizeToDST } = require("../lib/vectorize");
 
 // DEBUG: stash the last cartoon PNG so it can be downloaded for offline pipeline testing
 let _lastCartoonBuf = null, _lastCartoonMime = "image/png";
+let _lastJobId = null;
 const { getStitchParams, generateStitchesFromRegions, v70_buildShapes, v70_generateStitches, v71_generatePhotoStitch, v72_buildAndGenerate, validateQuality, calculateSewTime, extractRegions, mergeAdjacentRegions, applyColorMerges, generateBastingBox } = require("../lib/stitch");
 const { encodeDST, encodeJEF, encodePES, buildZipStore, generateColorChartPdf, findNearestThread, JEF_THREADS } = require("../lib/export");
 const { LRUMap } = require("../lib/lru");
@@ -426,6 +427,7 @@ router.post("/generate-embroidery",
       const sewTime = calculateSewTime(qa.stitchCount, qa.trimCount, selectedColors.length, specs.machine);
 
       jobs.set(jobId, { stitches, pixMap, colors: selectedColors, params, designW: canvasSize, designH: canvasSize, designMm: canvasSize / 10, ts: Date.now(), previewBuf, sewTime, mode, canvasSize });
+      _lastJobId = jobId;  // debug/last pointer
       progressCb(100, "Complete");
 
       const shapes = filteredRegions.map(r => {
@@ -473,6 +475,46 @@ router.get("/debug/last-cartoon", (req, res) => {
   res.setHeader("Content-Type", _lastCartoonMime);
   res.setHeader("Content-Disposition", "inline; filename=cartoon.png");
   return res.send(_lastCartoonBuf);
+});
+
+/* ── /debug/last : true-colour self-report for the last run ─────────────── */
+router.get("/debug/last", async (req, res) => {
+  const d = _lastJobId && jobs.get(_lastJobId);
+  if (!d) return res.status(404).send("no run captured yet — generate a design first");
+  const W = d.designW, H = d.designH, cols = d.colors || [];
+  const st = d.stitches || [];
+  let renderTag = "", gapPct = null;
+  try {
+    const sharp = require("sharp");
+    const SC = 0.25, w = Math.round(W*SC), h = Math.round(H*SC);
+    const cov = Buffer.alloc(w*h, 0), rgb = Buffer.alloc(w*h*3, 255);
+    const hex = s => { const m=/^#?([0-9a-f]{6})/i.exec(s||""); return m?[parseInt(m[1].slice(0,2),16),parseInt(m[1].slice(2,4),16),parseInt(m[1].slice(4,6),16)]:[0,0,0]; };
+    let px=null, py=null;
+    for (const s of st) {
+      if (s.type==="trim"||s.type==="jump"){ px=null; py=null; continue; }
+      const x=Math.round(s.x*SC), y=Math.round(s.y*SC);
+      if (px!=null){
+        const dx=x-px, dy=y-py, steps=Math.max(1,Math.hypot(dx,dy)|0), c=hex(s.color);
+        for(let k=0;k<=steps;k++){
+          const ix=(px+dx*k/steps)|0, iy=(py+dy*k/steps)|0;
+          if(ix>=0&&ix<w&&iy>=0&&iy<h){ const o=iy*w+ix; rgb[o*3]=c[0];rgb[o*3+1]=c[1];rgb[o*3+2]=c[2]; cov[o]=1; }
+        }
+      }
+      px=x; py=y;
+    }
+    const png = await sharp(rgb,{raw:{width:w,height:h,channels:3}}).png().toBuffer();
+    renderTag = `<img src="data:image/png;base64,${png.toString("base64")}" style="max-width:48%;border:1px solid #ccc"/>`;
+    const sil = await sharp(Buffer.from(cov),{raw:{width:w,height:h,channels:1}}).blur(4).threshold(40).raw().toBuffer();
+    const dil = await sharp(Buffer.from(cov),{raw:{width:w,height:h,channels:1}}).blur(1).threshold(40).raw().toBuffer();
+    let se=0, ho=0; for(let i=0;i<w*h;i++){ if(sil[i]){ se++; if(!dil[i]) ho++; } }
+    gapPct = se? (100*ho/se) : 0;
+  } catch(e){ renderTag = `<p>render failed: ${e.message}</p>`; }
+  const counts = {};
+  for (const s of st){ if(s.type==="trim"||s.type==="jump")continue; counts[s.color]=(counts[s.color]||0)+1; }
+  const rows = cols.map(c=>`<tr><td><span style="display:inline-block;width:14px;height:14px;background:${c};border:1px solid #888"></span></td><td><code>${c}</code></td><td>${counts[c]||0}</td>${(counts[c]||0)<50?'<td style="color:#c00">&#9888; near-empty</td>':'<td></td>'}</tr>`).join("");
+  const cartTag = _lastCartoonBuf ? `<img src="/debug/last-cartoon" style="max-width:48%;border:1px solid #ccc"/>` : "<p>(no cartoon — direct/photo input)</p>";
+  res.setHeader("Content-Type","text/html");
+  res.send(`<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><body style="font-family:system-ui;margin:12px;max-width:900px"><h2>Last run — true colours</h2><p><b>Size:</b> ${(W/10)|0}&times;${(H/10)|0} mm &middot; <b>Stitches:</b> ${st.length} &middot; <b>Mode:</b> ${d.mode||"?"}${gapPct!=null?` &middot; <b>Unsewn:</b> <span style="color:${gapPct>3?'#c00':'#080'}">${gapPct.toFixed(1)}%</span> (target &lt;2%)`:""}</p><div style="display:flex;gap:8px;flex-wrap:wrap">${cartTag}${renderTag}</div><h3>Per-colour stitch counts</h3><table style="border-collapse:collapse" border=1 cellpadding=4><tr><th></th><th>hex</th><th>stitches</th><th></th></tr>${rows}</table></body>`);
 });
 
 router.get("/preview/:id", (req, res) => {
