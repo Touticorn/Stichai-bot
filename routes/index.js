@@ -15,6 +15,7 @@ const { enqueueJob, cancelJob, activeJobs }                = require("../lib/job
 const { segmentSubjectWithGemini, convertToCartoonWithGemini, analyzeWithGemini, extractSubjectImage, extractSubjectAsCartoon } = require("../lib/gemini");
 const { preprocessImage, extractColorsFromUnmasked, buildPixelMap, buildOutlineMask, removeBackgroundImgly, renderPreviewFast, hexToRgb, rgbToLab, dE, normHex } = require("../lib/image");
 const { vectorizeToDST } = require("../lib/vectorize");
+const { simplifyFaceDetail } = require("../lib/face-simplify");
 
 // DEBUG: stash the last cartoon PNG so it can be downloaded for offline pipeline testing
 let _lastCartoonBuf = null, _lastCartoonMime = "image/png";
@@ -179,7 +180,11 @@ router.post("/detect-shapes",
         }
       }
 
-      const cleanedBuffer = await preprocessImage(sourceBuffer, canvasSize, mode);
+      let cleanedBuffer = await preprocessImage(sourceBuffer, canvasSize, mode);
+      if (cartoonOk) {
+        try { cleanedBuffer = await simplifyFaceDetail(cleanedBuffer); }
+        catch (e) { console.warn(`[${rid}] face-simplify skipped: ${e.message}`); }
+      }
 
       const skipGeminiPalette = mode === "cartoon" && !cartoonOk;
       const [bucketColors, gem] = await Promise.all([
