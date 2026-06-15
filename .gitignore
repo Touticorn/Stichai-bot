@@ -39,3 +39,7 @@ supreme-pipeline.sh
 supreme-pipeline.sh
 .fixbak-*/
 .fixbak-*/
+
+# Node
+node_modules/
+tools/_work/
