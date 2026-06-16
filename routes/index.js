@@ -543,6 +543,16 @@ router.get("/preview-image/:id", async (req, res) => {
   return res.send(d.previewBuf);
 });
 
+/* ── Raw DST (no auth — for autotune / internal QA) ─────── */
+router.get("/raw-dst/:id", async (req, res) => {
+  const d = jobs.get(req.params.id);
+  if (!d) return res.status(404).json({ error: "Not found" });
+  const dstBuf = encodeDST(d.stitches, d.params?.machineLimits);
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Content-Disposition", `attachment; filename="design_${req.params.id}.dst"`);
+  return res.send(dstBuf);
+});
+
 /* ── Download ───────────────────────────────────────────── */
 router.get("/download/:id", requireAuth, checkDownloadQuota, async (req, res) => {
   const d = jobs.get(req.params.id);
