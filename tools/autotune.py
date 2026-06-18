@@ -103,8 +103,12 @@ def qa(dst_path):
     return metrics, out
 
 
-def render(dst_path, out_png, ppmm=8):
-    r = subprocess.run(["python3", "tools/render_dst.py", dst_path, out_png, str(ppmm), "viewer", "0"],
+def render(dst_path, out_png, ppmm=14):
+    # Use the pro-viewer-style renderer (tools/render_pro.py) which auto-detects
+    # the row pitch from the DST and draws strokes wide enough that parallel
+    # rows overlap into solid satin. This produces output that reads as
+    # embroidery-on-fabric instead of wireframe.
+    r = subprocess.run(["python3", "tools/render_pro.py", dst_path, out_png, str(ppmm), "0"],
                         capture_output=True, text=True, cwd="/data/data/com.termux/files/home/stichai-bot")
     print(r.stdout.strip())
     return out_png
