@@ -51,6 +51,8 @@ def render(inp, outp, ppmm=12.0, thread_mm=0.0):
     stitch_pts = [(c[0], c[1]) for c in cmds if c[2] == pe.STITCH]
     xs, ys = zip(*stitch_pts)
     minx, miny, maxx, maxy = min(xs), min(ys), max(xs), max(ys)
+    cx_st = (minx + maxx) / 2
+    cy_st = (miny + maxy) / 2
     h_mm = (maxy - miny) / 10.0
     w_mm = (maxx - minx) / 10.0
 
@@ -60,9 +62,11 @@ def render(inp, outp, ppmm=12.0, thread_mm=0.0):
     bg = (235, 230, 220)  # fabric-tone background
     img = Image.new("RGB", (W, H), bg)
 
+    # Center the design on the canvas (Embroidermodder-style). This makes
+    # negative-coord Stichai outputs render fully, not half-clipped.
     def P(x, y):
-        return (int((x / 10.0 + pad_mm) * ppmm),
-                int((y / 10.0 + pad_mm) * ppmm))
+        return (int((x - cx_st) / 10.0 * ppmm + W / 2),
+                int((y - cy_st) / 10.0 * ppmm + H / 2))
 
     # Auto thread width: dominant row-spacing * 1.4 for solid coverage
     row_pitch = detect_row_spacing(stitch_pts)
