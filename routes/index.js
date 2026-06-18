@@ -217,6 +217,31 @@ router.post("/detect-shapes",
       }
       console.log(`[${rid}] Palette ${paletteSource} (${colors.length}): ${colors.join(", ")}`);
 
+      // Cartoon face-palette: detect face rectangles in source image and
+      // prepend extra colors so facial features survive quantization.
+      if (mode === "cartoon" && !body.skipFacePalette) {
+        try {
+          const { extractFacePalette } = require("../lib/face-palette");
+          const faces = await extractFacePalette(sourceBuffer, { colorsPerFace: 3, scanWidth: 256 });
+          const seenHex = new Set(colors.map(c => (c || "").toLowerCase()));
+          const added = [];
+          for (const f of faces) {
+            for (const c of f.colors) {
+              const k = c.toLowerCase();
+              if (seenHex.has(k) || added.includes(k)) continue;
+              added.push(c);
+              seenHex.add(k);
+            }
+          }
+          if (added.length) {
+            colors = added.concat(colors).slice(0, 16);
+            console.log(`[${rid}] face-palette added ${added.length}: ${added.join(", ")}`);
+          }
+        } catch (e) {
+          console.warn(`[${rid}] face-palette skipped:`, e.message);
+        }
+      }
+
       const pixMap    = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
       const rawRegions = extractRegions(pixMap, colors, canvasSize, effectiveMode);
       let regions     = mergeAdjacentRegions(rawRegions, canvasSize);
@@ -293,7 +318,41 @@ router.post("/generate-embroidery",
         const colorCount    = Math.min(16, Math.max(3, parseInt(body.colorCount) || (mode === "photo" ? 8 : 12)));
         cleanedBuffer = await preprocessImage(imgFile.buffer, canvasSize, mode);
         colors              = await extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount);
-        pixMap              = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
+
+        // Cartoon face-palette pre-pass: detect face rectangles and prepend
+        // additional skin/lip colors so facial features survive quantization.
+        // Only cheap for cartoon mode (which is when this matters).
+        if (mode === "cartoon" && !body.skipFacePalette) {
+          try {
+            const { extractFacePalette } = require("../lib/face-palette");
+            const faces = await extractFacePalette(imgFile.buffer, { colorsPerFace: 3, scanWidth: 256 });
+            const seenHex = new Set(colors.map(c => c.toLowerCase()));
+            const added = [];
+            for (const f of faces) {
+              for (const c of f.colors) {
+                const k = c.toLowerCase();
+                if (seenHex.has(k) || added.includes(k)) continue;
+                // Round to nearest of available thread colors to avoid palette explosion
+                added.push(c);
+                seenHex.add(k);
+              }
+            }
+            if (added.length) {
+              colors = added.concat(colors).slice(0, 16);
+              console.log(`[${rid}] face-palette added ${added.length} colors: ${added.join(", ")}`);
+              // Rebuild pixMap to include the new colors
+              pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
+            } else {
+              pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
+            }
+          } catch (e) {
+            console.warn(`[${rid}] face-palette skipped:`, e.message);
+            pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
+          }
+        } else {
+          pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
+        }
+
         const rawRegions    = extractRegions(pixMap, colors, canvasSize, mode);
         regions             = mergeAdjacentRegions(rawRegions, canvasSize);
       }
