@@ -42,11 +42,14 @@ def api_post(endpoint, data=None, files=None):
         return json.loads(e.read().decode())
 
 
-def generate(job_id, img_path):
+def generate(job_id, img_path, canvas_mm=160):
     with open(img_path, "rb") as f:
         img_data = f.read()
+    # canvasMm * 10 = canvasSize in px (server uses 10 px/mm)
+    canvas_size = canvas_mm * 10
     r = api_post("/generate-embroidery",
-        data={"jobId": job_id, "mode": "cartoon", "extractedSubject": "1"},
+        data={"jobId": job_id, "mode": "cartoon", "extractedSubject": "1",
+              "canvasSize": str(canvas_size), "hoop": "8x12"},
         files={"image": ("cartoon.png", img_data)})
     return r
 
