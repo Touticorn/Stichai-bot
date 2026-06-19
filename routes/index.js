@@ -234,8 +234,15 @@ router.post("/detect-shapes",
             }
           }
           if (added.length) {
-            colors = added.concat(colors).slice(0, 16);
-            console.log(`[${rid}] face-palette added ${added.length}: ${added.join(", ")}`);
+            // HARD CAP: never grow palette past user-requested colorCount.
+            // Face colors take priority over body colors.
+            colors = added.concat(colors).slice(0, colorCount);
+            console.log(`[${rid}] face-palette added ${Math.min(added.length, colorCount)} (kept total=${colors.length}/${colorCount})`);
+          }
+          // Safety net: any downstream addition that slipped past.
+          if (colors.length > colorCount) {
+            console.warn(`[${rid}] clamp palette ${colors.length}->${colorCount}`);
+            colors = colors.slice(0, colorCount);
           }
         } catch (e) {
           console.warn(`[${rid}] face-palette skipped:`, e.message);
