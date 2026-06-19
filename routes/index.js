@@ -313,6 +313,25 @@ router.post("/generate-embroidery",
 
       if (det) {
         ({ pixMap, regions, colors, canvasSize, mode } = det); cleanedBuffer = det.cleanedBuffer;
+        // FIX: detectionId cache froze the palette at whatever colorCount
+        // was used during step 2 (default 12/10/8). Step-3 slider in the
+        // web UI sends a fresh colorCount — honor it by re-extracting the
+        // palette from the cached cleanedBuffer at the new size.
+        const reqColorCount = Math.min(16, Math.max(2, parseInt(body.colorCount) || (mode === "photo" ? 8 : 12)));
+        if (colors.length !== reqColorCount) {
+          try {
+            const fresh = await extractColorsFromUnmasked(cleanedBuffer, null, canvasSize, reqColorCount);
+            if (fresh?.length) {
+              colors = fresh.slice(0, reqColorCount);
+              pixMap = await buildPixelMap(cleanedBuffer, null, colors, canvasSize);
+              regions = extractRegions(pixMap, colors, canvasSize, mode);
+              regions = mergeAdjacentRegions(regions, canvasSize);
+              console.log(`[${rid}] recomputed palette to ${reqColorCount} colors from cached detection`);
+            }
+          } catch (e) {
+            console.warn(`[${rid}] palette re-extract failed, falling back to cached:`, e.message);
+          }
+        }
       } else {
         mode = body.mode || "logo";
         const colorCount    = Math.min(16, Math.max(3, parseInt(body.colorCount) || (mode === "photo" ? 8 : 12)));
