@@ -140,22 +140,57 @@ def render(inp, outp, ppmm=12.0, thread_mm=0.0):
 
     flush()
 
+    # Track which colors are FILLS so we can render them first, then OUTLINES on top.
+    # This eliminates the white sliver-artifact between fill and outline.
+    fill_blocks, outline_blocks = [], []
     for ci, runs in runs_by_color.items():
+        total_stitches = sum(len(r) for r in runs)
+        is_outline = len(runs) <= 8 and total_stitches <= 1500
+        (outline_blocks if is_outline else fill_blocks).append((ci, runs))
+
+    # First pass: render all fills at full width, draw a single uniform band per row
+    # (no darker centerline — Embroidermodder brown reads as one color, not a stripe).
+    for ci, runs in fill_blocks:
         col_img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(col_img)
         col = palette[ci % len(palette)]
+        rg, gg, bb = col
         for run in runs:
             if len(run) < 2:
                 continue
             pts = [P(x, y) for (x, y) in run]
-            d.line(pts, fill=col + (255,), width=thread_px)
+            d.line(pts, fill=(rg, gg, bb, 255), width=thread_px)
             r = thread_px // 2
             for px, py in pts:
-                d.ellipse([px - r, py - r, px + r, py + r], fill=col + (255,))
-        # Slight blur to mimic thread pile
+                d.ellipse([px - r, py - r, px + r, py + r], fill=(rg, gg, bb, 255))
         try:
             from PIL import ImageFilter
-            col_img = col_img.filter(ImageFilter.GaussianBlur(radius=max(1, thread_px // 6)))
+            col_img = col_img.filter(ImageFilter.GaussianBlur(radius=min(2, max(1, thread_px // 8))))
+        except Exception:
+            pass
+        layers_append = img.convert("RGBA")
+        layers_append.alpha_composite(col_img)
+        img = layers_append.convert("RGB")
+
+    # Second pass: outlines drawn ON TOP of fills at 0.4× thread width. Eliminates
+    # white sliver between fill and outline because outline always overlays fill.
+    for ci, runs in outline_blocks:
+        col_img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        d = ImageDraw.Draw(col_img)
+        col = palette[ci % len(palette)]
+        rg, gg, bb = col
+        w_outl = max(2, int(thread_px * 0.4))
+        for run in runs:
+            if len(run) < 2:
+                continue
+            pts = [P(x, y) for (x, y) in run]
+            d.line(pts, fill=(rg, gg, bb, 255), width=w_outl)
+            r = w_outl // 2
+            for px, py in pts:
+                d.ellipse([px - r, py - r, px + r, py + r], fill=(rg, gg, bb, 255))
+        try:
+            from PIL import ImageFilter
+            col_img = col_img.filter(ImageFilter.GaussianBlur(radius=max(1, w_outl // 4)))
         except Exception:
             pass
         layers_append = img.convert("RGBA")
