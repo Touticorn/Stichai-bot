@@ -318,6 +318,9 @@ router.post("/generate-embroidery",
         const colorCount    = Math.min(16, Math.max(3, parseInt(body.colorCount) || (mode === "photo" ? 8 : 12)));
         cleanedBuffer = await preprocessImage(imgFile.buffer, canvasSize, mode);
         colors              = await extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount);
+        // Hard cap 1: extractColorsFromUnmasked can return < colorCount but never > colorCount.
+        // Defense: enforce strictly here in case a future loosening lets it overshoot.
+        if (colors.length > colorCount) colors = colors.slice(0, colorCount);
 
         // Cartoon face-palette pre-pass: detect face rectangles and prepend
         // additional skin/lip colors so facial features survive quantization.
@@ -338,8 +341,10 @@ router.post("/generate-embroidery",
               }
             }
             if (added.length) {
-              colors = added.concat(colors).slice(0, 16);
-              console.log(`[${rid}] face-palette added ${added.length} colors: ${added.join(", ")}`);
+              // HARD CAP: total palette must NEVER exceed user-requested colorCount.
+              // Face colors first (priority for facial features), then drop excess body colors.
+              colors = added.concat(colors).slice(0, colorCount);
+              console.log(`[${rid}] face-palette added ${Math.min(added.length, colorCount)} colors (kept total=${colors.length}/${colorCount})`);
               // Rebuild pixMap to include the new colors
               pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
             } else {
@@ -351,6 +356,11 @@ router.post("/generate-embroidery",
           }
         } else {
           pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
+        }
+        // Hard cap 2: final safety net in case any downstream path added more.
+        if (colors.length > colorCount) {
+          console.warn(`[${rid}] clamp palette ${colors.length}->${colorCount}`);
+          colors = colors.slice(0, colorCount);
         }
 
         const rawRegions    = extractRegions(pixMap, colors, canvasSize, mode);
