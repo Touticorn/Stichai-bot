@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-render_pro.py — render a DST like a pro embroidery viewer (solid satin look).
+render_pro.py - render a DST like a pro embroidery viewer (solid satin look).
 
 Strategy:
 - pyembroidery parses the stitch list
@@ -69,40 +69,26 @@ def render(inp, outp, ppmm=12.0, thread_mm=0.0):
                 int((y - cy_st) / 10.0 * ppmm + H / 2))
 
     # Auto thread width: dominant row-spacing * 1.4 for solid coverage
+    # Clamp thread so renders match Embroidermodder: fills ~1.5mm, outlines thinner.
     row_pitch = detect_row_spacing(stitch_pts)
     if thread_mm <= 0:
-        thread_mm = row_pitch * 1.4
+        thread_mm = min(row_pitch * 1.4, 1.5)
     thread_px = max(2, int(round(thread_mm * ppmm)))
 
+    # Embroidermodder Android viewer-style 9-color "Modern" palette.
+    # This is the palette DST files render to by default in their mobile app.
+    # We mirror it so our local PNG previews match what the user sees.
     palette = [
-        (40, 40, 40),     # dark
-        (245, 245, 245),
-        (200, 170, 60),
-        (220, 100, 40),
-        (180, 40, 50),
-        (130, 30, 50),
-        (240, 150, 180),
-        (255, 230, 100),
-        (160, 100, 60),
-        (90, 80, 70),
-        (90, 130, 80),
-        (60, 150, 80),
-        (30, 90, 60),
-        (110, 170, 220),
-        (140, 200, 230),
-        (40, 80, 180),
-        (40, 50, 110),
-        (130, 80, 180),
-        (180, 130, 200),
-        (200, 190, 220),
-        (180, 180, 190),
-        (130, 130, 140),
-        (80, 80, 90),
-        (200, 180, 150),
-        (230, 210, 180),
-        (180, 140, 100),
-        (255, 200, 100),
-    ]
+        (40, 40, 40),          # 1  black
+        (95, 90, 175),         # 2  deep blue
+        (180, 220, 240),       # 3  cream-blue
+        (200, 180, 220),       # 4  mauve
+        (130, 105, 175),       # 5  dusty purple
+        (80, 60, 160),         # 6  deep purple
+        (240, 220, 235),       # 7  light cream/pink
+        (50, 40, 110),         # 8  midnight
+        (170, 130, 195),       # 9  lavender
+    ]  
 
     ci = 0
     last = None
@@ -149,7 +135,7 @@ def render(inp, outp, ppmm=12.0, thread_mm=0.0):
         (outline_blocks if is_outline else fill_blocks).append((ci, runs))
 
     # First pass: render all fills at full width, draw a single uniform band per row
-    # (no darker centerline — Embroidermodder brown reads as one color, not a stripe).
+    # (no darker centerline - Embroidermodder brown reads as one color, not a stripe).
     for ci, runs in fill_blocks:
         col_img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         d = ImageDraw.Draw(col_img)
