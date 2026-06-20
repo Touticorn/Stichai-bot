@@ -130,6 +130,7 @@ router.post("/detect-shapes",
   async (req, res) => {
     res.setTimeout(120000);
     const rid = Math.random().toString(36).slice(2, 6);
+    let detectCrashStep = "init";
     try {
       const imgFile  = req.files?.image?.[0];
       const maskFile = req.files?.mask?.[0];
@@ -288,7 +289,9 @@ router.post("/detect-shapes",
         }
       }
 
+      detectCrashStep = "buildPixelMap";
       const pixMap    = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
+      detectCrashStep = "extractRegions";
       const rawRegions = extractRegions(pixMap, colors, canvasSize, effectiveMode);
       let regions     = mergeAdjacentRegions(rawRegions, canvasSize);
       if (body.extractedSubject === "1" || body.extractedSubject === true || mode === "cartoon") {
@@ -320,7 +323,8 @@ router.post("/detect-shapes",
       });
     } catch (e) {
       console.error(`[${rid}] DETECT crash:`, e.message);
-      return res.status(500).json({ error: e.message || "Detection failed" });
+      console.error(`[${rid}] DETECT stack:`, e.stack);
+      return res.status(500).json({ error: e.message || "Detection failed", step: detectCrashStep });
     }
   }
 );
