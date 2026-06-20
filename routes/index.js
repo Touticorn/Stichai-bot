@@ -568,7 +568,7 @@ router.post("/generate-embroidery",
       const qa      = validateQuality(stitches, params.machineLimits);
       const sewTime = calculateSewTime(qa.stitchCount, qa.trimCount, selectedColors.length, specs.machine);
 
-      jobs.set(jobId, { stitches, pixMap, colors: selectedColors, params, designW: canvasSize, designH: canvasSize, designMm: canvasSize / 10, ts: Date.now(), previewBuf, sewTime, mode, canvasSize });
+      jobs.set(jobId, { stitches, pixMap, colors: selectedColors, params, designW: canvasSize, designH: canvasSize, designMm: canvasSize / 10, ts: Date.now(), previewBuf, sewTime, mode, canvasSize, sourceImageBuffer: sourceBuffer, processedImageBuffer: cleanedBuffer });
       _lastJobId = jobId;  // debug/last pointer
       progressCb(100, "Complete");
 
@@ -700,6 +700,29 @@ router.get("/preview-image/:id", async (req, res) => {
   res.setHeader("Content-Type",  "image/png");
   res.setHeader("Cache-Control", "public,max-age=300");
   return res.send(d.previewBuf);
+});
+
+/* Tier-5g: decoupled preview render. */
+router.get("/preview-stitched/:id", async (req, res) => {
+  const d = jobs.get(req.params.id);
+  if (!d) return res.status(404).json({ error: "Not found" });
+  if (!d.stitches) return res.status(500).json({ error: "Stitches not ready" });
+  try {
+    const { renderDecoupledPreview } = require("../lib/preview-overlay");
+    const canvasSize = d.designW || 1600;
+    let srcBuf = d.sourceImageBuffer;
+    if (!srcBuf) {
+      // Fallback: try regenerate from previewBuf
+      srcBuf = d.previewBuf;
+    }
+    const png = await renderDecoupledPreview(srcBuf, d.stitches, d.colors || [], canvasSize);
+    if (!png) return res.status(500).json({ error: "Decoupled preview failed" });
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public,max-age=300");
+    return res.send(png);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 /* ── Tier-5e: stitch sticker chip overview ──────────────────────
