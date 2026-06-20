@@ -653,13 +653,18 @@ router.post("/generate-embroidery",
       if (!filteredRegions.length) throw new Error("No regions left after selection");
       progressCb(30, "Generating stitches…");
 
-      // Stitch generation
-      let stitches, colorCounts;
+      // Wrap the entire STITCH-GENERATION block so any throw inside
+      // vector pipeline / v72 / v70 / legacy surfaces with a tagged
+      // stack trace instead of being swallowed by an outer route catch.
+      let stitches, colorCounts, _engineStage = "init";
+      try {
       const useV71 = body.useV71 === "1" || body.useV71 === "true";
       // Cartoon mode now uses the V70 generator (proper PCA fill angles, cleaner
       // fills on complex/concave shapes) instead of the legacy generator, which
       // produced fan/starburst artefacts on cartoon subjects.
       const useV70ForCartoon = (mode === "cartoon");
+      _engineStage = "route-pick";
+      if (process.env.STICHAI_DEBUG === "1") console.log(`[${rid}] engine route: photo+useV71=${mode === "photo" && useV71} cartoon=${useV70ForCartoon} vec-pipe=${!!cleanedBuffer} regions=${filteredRegions.length} colors=${selectedColors.length}`);
       if (mode === "photo" && useV71) {
         const filtPm = buildFilteredPixMap(filteredRegions, selectedColors, canvasSize, pixMap, colors);
         const result = v71_generatePhotoStitch(filtPm, selectedColors, canvasSize, params);
@@ -706,8 +711,14 @@ router.post("/generate-embroidery",
         stitches     = legacy.stitches;
         colorCounts  = legacy.colorCounts;
       }
+      _engineStage = "engine-done";
       const _trimN = stitches.filter(s => s.type === "trim" || s.type === "jump").length;
       console.log(`[${rid}] engine output: ${stitches.length} stitches, ${_trimN} trims/jumps (${(100*_trimN/Math.max(1,stitches.length)).toFixed(1)}%), regions=${filteredRegions.length}, colors=${selectedColors.length}`);
+      } catch (e) {
+        _engineStage = _engineStage || "unknown";
+        console.error(`[${rid}] STITCH-ENGINE failed at stage="${_engineStage}":`, e.stack || e.message);
+        throw new Error(`stitch-engine[${_engineStage}]: ${e.message}`);
+      }
       // Wrap the post-engine pipeline so any failure inside engine-output -> response
       // surfaces a tagged line in the logs (was previously opaque: "Job failed")
       try {
