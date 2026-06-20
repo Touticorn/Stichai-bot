@@ -116,9 +116,14 @@ def score_edge_density(img_array):
     edge_ratio = np.sum(edge_mask) / edge_mask.size
     return min(1.0, edge_ratio * 3)
 
-def score_render(png_path, target_colors=None):
+def score_render(png_path, target_colors=None, max_width=800):
     """Score a rendered embroidery PNG."""
     img = Image.open(png_path)
+    # Resize for faster scoring if image is large
+    if img.width > max_width:
+        ratio = max_width / img.width
+        new_size = (max_width, int(img.height * ratio))
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
     img_array = np.array(img)
     if target_colors is None:
         target_colors = 7
