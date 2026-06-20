@@ -707,15 +707,18 @@ router.post("/generate-embroidery",
         colorCounts  = legacy.colorCounts;
       }
       const _trimN = stitches.filter(s => s.type === "trim" || s.type === "jump").length;
-      console.log(`[${rid}] engine output: ${stitches.length} stitches, ${_trimN} trims/jumps (${(100*_trimN/Math.max(1,stitches.length)).toFixed(1)}%)`);
-      progressCb(70, "Adding basting…");
+      console.log(`[${rid}] engine output: ${stitches.length} stitches, ${_trimN} trims/jumps (${(100*_trimN/Math.max(1,stitches.length)).toFixed(1)}%), regions=${filteredRegions.length}, colors=${selectedColors.length}`);
+      // Wrap the post-engine pipeline so any failure inside engine-output -> response
+      // surfaces a tagged line in the logs (was previously opaque: "Job failed")
+      try {
+        progressCb(70, "Adding basting…");
 
-      if (body.bastingBox === "1" || body.bastingBox === "true") {
-        stitches.unshift(...generateBastingBox(filteredRegions, selectedColors));
-      }
+        if (body.bastingBox === "1" || body.bastingBox === "true") {
+          stitches.unshift(...generateBastingBox(filteredRegions, selectedColors));
+        }
 
-      const coverCount = stitches.filter(s => s.type !== "trim" && s.type !== "underlay").length;
-      if (coverCount < 5) throw new Error("Not enough stitches — select more shapes or check contrast");
+        const coverCount = stitches.filter(s => s.type !== "trim" && s.type !== "underlay").length;
+        if (coverCount < 5) throw new Error("Not enough stitches — select more shapes or check contrast");
       progressCb(85, "Rendering preview…");
 
       let previewBuf = null;
@@ -755,8 +758,42 @@ router.post("/generate-embroidery",
         const sc = stitches.filter(s => s.color === r.color && s.type !== "trim" && s.type !== "underlay" && s.x >= r.mnx && s.x <= r.mxx && s.y >= r.mny && s.y <= r.mxy).length;
         return { type: r.type, color: normHex(r.color), points: [[r.mnx, r.mny], [r.mxx, r.mny], [r.mxx, r.mxy], [r.mnx, r.mxy], [r.mnx, r.mny]], bounds: { x: r.mnx, y: r.mny, w: r.mxx - r.mnx, h: r.mxy - r.mny }, stitchCount: sc };
       });
+      } catch (e) {
+        console.error(`[${rid}] post-engine failed at:`, e.stack || e.message);
+        throw new Error(`post-engine: ${e.message}`);
+      }
 
-      return { id: jobId, previewUrl: `/preview/${jobId}`, previewImageUrl: `/preview-image/${jobId}`, downloadUrl: `/download/${jobId}`, stitchCount: qa.stitchCount, designSize: { w: canvasSize, h: canvasSize, mm: canvasSize / 10 }, colors: selectedColors, colorMeta: {}, geminiNotes: det?.geminiNotes || "", specs, tunedParams: params, qa, shapes, regions: filteredRegions.length, sewTime, mode, threadBrand: threadList, regionLabels };
+      // Final response payload wrapped — surface any construction error
+      // with a clear [rid]-tagged line so the 500-message in logs is
+      // identifiable instead of `[Object: null prototype] {}`.
+      return (() => {
+        try {
+          return {
+            id: jobId,
+            previewUrl: `/preview/${jobId}`,
+            previewImageUrl: `/preview-image/${jobId}`,
+            downloadUrl: `/download/${jobId}`,
+            stitchCount: qa.stitchCount,
+            designSize: { w: canvasSize, h: canvasSize, mm: canvasSize / 10 },
+            colors: selectedColors,
+            colorMeta: {},
+            geminiNotes: det?.geminiNotes || "",
+            specs,
+            tunedParams: params,
+            qa,
+            shapes,
+            regions: filteredRegions.length,
+            sewTime,
+            mode,
+            threadBrand: threadList,
+            regionLabels,
+            palettesource: paletteSource,
+          };
+        } catch (e) {
+          console.error(`[${rid}] response-build failed:`, e.message, e.stack);
+          throw new Error(`response-build: ${e.message}`);
+        }
+      })();
     };
 
     try {
