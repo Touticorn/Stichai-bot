@@ -604,7 +604,8 @@ router.post("/generate-embroidery",
           if (Array.isArray(parsed) && parsed.length > 0) selectedColors = parsed.map(c => normHex(c));
         }
       } catch (_) {}
-      console.log(`[${rid}] SELECTED_COLORS: count=${selectedColors.length}/${colors.length} sample=[${selectedColors.slice(0,3).join(',')}...] all=${colors.map(c=>`${c}->${selectedColors.includes(c)?'on':'off'}`).join(' ')}`);
+      const _selSet = new Set(selectedColors.map(normHex));
+      console.log(`[${rid}] SELECTED_COLORS: count=${selectedColors.length}/${colors.length} sample=[${selectedColors.slice(0,3).join(',')}...] all=${colors.map(c=>`${c}->${_selSet.has(normHex(c))?'on':'off'}`).join(' ')}`);
 
       // Apply color merges
       try {
