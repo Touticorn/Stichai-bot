@@ -626,30 +626,55 @@ router.post("/generate-embroidery",
 
       // Filter selected shapes
       let filteredRegions = regions;
+      let userPickedShapes = false;
       try {
         if (body.selectedShapes) {
           const parsed = JSON.parse(body.selectedShapes);
-          if (Array.isArray(parsed) && parsed.length > 0 && parsed.length < regions.length)
+          if (Array.isArray(parsed) && parsed.length > 0 && parsed.length < regions.length) {
             filteredRegions = parsed.map(idx => regions[idx]).filter(Boolean);
+            userPickedShapes = true;
+          }
         }
       } catch (_) {}
       console.log(`[${rid}] SELECTED_SHAPES: indices=${(function(){try{return JSON.parse(body.selectedShapes||'[]');}catch(_){return 'ERR';}})()} resolved=${filteredRegions.length}/${regions.length} sample=[${filteredRegions.slice(0,3).map(r=>r&&r.color).join(',')}]`);
 
       // Rebuild pixMap for excluded colors
+      // FIX v73.0: If user picked individual shapes (filteredRegions is a
+      // subset of regions by index), don't run the full re-extract rebuild
+      // — that path would replace filteredRegions with the union of regions
+      // for the kept colors, silently discarding the user's shape pick.
+      //
+      // Two safer paths:
+      //   • userPickedShapes=false → old rebuild (full re-extract = correct)
+      //   • userPickedShapes=true  → fold-color-filter into existing regions
+      //     only (drop regions whose color isn't in selectedColors, then
+      //     re-index kept regions' .ci so they line up with selectedColors
+      //     before the stitch engine).
       if (selectedColors.length < colors.length) {
-        pixMap = new Int16Array(pixMap);
-        const excludedCis = new Set();
-        const oldToNew    = {};
-        colors.forEach((c, ci) => {
-          if (!selectedColors.includes(normHex(c))) excludedCis.add(ci);
-          else oldToNew[ci] = selectedColors.findIndex(sc => normHex(sc) === normHex(c));
-        });
-        for (let i = 0; i < pixMap.length; i++) {
-          if (excludedCis.has(pixMap[i])) pixMap[i] = -1;
-          else if (pixMap[i] >= 0) pixMap[i] = oldToNew[pixMap[i]];
+        if (userPickedShapes) {
+          // Drop regions whose color was filtered out — preserves shape pick.
+          filteredRegions = filteredRegions.filter(r => selectedColors.includes(normHex(r.color)));
+          // Re-index each kept region's .ci so colors[reg.ci] resolves into
+          // selectedColors downstream (vx_find, v72 stitch colors[reg.ci]).
+          filteredRegions.forEach(r => {
+            r.ci = selectedColors.findIndex(sc => sc.toLowerCase() === (r.color || "").toLowerCase());
+            if (r.ci < 0) r.ci = 0; // safety: should never happen — we only kept matches
+          });
+        } else {
+          pixMap = new Int16Array(pixMap);
+          const excludedCis = new Set();
+          const oldToNew    = {};
+          colors.forEach((c, ci) => {
+            if (!selectedColors.includes(normHex(c))) excludedCis.add(ci);
+            else oldToNew[ci] = selectedColors.findIndex(sc => normHex(sc) === normHex(c));
+          });
+          for (let i = 0; i < pixMap.length; i++) {
+            if (excludedCis.has(pixMap[i])) pixMap[i] = -1;
+            else if (pixMap[i] >= 0) pixMap[i] = oldToNew[pixMap[i]];
+          }
+          const rawR  = extractRegions(pixMap, selectedColors, canvasSize, effectiveMode);
+          filteredRegions = mergeAdjacentRegions(rawR, canvasSize);
         }
-        const rawR  = extractRegions(pixMap, selectedColors, canvasSize, effectiveMode);
-        filteredRegions = mergeAdjacentRegions(rawR, canvasSize);
       }
 
       if (!filteredRegions.length) throw new Error("No regions left after selection");
