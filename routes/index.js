@@ -791,7 +791,7 @@ router.post("/generate-embroidery",
       const qa      = validateQuality(stitches, params.machineLimits);
       const sewTime = calculateSewTime(qa.stitchCount, qa.trimCount, selectedColors.length, specs.machine);
 
-      jobs.set(jobId, { stitches, pixMap, colors: selectedColors, params, designW: canvasSize, designH: canvasSize, designMm: canvasSize / 10, ts: Date.now(), previewBuf, sewTime, mode, canvasSize, sourceImageBuffer: sourceBuffer, processedImageBuffer: cleanedBuffer });
+      jobs.set(jobId, { stitches, pixMap, colors: selectedColors, params, designW: canvasSize, designH: canvasSize, designMm: canvasSize / 10, ts: Date.now(), previewBuf, sewTime, mode, canvasSize, sourceImageBuffer: imgFile.buffer, processedImageBuffer: cleanedBuffer });
       _lastJobId = jobId;  // debug/last pointer
       progressCb(100, "Complete");
 
