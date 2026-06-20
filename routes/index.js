@@ -170,13 +170,23 @@ router.post("/detect-shapes",
           ? { buffer: imgFile.buffer, mime: sourceMime }
           : await convertToCartoonWithGemini(imgFile.buffer, sourceMime, colorCount);
         if (cartoon) {
+          // Lock the cartoon palette deterministically. Gemini cartoon
+          // regeneration is non-deterministic — colors drift per run, so
+          // downstream palette extraction produces wildly different
+          // "random color" outputs every request. Quantize here collapses
+          // the regenerator output to a fixed number of flat blocks.
+          try {
+            const { quantizeBuffer } = require("../lib/quantize");
+            cartoon.buffer = await quantizeBuffer(cartoon.buffer, colorCount + 1);
+            console.log(`[${rid}] Cartoon quantized to ${colorCount + 1} colors`);
+          } catch (e) { console.warn(`[${rid}] cartoon quantize skipped:`, e.message); }
           sourceBuffer = cartoon.buffer;
-          sourceMime   = cartoon.mime;
+          sourceMime   = cartoon.mime || "image/png";
           cartoonOk    = true;
           console.log(`[${rid}] Cartoon generated OK`);
           _lastCartoonBuf = cartoon.buffer; _lastCartoonMime = cartoon.mime || "image/png";
         } else {
-          console.warn(`[${rid}] Cartoon generation failed — posterize fallback`);
+          console.warn(`[${rid}] Cartoon regeneration failed — posterize fallback`);
         }
       }
 
