@@ -512,7 +512,7 @@ router.post("/generate-embroidery",
       progressCb(5, "Preparing image…");
 
       const det = body.detectionId ? detections.get(body.detectionId) : null;
-      let pixMap, regions, colors, mode, cleanedBuffer;
+      let pixMap, regions, colors, mode, cleanedBuffer, paletteSource = det ? "cached" : "live";
 
       if (det) {
         ({ pixMap, regions, colors, canvasSize, mode } = det); cleanedBuffer = det.cleanedBuffer;
@@ -767,6 +767,7 @@ router.post("/generate-embroidery",
       }
       // Wrap the post-engine pipeline so any failure inside engine-output -> response
       // surfaces a tagged line in the logs (was previously opaque: "Job failed")
+      let qa, sewTime, shapes, threadList, regionLabels;
       try {
         progressCb(70, "Adding basting…");
 
@@ -788,8 +789,8 @@ router.post("/generate-embroidery",
       try { previewBuf = await renderPreviewFast(filteredRegions, selectedColors, canvasSize, pixMap); }
       catch (e) { console.error("Preview render failed:", e.message); }
 
-      const qa      = validateQuality(stitches, params.machineLimits);
-      const sewTime = calculateSewTime(qa.stitchCount, qa.trimCount, selectedColors.length, specs.machine);
+      qa      = validateQuality(stitches, params.machineLimits);
+      sewTime = calculateSewTime(qa.stitchCount, qa.trimCount, selectedColors.length, specs.machine);
 
       jobs.set(jobId, { stitches, pixMap, colors: selectedColors, params, designW: canvasSize, designH: canvasSize, designMm: canvasSize / 10, ts: Date.now(), previewBuf, sewTime, mode, canvasSize, sourceImageBuffer: imgFile.buffer, processedImageBuffer: cleanedBuffer });
       _lastJobId = jobId;  // debug/last pointer
@@ -797,7 +798,6 @@ router.post("/generate-embroidery",
 
       // Tier-5a: brand-thread lookup. Map each Stichai palette hex to the
       // nearest brand reference color so the user can buy physical thread.
-      let threadList;
       try {
         const { buildThreadList } = require("../lib/thread-brand");
         threadList = buildThreadList(selectedColors, "madeira");
@@ -808,7 +808,6 @@ router.post("/generate-embroidery",
 
       // Tier-5d: region labels — name each color by likely role
       // (skin-warm, clothing-blue, background-light, etc.).
-      let regionLabels;
       try {
         const { buildRegionLabels } = require("../lib/region-labels");
         regionLabels = buildRegionLabels(selectedColors);
@@ -817,7 +816,7 @@ router.post("/generate-embroidery",
         regionLabels = selectedColors.map((hex, index) => ({ index, hex, role: "midtone", label: `Color ${index + 1}` }));
       }
 
-      const shapes = filteredRegions.map(r => {
+      shapes = filteredRegions.map(r => {
         const sc = stitches.filter(s => s.color === r.color && s.type !== "trim" && s.type !== "underlay" && s.x >= r.mnx && s.x <= r.mxx && s.y >= r.mny && s.y <= r.mxy).length;
         return { type: r.type, color: normHex(r.color), points: [[r.mnx, r.mny], [r.mxx, r.mny], [r.mxx, r.mxy], [r.mnx, r.mxy], [r.mnx, r.mny]], bounds: { x: r.mnx, y: r.mny, w: r.mxx - r.mnx, h: r.mxy - r.mny }, stitchCount: sc };
       });
@@ -836,20 +835,20 @@ router.post("/generate-embroidery",
             previewUrl: `/preview/${jobId}`,
             previewImageUrl: `/preview-image/${jobId}`,
             downloadUrl: `/download/${jobId}`,
-            stitchCount: qa.stitchCount,
+            stitchCount: qa?.stitchCount ?? stitches.length,
             designSize: { w: canvasSize, h: canvasSize, mm: canvasSize / 10 },
             colors: selectedColors,
             colorMeta: {},
             geminiNotes: det?.geminiNotes || "",
             specs,
             tunedParams: params,
-            qa,
-            shapes,
-            regions: filteredRegions.length,
-            sewTime,
+            qa:        qa        || { stitchCount: stitches.length, trimCount: 0, issues: [] },
+            shapes:    shapes    || [],
+            regions:   filteredRegions.length,
+            sewTime:   sewTime   || null,
             mode,
-            threadBrand: threadList,
-            regionLabels,
+            threadBrand: threadList || [],
+            regionLabels: regionLabels || [],
             palettesource: paletteSource,
           };
         } catch (e) {
