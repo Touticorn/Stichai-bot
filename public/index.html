@@ -1616,7 +1616,8 @@ function generate(){
   if(!ci||!dd)return;
   clearActionError('generate');
   for(var i=0;i<dd.shapes.length;i++){
-    if(document.getElementById('cb-'+i).checked){
+    var cb=document.getElementById('cb-'+i);
+    if(cb && cb.checked){
       var shapeColor=dd.shapes[i].color;
       var colorOn=false;
       for(var j=0;j<dd.colors.length;j++){
@@ -1624,8 +1625,13 @@ function generate(){
         if(_st2==='on' && dd.colors[j]===shapeColor){colorOn=true;break;}
       }
       if(!colorOn){
-        alert(t('shapeColorMismatch',{n:(i+1)}));
-        return;
+        // v73.0 — don't hard-block. Auto-uncheck the offending shape and
+        // continue; emit a non-blocking notice in the action-error strip
+        // so the user understands why shape N was dropped.
+        cb.checked=false;
+        cb.disabled=true;
+        if(document.getElementById('si-'+i)) document.getElementById('si-'+i).classList.add('off');
+        (window._stitchWarn||(window._stitchWarn=[])).push((i+1));
       }
     }
   }
@@ -1638,6 +1644,14 @@ function generate(){
   if(!sc.length){alert(t('selColor'));return}
   for(var i=0;i<dd.shapes.length;i++){if(document.getElementById('cb-'+i).checked)ss.push(i)}
   if(!ss.length){alert(t('selShape'));return}
+  if(window._stitchWarn && window._stitchWarn.length){
+    var banner=document.getElementById('generateErr');
+    if(banner){
+      banner.className='action-err warn';
+      banner.textContent='Auto-removed shapes whose colour was deselected: #' + window._stitchWarn.join(', #') + '.';
+    }
+    window._stitchWarn=null;
+  }
   var btn=document.getElementById('gB');
   btn.disabled=true;btn.textContent='⚡ '+t('generating');
   document.getElementById('st').innerHTML='<p>'+t('generating')+'</p>';
