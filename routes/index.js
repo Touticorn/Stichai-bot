@@ -180,6 +180,18 @@ router.post("/detect-shapes",
             cartoon.buffer = await quantizeBuffer(cartoon.buffer, colorCount + 1);
             console.log(`[${rid}] Cartoon quantized to ${colorCount + 1} colors`);
           } catch (e) { console.warn(`[${rid}] cartoon quantize skipped:`, e.message); }
+
+          // Tier-1: strip magenta letterbox bars before the cartoon hits
+          // preprocessImage. Without this the magenta pad bleeds into the
+          // posterize step and reappears as solid bars in the final stitch
+          // file (the "green/blue vertical strips beside the figures"
+          // complaint). Subjects get 25-40% more canvas real estate.
+          try {
+            const { cropMagentaLetterbox } = require("../lib/image");
+            const before = cartoon.buffer.length;
+            cartoon.buffer = await cropMagentaLetterbox(cartoon.buffer);
+            console.log(`[${rid}] Cartoon letterbox cropped (${before}->${cartoon.buffer.length} bytes)`);
+          } catch (e) { console.warn(`[${rid}] letterbox crop skipped:`, e.message); }
           sourceBuffer = cartoon.buffer;
           sourceMime   = cartoon.mime || "image/png";
           cartoonOk    = true;
