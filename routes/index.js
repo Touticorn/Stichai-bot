@@ -555,12 +555,23 @@ router.post("/generate-embroidery",
       _lastJobId = jobId;  // debug/last pointer
       progressCb(100, "Complete");
 
+      // Tier-5a: brand-thread lookup. Map each Stichai palette hex to the
+      // nearest brand reference color so the user can buy physical thread.
+      let threadList;
+      try {
+        const { buildThreadList } = require("../lib/thread-brand");
+        threadList = buildThreadList(selectedColors, "madeira");
+      } catch (e) {
+        console.warn(`[${rid}] thread list skipped:`, e.message);
+        threadList = selectedColors.map((hex, index) => ({ index, hex, code: null, name: null }));
+      }
+
       const shapes = filteredRegions.map(r => {
         const sc = stitches.filter(s => s.color === r.color && s.type !== "trim" && s.type !== "underlay" && s.x >= r.mnx && s.x <= r.mxx && s.y >= r.mny && s.y <= r.mxy).length;
         return { type: r.type, color: normHex(r.color), points: [[r.mnx, r.mny], [r.mxx, r.mny], [r.mxx, r.mxy], [r.mnx, r.mxy], [r.mnx, r.mny]], bounds: { x: r.mnx, y: r.mny, w: r.mxx - r.mnx, h: r.mxy - r.mny }, stitchCount: sc };
       });
 
-      return { id: jobId, previewUrl: `/preview/${jobId}`, previewImageUrl: `/preview-image/${jobId}`, downloadUrl: `/download/${jobId}`, stitchCount: qa.stitchCount, designSize: { w: canvasSize, h: canvasSize, mm: canvasSize / 10 }, colors: selectedColors, colorMeta: {}, geminiNotes: det?.geminiNotes || "", specs, tunedParams: params, qa, shapes, regions: filteredRegions.length, sewTime, mode };
+      return { id: jobId, previewUrl: `/preview/${jobId}`, previewImageUrl: `/preview-image/${jobId}`, downloadUrl: `/download/${jobId}`, stitchCount: qa.stitchCount, designSize: { w: canvasSize, h: canvasSize, mm: canvasSize / 10 }, colors: selectedColors, colorMeta: {}, geminiNotes: det?.geminiNotes || "", specs, tunedParams: params, qa, shapes, regions: filteredRegions.length, sewTime, mode, threadBrand: threadList };
     };
 
     try {
