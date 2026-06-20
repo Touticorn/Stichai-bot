@@ -320,24 +320,27 @@ router.post("/generate-embroidery",
 
       if (det) {
         ({ pixMap, regions, colors, canvasSize, mode } = det); cleanedBuffer = det.cleanedBuffer;
-        // FIX: detectionId cache froze the palette at whatever colorCount
-        // was used during step 2 (default 12/10/8). Step-3 slider in the
-        // web UI sends a fresh colorCount — honor it by re-extracting the
-        // palette from the cached cleanedBuffer at the new size.
-        const reqColorCount = Math.min(16, Math.max(2, parseInt(body.colorCount) || (mode === "photo" ? 8 : 12)));
-        if (colors.length !== reqColorCount) {
-          try {
-            const fresh = await extractColorsFromUnmasked(cleanedBuffer, null, canvasSize, reqColorCount);
-            if (fresh?.length) {
-              colors = fresh.slice(0, reqColorCount);
-              pixMap = await buildPixelMap(cleanedBuffer, null, colors, canvasSize);
-              regions = extractRegions(pixMap, colors, canvasSize, mode);
-              regions = mergeAdjacentRegions(regions, canvasSize);
-              console.log(`[${rid}] recomputed palette to ${reqColorCount} colors from cached detection`);
-            }
-          } catch (e) {
-            console.warn(`[${rid}] palette re-extract failed, falling back to cached:`, e.message);
+        // Honor step-3 slider: if the user's requested colorCount is smaller
+        // than the cached detection's palette, slice [0..reqColorCount] and
+        // remap pixMap/regions to keep hex values consistent with the
+        // frontend's selectedColors (which was keyed on the cached hex).
+        // NEVER re-extract here: that would replace hex codes mid-flight and
+        // break ALL downstream features (merge, shape selection, color
+        // selection). Hex preservation is the contract.
+        let reqColorCount;
+        try {
+          const raw = parseInt(body.colorCount);
+          reqColorCount = !Number.isNaN(raw) && raw >= 2 && raw <= 16
+            ? raw
+            : (mode === "photo" ? 8 : 12);
+        } catch (_) { reqColorCount = (mode === "photo" ? 8 : 12); }
+        if (colors.length > reqColorCount) {
+          console.log(`[${rid}] trim palette ${colors.length}->${reqColorCount} (hex-preserving)`);
+          colors = colors.slice(0, reqColorCount);
+          for (let i = 0; i < pixMap.length; i++) {
+            if (pixMap[i] >= reqColorCount) pixMap[i] = -1;
           }
+          if (regions) regions = regions.filter(r => r.ci < reqColorCount);
         }
       } else {
         mode = body.mode || "logo";
