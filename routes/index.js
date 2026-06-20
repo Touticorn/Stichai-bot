@@ -724,7 +724,7 @@ router.post("/generate-embroidery",
         if (cleanedBuffer) { // vec-all-modes
           try {
             console.log(`[${rid}] using vector pipeline (potrace)`);
-            result = await vectorizeToDST(cleanedBuffer, selectedColors, canvasSize, 10, params);
+            result = await vectorizeToDST(cleanedBuffer, selectedColors, canvasSize, 10, { ...params, selectedColors });
           } catch (e) {
             console.warn(`[${rid}] vectorize failed (${e.message}), falling back to v72`);
             if (cleanedBuffer) { try { params._outlineMask = await buildOutlineMask(cleanedBuffer, canvasSize, 70); } catch {} }
