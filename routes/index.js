@@ -286,6 +286,7 @@ router.post("/detect-shapes",
         // to the median-cut quantized centroids from quantize.js so we still get
         // a usable palette instead of the generic 5-color guess.
         let quantColors = null;
+        let qbForOverride = null;
         try {
           const { quantizeBuffer } = require("../lib/quantize");
           // sample centroids by running quantize again on the *cartoon* buffer
@@ -294,6 +295,7 @@ router.post("/detect-shapes",
             (typeof _lastCartoonBuf !== "undefined" && _lastCartoonBuf) || sourceBuffer,
             colorCount + 1
           );
+          qbForOverride = qb;
           const qRaw = await require("sharp")(qb).raw().toBuffer({ resolveWithObject: true });
           // Walk pixels, count up to N hex codes by frequency
           const hexCounts = new Map();
@@ -315,12 +317,21 @@ router.post("/detect-shapes",
         if (quantColors && quantColors.length >= 3) {
           colors       = quantColors;
           paletteSource = "centroids";
+          // ALSO override cleanedBuffer with the 9-color quantized cartoon (qb)
+          // so buildPixelMap runs against ACTUAL color variation, not the
+          // 5-level posterize that collapses everything to magenta. Without
+          // this, child regions are unrecoverable because pixelMap is uniform.
+          if (qbForOverride) {
+            cleanedBuffer = qbForOverride;
+            console.log(`[${rid}] centroid fallback overriding cleanedBuffer with 9-color quantized cartoon`);
+          }
           console.log(`[${rid}] centroid fallback produced ${colors.length} colors from quantized cartoon (top: ${quantColors.slice(0,4).join(",")})`);
         } else if (quantColors && quantColors.length >= 1) {
           // Accept even 1 saturated magenta-dominant color as better than nothing;
           // downstream posterize WILL at least produce 1-2 fills from it.
           colors       = [...quantColors, "#000000", "#FFFFFF"];
           paletteSource = "centroids-partial";
+          if (qbForOverride) cleanedBuffer = qbForOverride;
           console.log(`[${rid}] centroid partial ${colors.length} colors from quantized cartoon`);
         } else {
           colors       = ["#000000", "#FFFFFF", "#FF0000", "#0000FF", "#FFFF00"];
