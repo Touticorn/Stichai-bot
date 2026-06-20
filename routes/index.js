@@ -281,8 +281,44 @@ router.post("/detect-shapes",
         colors       = bucketColors;
         paletteSource = "buckets";
       } else {
-        colors       = ["#000000", "#FFFFFF", "#FF0000", "#0000FF", "#FFFF00"];
-        paletteSource = "fallback";
+        // Bucket extraction collapsed (e.g. magenta-heavy cartoon with mask skipped
+        // every pixel, or photo that fills 200x200 with one gradient). Fall back
+        // to the median-cut quantized centroids from quantize.js so we still get
+        // a usable palette instead of the generic 5-color guess.
+        let quantColors = null;
+        try {
+          const { quantizeBuffer } = require("../lib/quantize");
+          // sample centroids by running quantize again on the *cartoon* buffer
+          // (post-letterbox + post-quantize). The cartoon path stores it in _lastCartoonBuf.
+          const qb = await quantizeBuffer(
+            (typeof _lastCartoonBuf !== "undefined" && _lastCartoonBuf) || sourceBuffer,
+            colorCount + 1
+          );
+          const qRaw = await require("sharp")(qb).raw().toBuffer({ resolveWithObject: true });
+          // Walk pixels, count up to N hex codes by frequency
+          const hexCounts = new Map();
+          const { data, info: qinfo } = qRaw;
+          const ch = qinfo.channels;
+          for (let i = 0; i < data.length; i += ch) {
+            const r = data[i], g = data[i + 1], b = data[i + 2];
+            // skip magenta in the centroid scan too
+            if (r > 150 && b > 150 && g < 90 && Math.abs(r - b) < 60) continue;
+            const hex = "#" + [r, g, b].map(c => c.toString(16).padStart(2, "0")).join("").toUpperCase();
+            hexCounts.set(hex, (hexCounts.get(hex) || 0) + 1);
+          }
+          const sorted = [...hexCounts.entries()].sort((a, b) => b[1] - a[1]);
+          quantColors = sorted.slice(0, colorCount).map(([h]) => h);
+        } catch (e) {
+          console.warn(`[${rid}] centroid fallback failed:`, e.message);
+        }
+        if (quantColors && quantColors.length >= 3) {
+          colors       = quantColors;
+          paletteSource = "centroids";
+          console.log(`[${rid}] centroid fallback produced ${colors.length} colors from quantized cartoon`);
+        } else {
+          colors       = ["#000000", "#FFFFFF", "#FF0000", "#0000FF", "#FFFF00"];
+          paletteSource = "fallback";
+        }
       }
       console.log(`[${rid}] Palette ${paletteSource} (${colors.length}): ${colors.join(", ")}`);
 
