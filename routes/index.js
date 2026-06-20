@@ -132,6 +132,7 @@ router.post("/detect-shapes",
     const rid = Math.random().toString(36).slice(2, 6);
     let detectCrashStep = "init";
     try {
+      let cleanedBuffer; // Tier-5+ requires this declared in outer scope
       const imgFile  = req.files?.image?.[0];
       const maskFile = req.files?.mask?.[0];
       if (!imgFile) return res.status(400).json({ error: "No image uploaded" });
