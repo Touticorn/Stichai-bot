@@ -631,8 +631,20 @@ router.post("/generate-embroidery",
         if (body.selectedShapes) {
           const parsed = JSON.parse(body.selectedShapes);
           if (Array.isArray(parsed) && parsed.length > 0 && parsed.length < regions.length) {
-            filteredRegions = parsed.map(idx => regions[idx]).filter(Boolean);
-            userPickedShapes = true;
+            const mapped = parsed.map(idx => regions[idx]).filter(Boolean);
+            // v73.0 — guard: the applyColorMerges() path above may rebuild
+            // the regions array, after which the cached DETECT indices are
+            // stale. If too few survive the lookup, fall back to "use all
+            // regions for the chosen colors" instead of producing empty
+            // filteredRegions and 500-ing downstream.
+            if (mapped.length === 0 || mapped.length < parsed.length / 2) {
+              console.warn(`[${rid}] selectedShapes index-lookup stale (${mapped.length}/${parsed.length}); falling back to full regions`);
+              filteredRegions  = regions;
+              userPickedShapes = false;
+            } else {
+              filteredRegions  = mapped;
+              userPickedShapes = true;
+            }
           }
         }
       } catch (_) {}
@@ -647,9 +659,8 @@ router.post("/generate-embroidery",
       // Two safer paths:
       //   • userPickedShapes=false → old rebuild (full re-extract = correct)
       //   • userPickedShapes=true  → fold-color-filter into existing regions
-      //     only (drop regions whose color isn't in selectedColors, then
-      //     re-index kept regions' .ci so they line up with selectedColors
-      //     before the stitch engine).
+      //     only (drop regions whose color isn't in selectedColors, keep
+      //     remaining regions and their original ci/colors intact).
       if (selectedColors.length < colors.length) {
         if (userPickedShapes) {
           // Drop regions whose color was filtered out — preserves shape pick.
@@ -677,7 +688,15 @@ router.post("/generate-embroidery",
         }
       }
 
-      if (!filteredRegions.length) throw new Error("No regions left after selection");
+      if (!filteredRegions.length) {
+        // v73.0 — last-resort bounce: if shape+colour together wiped
+        // filteredRegions, recover by using every region whose colour is
+        // still in selectedColors. Better than a 500.
+        const fallback = regions.filter(r => selectedColors.includes(normHex(r.color)));
+        if (fallback.length === 0) throw new Error("No regions left after selection");
+        console.warn(`[${rid}] filteredRegions empty — recovered with ${fallback.length} colour-matched regions`);
+        filteredRegions = fallback;
+      }
       progressCb(30, "Generating stitches…");
 
       // Wrap the entire STITCH-GENERATION block so any throw inside
