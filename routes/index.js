@@ -583,12 +583,23 @@ router.post("/generate-embroidery",
         threadList = selectedColors.map((hex, index) => ({ index, hex, code: null, name: null }));
       }
 
+      // Tier-5d: region labels — name each color by likely role
+      // (skin-warm, clothing-blue, background-light, etc.).
+      let regionLabels;
+      try {
+        const { buildRegionLabels } = require("../lib/region-labels");
+        regionLabels = buildRegionLabels(selectedColors);
+      } catch (e) {
+        console.warn(`[${rid}] region labels skipped:`, e.message);
+        regionLabels = selectedColors.map((hex, index) => ({ index, hex, role: "midtone", label: `Color ${index + 1}` }));
+      }
+
       const shapes = filteredRegions.map(r => {
         const sc = stitches.filter(s => s.color === r.color && s.type !== "trim" && s.type !== "underlay" && s.x >= r.mnx && s.x <= r.mxx && s.y >= r.mny && s.y <= r.mxy).length;
         return { type: r.type, color: normHex(r.color), points: [[r.mnx, r.mny], [r.mxx, r.mny], [r.mxx, r.mxy], [r.mnx, r.mxy], [r.mnx, r.mny]], bounds: { x: r.mnx, y: r.mny, w: r.mxx - r.mnx, h: r.mxy - r.mny }, stitchCount: sc };
       });
 
-      return { id: jobId, previewUrl: `/preview/${jobId}`, previewImageUrl: `/preview-image/${jobId}`, downloadUrl: `/download/${jobId}`, stitchCount: qa.stitchCount, designSize: { w: canvasSize, h: canvasSize, mm: canvasSize / 10 }, colors: selectedColors, colorMeta: {}, geminiNotes: det?.geminiNotes || "", specs, tunedParams: params, qa, shapes, regions: filteredRegions.length, sewTime, mode, threadBrand: threadList };
+      return { id: jobId, previewUrl: `/preview/${jobId}`, previewImageUrl: `/preview-image/${jobId}`, downloadUrl: `/download/${jobId}`, stitchCount: qa.stitchCount, designSize: { w: canvasSize, h: canvasSize, mm: canvasSize / 10 }, colors: selectedColors, colorMeta: {}, geminiNotes: det?.geminiNotes || "", specs, tunedParams: params, qa, shapes, regions: filteredRegions.length, sewTime, mode, threadBrand: threadList, regionLabels };
     };
 
     try {
