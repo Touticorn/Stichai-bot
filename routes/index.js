@@ -604,6 +604,7 @@ router.post("/generate-embroidery",
           if (Array.isArray(parsed) && parsed.length > 0) selectedColors = parsed.map(c => normHex(c));
         }
       } catch (_) {}
+      console.log(`[${rid}] SELECTED_COLORS: count=${selectedColors.length}/${colors.length} sample=[${selectedColors.slice(0,3).join(',')}...] all=${colors.map(c=>`${c}->${selectedColors.includes(c)?'on':'off'}`).join(' ')}`);
 
       // Apply color merges
       try {
@@ -632,6 +633,7 @@ router.post("/generate-embroidery",
             filteredRegions = parsed.map(idx => regions[idx]).filter(Boolean);
         }
       } catch (_) {}
+      console.log(`[${rid}] SELECTED_SHAPES: indices=${(function(){try{return JSON.parse(body.selectedShapes||'[]');}catch(_){return 'ERR';}})()} resolved=${filteredRegions.length}/${regions.length} sample=[${filteredRegions.slice(0,3).map(r=>r&&r.color).join(',')}]`);
 
       // Rebuild pixMap for excluded colors
       if (selectedColors.length < colors.length) {
