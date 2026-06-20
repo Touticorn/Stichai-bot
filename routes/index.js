@@ -13,6 +13,33 @@ const upload  = multer({ limits: { fileSize: 10 * 1024 * 1024 } });
 const { requireAuth, checkDownloadQuota, checkQuota, recordDownload, buildPrices, PLANS, getOrCreateUser, getPeriodStart } = require("../lib/auth");
 const { enqueueJob, cancelJob, activeJobs }                = require("../lib/jobs");
 const { segmentSubjectWithGemini, convertToCartoonWithGemini, analyzeWithGemini, extractSubjectImage, extractSubjectAsCartoon } = require("../lib/gemini");
+const { analyzeWithQwen, convertToCartoonWithQwen } = require("../lib/fireworks-qwen");
+
+/**
+ * Tier-AI: Gemini → Qwen fallback chain.
+ * - When STICHAI_AI_BACKEND === "gemini": Gemini primary, Qwen on null/deplete
+ * - When STICHAI_AI_BACKEND === "qwen":   Qwen primary, Gemini silent (kept for prod failure mode)
+ * - When unset / "auto": same as gemini
+ */
+const AI_BACKEND = (process.env.STICHAI_AI_BACKEND || "auto").toLowerCase();
+async function analyzeWithAI(buf, mime, colorCount) {
+  if (AI_BACKEND === "qwen") return await analyzeWithQwen(buf, mime, colorCount);
+  try {
+    const r = await analyzeWithGemini(buf, mime, colorCount);
+    if (r) return r;
+  } catch (_) { /* fall through */ }
+  console.warn("[ai] Gemini null/depleted → Qwen fallback");
+  return await analyzeWithQwen(buf, mime, colorCount);
+}
+async function cartoonizeWithAI(buf, mime, colorCount) {
+  if (AI_BACKEND === "qwen") return await convertToCartoonWithQwen(buf, mime, colorCount);
+  try {
+    const r = await convertToCartoonWithGemini(buf, mime, colorCount);
+    if (r) return r;
+  } catch (_) { /* fall through */ }
+  console.warn("[ai] Gemini cartoon null/depleted → Qwen fallback (local Sharp posterize)");
+  return await convertToCartoonWithQwen(buf, mime, colorCount);
+}
 const { preprocessImage, extractColorsFromUnmasked, buildPixelMap, buildOutlineMask, removeBackgroundImgly, renderPreviewFast, hexToRgb, rgbToLab, dE, normHex } = require("../lib/image");
 const { vectorizeToDST } = require("../lib/vectorize");
 const { simplifyFaceDetail } = require("../lib/face-simplify");
@@ -170,7 +197,7 @@ router.post("/detect-shapes",
         } catch(e) {}
         const cartoon = alreadyFlat
           ? { buffer: imgFile.buffer, mime: sourceMime }
-          : await convertToCartoonWithGemini(imgFile.buffer, sourceMime, colorCount);
+          : await cartoonizeWithAI(imgFile.buffer, sourceMime, colorCount);
         if (cartoon) {
           // Lock the cartoon palette deterministically. Gemini cartoon
           // regeneration is non-deterministic — colors drift per run, so
@@ -232,13 +259,14 @@ router.post("/detect-shapes",
         extractColorsFromUnmasked(cleanedBuffer, maskFile?.buffer, canvasSize, colorCount),
         skipGeminiPalette
           ? Promise.resolve(null)
-          : analyzeWithGemini(sourceBuffer, sourceMime, colorCount).catch(() => null),
+          : analyzeWithAI(sourceBuffer, sourceMime, colorCount).catch(() => null),
       ]);
 
       let colors, paletteSource;
       if (gem && Array.isArray(gem.palette) && gem.palette.length >= 3) {
+        const wantsLabel = AI_BACKEND === "qwen" ? "qwen" : "gemini";
         colors       = gem.palette.slice(0, colorCount);
-        paletteSource = "gemini";
+        paletteSource = wantsLabel;
         const gemLabs = colors.map(c => rgbToLab(hexToRgb(c)));
         for (const b of bucketColors) {
           if (colors.length >= colorCount) break;
