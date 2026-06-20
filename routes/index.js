@@ -202,10 +202,27 @@ router.post("/detect-shapes",
         }
       }
 
-      let cleanedBuffer = await preprocessImage(sourceBuffer, canvasSize, mode);
-      if (cartoonOk) {
-        try { cleanedBuffer = await simplifyFaceDetail(cleanedBuffer); }
-        catch (e) { console.warn(`[${rid}] face-simplify skipped: ${e.message}`); }
+      // Tier-5c: photo-mode luminance sigmoid pre-pass lifts shadows so
+      // posterize doesn't collapse them to background.
+      if (mode === "photo") {
+        try {
+          const { preprocessPhotoImage } = require("../lib/image");
+          cleanedBuffer = await preprocessPhotoImage(sourceBuffer, canvasSize);
+          console.log(`[${rid}] photo luminance LUT applied`);
+          if (cartoonOk) {
+            try { cleanedBuffer = await simplifyFaceDetail(cleanedBuffer); }
+            catch (e) { console.warn(`[${rid}] face-simplify skipped: ${e.message}`); }
+          }
+        } catch (e) {
+          console.warn(`[${rid}] photo LUT skipped: ${e.message}`);
+          cleanedBuffer = await preprocessImage(sourceBuffer, canvasSize, mode);
+        }
+      } else {
+        cleanedBuffer = await preprocessImage(sourceBuffer, canvasSize, mode);
+        if (cartoonOk) {
+          try { cleanedBuffer = await simplifyFaceDetail(cleanedBuffer); }
+          catch (e) { console.warn(`[${rid}] face-simplify skipped: ${e.message}`); }
+        }
       }
 
       const skipGeminiPalette = mode === "cartoon" && !cartoonOk;
