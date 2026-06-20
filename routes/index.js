@@ -702,6 +702,57 @@ router.get("/preview-image/:id", async (req, res) => {
   return res.send(d.previewBuf);
 });
 
+/* ── Tier-5e: stitch sticker chip overview ──────────────────────
+ * Renders the preview above, with a swatch legend below listing each
+ * thread color hex + (when brand thread list available) the brand code & name.
+ * Used for design review and embroidery machine thread kit assembly.
+ */
+router.get("/sticker-overview/:id", async (req, res) => {
+  const d = jobs.get(req.params.id);
+  if (!d) return res.status(404).json({ error: "Not found" });
+  if (!d.previewBuf) return res.status(500).json({ error: "Preview not ready" });
+  try {
+    const colors = d.colors || [];
+    const preview = d.previewBuf;
+    // Build a 480-wide legend strip; chips are 40x40 with code text.
+    const W = 480, swatchH = 60;
+    const stripH = Math.max(60, swatchH * Math.min(8, colors.length || 1));
+    const H = stripH + 30;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">
+      <rect x="0" y="0" width="${W}" height="${H}" fill="#FFFFFF"/>
+      ${colors.map((hex, i) => {
+        const y = 10 + (i % 8) * swatchH;
+        const x = 10 + Math.floor(i / 8) * 100;
+        const norm = "#" + (hex.match(/[0-9a-fA-F]{6}/) || ["000000"])[0].toUpperCase();
+        return `${`<rect x="${x}" y="${y}" width="40" height="40" fill="${norm}" stroke="#222"/>` +
+                  `<text x="${x + 50}" y="${y + 25}" font-family="Arial" font-size="14" fill="#222">${norm.slice(1)}</text>`}`;
+      }).join("")}
+    </svg>`;
+    const stripe = await sharp(Buffer.from(svg))
+      .png().toBuffer();
+    // Composite: preview on top, sticker below
+    const previewMeta = await sharp(preview).metadata();
+    const composed = await sharp({
+      create: {
+        width: previewMeta.width,
+        height: previewMeta.height + H + 20,
+        channels: 3,
+        background: { r: 240, g: 240, b: 240 }
+      }
+    })
+      .composite([
+        { input: preview, top: 0, left: 0 },
+        { input: stripe, top: previewMeta.height + 10, left: 10 }
+      ])
+      .png().toBuffer();
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public,max-age=300");
+    return res.send(composed);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 /* ── Raw DST (no auth — for autotune / internal QA) ─────── */
 router.get("/raw-dst/:id", async (req, res) => {
   const d = jobs.get(req.params.id);
