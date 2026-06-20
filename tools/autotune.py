@@ -1,22 +1,40 @@
 #!/usr/bin/env python3
 """
-Autonomous test loop for Stichai DST quality.
+Autotune the Stichai vector engine using render-based scoring.
 
-Usage: python3 tools/autotune.py [--api URL] [--input IMAGE]
+Modes:
+  1. Remote API sweep: --input IMAGE --sweep file.json
+     Posts the same image with different tune={...} params, downloads DSTs,
+     renders them, scores them, and reports the best tune.
 
-Steps:
-1. POST the cartoon image to /generate-embroidery
-2. Poll until done
-3. Download DST
-4. Run dst_qa.py for metrics
-5. Run render_dst.py viewer-mode render
-6. Compare render to input image (visual diff / alignment check)
-7. Report issues and suggest patches
+  2. Local sweep: --sweep file.json --local-dst DST_DIR
+     Re-renders an already-generated DST with a simulated tune change
+     (limited; full effect requires engine API). Useful for evaluating a
+     candidate render baseline.
+
+  3. Evaluate existing renders: --evaluate PNG_DIR
+     Scores each PNG and reports best/worst metrics.
+
+Usage examples:
+  python3 tools/autotune.py --input 45.png --sweep tools/autotune_sweep.json
+  python3 tools/autotune.py --evaluate /data/data/com.termux/files/home/.openclaw/workspace
 """
-import argparse, json, os, subprocess, sys, time, urllib.request, urllib.parse
+import argparse, json, os, sys, time, urllib.request, urllib.parse, subprocess
+import numpy as np
+from PIL import Image
 
 API = os.getenv("STICHAI_API", "https://stichai-bot-stichai.up.railway.app")
-INPUT_IMG = os.getenv("STICHAI_INPUT", "/data/data/com.termux/files/home/.openclaw/workspace/tmp/cartoon_subj.png")
+INPUT_IMG = os.getenv("STICHAI_INPUT", "/data/data/com.termux/files/home/.openclaw/workspace/45.png")
+
+DEFAULT_SWEEP = {
+    "bridgeMaxGap": [6, 8, 12],
+    "absorbMinArea": [150, 250, 400],
+    "absorbMaxArea": [10000, 20000, 40000],
+    "absorbPerimRatio": [3.0, 4.0, 6.0],
+    "autoZoomMargin": [0.005, 0.01, 0.02],
+    "darkUnifyThresh": [80, 95, 120],
+    "potraceTurdSize": [5, 10, 20]
+}
 
 
 def api_post(endpoint, data=None, files=None):
@@ -42,31 +60,34 @@ def api_post(endpoint, data=None, files=None):
         return json.loads(e.read().decode())
 
 
-def generate(job_id, img_path, canvas_mm=160):
+def generate(job_id, img_path, tune=None, canvas_mm=160):
     with open(img_path, "rb") as f:
         img_data = f.read()
-    # canvasMm * 10 = canvasSize in px (server uses 10 px/mm)
     canvas_size = canvas_mm * 10
-    r = api_post("/generate-embroidery",
-        data={"jobId": job_id, "mode": "cartoon", "extractedSubject": "1",
-              "canvasSize": str(canvas_size), "hoop": "8x12"},
-        files={"image": ("cartoon.png", img_data)})
+    data = {"jobId": job_id, "mode": "cartoon", "extractedSubject": "1",
+            "canvasSize": str(canvas_size), "hoop": "8x12"}
+    if tune:
+        data["tune"] = json.dumps(tune)
+    r = api_post("/generate-embroidery", data=data,
+                 files={"image": ("cartoon.png", img_data)})
     return r
 
 
 def poll_by_id(job_id, max_wait=300):
     url = f"{API}/job-status/{job_id}"
     for _ in range(max_wait):
-        with urllib.request.urlopen(url, timeout=30) as r:
-            d = json.loads(r.read().decode())
-        if d.get("status") in ("done", "failed"):
-            return d
+        try:
+            with urllib.request.urlopen(url, timeout=30) as r:
+                d = json.loads(r.read().decode())
+            if d.get("status") in ("done", "failed"):
+                return d
+        except Exception as e:
+            print(f"poll warning: {e}")
         time.sleep(2)
     return {"status": "timeout"}
 
 
 def download_raw(job_id, out_path):
-    # Try public /raw-dst endpoint first (no auth needed)
     url = f"{API}/raw-dst/{job_id}"
     try:
         with urllib.request.urlopen(url, timeout=30) as r:
@@ -74,47 +95,114 @@ def download_raw(job_id, out_path):
                 f.write(r.read())
         return True
     except Exception:
-        # Fallback: download ZIP from /download and extract
         url = f"{API}/download/{job_id}"
         zip_path = out_path + ".zip"
-        with urllib.request.urlopen(url, timeout=30) as r:
-            with open(zip_path, "wb") as f:
-                f.write(r.read())
-        import zipfile
-        with zipfile.ZipFile(zip_path, "r") as z:
-            members = [n for n in z.namelist() if n.endswith(".dst")]
-            if members:
-                z.extract(members[0], path=os.path.dirname(out_path))
-                extracted = os.path.join(os.path.dirname(out_path), members[0])
-                os.rename(extracted, out_path)
-        os.remove(zip_path)
-        return os.path.exists(out_path)
+        try:
+            with urllib.request.urlopen(url, timeout=30) as r:
+                with open(zip_path, "wb") as f:
+                    f.write(r.read())
+            import zipfile
+            with zipfile.ZipFile(zip_path, "r") as z:
+                members = [n for n in z.namelist() if n.endswith(".dst")]
+                if members:
+                    z.extract(members[0], path=os.path.dirname(out_path))
+                    extracted = os.path.join(os.path.dirname(out_path), members[0])
+                    os.rename(extracted, out_path)
+            os.remove(zip_path)
+        except Exception:
+            pass
+    return os.path.exists(out_path)
 
 
-def qa(dst_path):
-    r = subprocess.run(["python3", "tools/dst_qa.py", dst_path],
-                        capture_output=True, text=True, cwd="/data/data/com.termux/files/home/stichai-bot")
-    out = r.stdout + r.stderr
-    metrics = {}
-    for line in out.splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            try:
-                metrics[k.strip()] = float(v.strip())
-            except ValueError:
-                metrics[k.strip()] = v.strip()
-    return metrics, out
-
-
-def render(dst_path, out_png, ppmm=14):
-    # Use the pro-viewer-style renderer (tools/render_pro.py) which auto-detects
-    # the row pitch from the DST and draws strokes wide enough that parallel
-    # rows overlap into solid satin. This produces output that reads as
-    # embroidery-on-fabric instead of wireframe.
-    r = subprocess.run(["python3", "tools/render_pro.py", dst_path, out_png, str(ppmm), "0"],
-                        capture_output=True, text=True, cwd="/data/data/com.termux/files/home/stichai-bot")
-    print(r.stdout.strip())
+def render(dst_path, out_png, ppmm=12):
+    r = subprocess.run(["python3", "tools/render_viewer.py", dst_path, out_png, str(ppmm)],
+                       capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(__file__)))
+    if r.returncode != 0:
+        print(r.stderr.strip())
     return out_png
+
+
+def score(png_path, target_colors=7):
+    r = subprocess.run(["python3", "tools/render_score.py", png_path, "--target", str(target_colors)],
+                       capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(__file__)))
+    print(r.stdout.strip())
+    if r.returncode != 0:
+        print(r.stderr.strip())
+    scores = {}
+    for line in (r.stdout or "").splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            k = k.strip()
+            try:
+                scores[k] = float(v.strip())
+            except ValueError:
+                scores[k] = v.strip()
+    return scores
+
+
+def make_grid(sweep):
+    """Convert a sweep dict of lists into a list of tune dicts (cartesian product)."""
+    keys = list(sweep.keys())
+    if not keys:
+        return [{}]
+    import itertools
+    grids = []
+    for vals in itertools.product(*[sweep[k] for k in keys]):
+        grids.append(dict(zip(keys, vals)))
+    return grids
+
+
+def evaluate_pngs(png_dir, target_colors=7, pattern="*_viewer.png"):
+    import glob
+    results = []
+    # Import scoring function directly to avoid subprocess overhead
+    from render_score import score_render
+    
+    png_files = glob.glob(os.path.join(png_dir, pattern))
+    print(f"Scoring {len(png_files)} PNGs matching '{pattern}'...")
+    
+    for path in png_files:
+        fn = os.path.basename(path)
+        scores = score_render(path, target_colors)
+        results.append({"file": fn, "scores": scores})
+    
+    results.sort(key=lambda r: r["scores"].get("total", 1.0))
+    print("\n=== Ranked by render score (lower=better) ===")
+    for r in results[:10]:
+        print(f"{r['scores']['total']:.3f}  {r['file']}")
+    return results
+
+
+def remote_sweep(input_path, sweep, work_dir, canvas_mm=160, target_colors=7):
+    os.makedirs(work_dir, exist_ok=True)
+    grid = make_grid(sweep)
+    print(f"Running remote sweep with {len(grid)} tune configs")
+    results = []
+    for i, tune in enumerate(grid):
+        job_id = f"autotune_{i}_{os.urandom(4).hex()}"
+        print(f"\n[{i+1}/{len(grid)}] tune={tune}")
+        r = generate(job_id, input_path, tune=tune, canvas_mm=canvas_mm)
+        api_id = r.get("id")
+        if not api_id:
+            print(f"  FAILED: {r}")
+            continue
+        dst_path = os.path.join(work_dir, f"{api_id}.dst")
+        png_path = os.path.join(work_dir, f"{api_id}.png")
+        d = poll_by_id(api_id)
+        if d.get("status") != "done":
+            print(f"  job failed: {d}")
+            continue
+        if not download_raw(api_id, dst_path):
+            print(f"  download failed")
+            continue
+        render(dst_path, png_path)
+        scores = score(png_path, target_colors)
+        results.append({"tune": tune, "scores": scores, "dst": dst_path, "png": png_path})
+    results.sort(key=lambda r: r["scores"].get("TOTAL", 1.0))
+    print("\n=== Best tunes ===")
+    for r in results[:5]:
+        print(f"  {r['scores']['TOTAL']:.3f}  {r['tune']}")
+    return results
 
 
 def main():
@@ -122,44 +210,22 @@ def main():
     ap.add_argument("--api", default=API)
     ap.add_argument("--input", default=INPUT_IMG)
     ap.add_argument("--work-dir", default="/data/data/com.termux/files/home/.openclaw/workspace/tmp/autotune")
-    ap.add_argument("--job-id", default=None)
+    ap.add_argument("--sweep", help="JSON file with parameter grid (default: built-in)")
+    ap.add_argument("--evaluate", help="Directory of PNGs to score and rank")
+    ap.add_argument("--target-colors", type=int, default=7)
+    ap.add_argument("--canvas-mm", type=int, default=160)
     args = ap.parse_args()
+    if args.evaluate:
+        evaluate_pngs(args.evaluate, args.target_colors)
+        return
 
-    os.makedirs(args.work_dir, exist_ok=True)
-    client_job_id = args.job_id or ("test_" + os.urandom(4).hex())
-    
-    print(f"[{client_job_id}] Generating from {args.input} …")
-    r = generate(client_job_id, args.input)
-    print(f"[{client_job_id}] POST -> id={r.get('id')} msg={r.get('message', r)}")
-    api_id = r.get("id")
-    if not api_id:
-        print(f"[{client_job_id}] FAILED to get API job id")
-        sys.exit(1)
-    
-    dst_path = os.path.join(args.work_dir, f"{api_id}.dst")
-    png_path = os.path.join(args.work_dir, f"{api_id}.png")
+    sweep = DEFAULT_SWEEP
+    if args.sweep:
+        with open(args.sweep) as f:
+            sweep = json.load(f)
 
-    print(f"[{api_id}] Polling …")
-    d = poll_by_id(api_id)
-    if d.get("status") != "done":
-        print(f"[{api_id}] FAILED:", d)
-        sys.exit(1)
+    remote_sweep(args.input, sweep, args.work_dir, args.canvas_mm, args.target_colors)
 
-    ok = download_raw(api_id, dst_path)
-    if not ok:
-        print(f"[{api_id}] FAILED to download DST")
-        sys.exit(1)
-    print(f"[{api_id}] DST saved -> {dst_path} ({os.path.getsize(dst_path)} bytes)")
-
-    metrics, raw = qa(dst_path)
-    print(f"[{api_id}] QA metrics:")
-    for k, v in sorted(metrics.items()):
-        print(f"  {k} = {v}")
-
-    render(dst_path, png_path)
-    print(f"[{api_id}] Render -> {png_path}")
-
-    # TODO: compare png_path against args.input and emit patch suggestions
 
 if __name__ == "__main__":
     main()

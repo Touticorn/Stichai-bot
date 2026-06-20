@@ -509,6 +509,11 @@ router.post("/generate-embroidery",
       };
       let canvasSize = parseInt(body.canvasSize) || 800;
       const params   = getStitchParams(specs, canvasSize);
+      // Autotune: accept tune={} JSON body to override vector pipeline parameters
+      if (body.tune) {
+        try { params.tune = typeof body.tune === 'string' ? JSON.parse(body.tune) : body.tune; }
+        catch (e) { console.warn(`[${rid}] invalid tune JSON:`, e.message); }
+      }
       progressCb(5, "Preparing image…");
 
       const det = body.detectionId ? detections.get(body.detectionId) : null;

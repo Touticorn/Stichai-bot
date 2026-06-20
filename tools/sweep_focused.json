@@ -1,0 +1,5 @@
+{
+  "bridgeMaxGap": [4, 8],
+  "absorbMinArea": [250, 500],
+  "autoZoomMargin": [0.005, 0.01]
+}
