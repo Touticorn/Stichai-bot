@@ -5,29 +5,6 @@
  * Phase 2: edge-walk underlay, pull compensation
  */
 const { buildPixelMap, hexToRgb } = require("./image");
-const { directionalFill } = require("./directional-fill");
-
-// Feature flag: flow-following directional fill for non-folding regions.
-// Falls back to scanline automatically per-region. Set false to fully disable.
-const USE_DIRECTIONAL_FILL = process.env.STICHAI_DIRECTIONAL_FILL !== "0";
-// Feature flag: layered zigzag underlay beneath fills (perpendicular to top fill).
-// Digitizing rule: fills need a 2-3mm underlay foundation. BUT the current per-region
-// zigzag fragments on complex multi-hole regions -> exploded travel (18% vs 0.96% pro)
-// and spider-web jumps in the 2026-06-15 stitch test. DISABLED by default until the
-// underlay is made travel-aware (connect runs, restrict to solid fills). Opt-in: set
-// STICHAI_FILL_UNDERLAY=1 to experiment.
-const USE_FILL_UNDERLAY = process.env.STICHAI_FILL_UNDERLAY === "1";
-
-// Tatami (cross-directional) fill adds a second perpendicular pass on large regions
-// (>= tatamiMinAreaMm2). Closes stitch density gaps on faces, dress, large blocks.
-// Roughly doubles stitch count in those regions (~50% overall). Default-on for
-// 2026-06-18 rollout; can be disabled via STICHAI_TATAMI=0.
-const USE_TATAMI_FILL    = process.env.STICHAI_TATAMI !== "0";
-
-// Perimeter satin re-pass after fill+tatami. Re-traces region silhouette at
-// very dense step (0.2mm) to smooth stair-step artifacts from clipped fill rows.
-// Default-on; disable via STICHAI_PERIM_PASS=0.
-const USE_PERIM_PASS     = process.env.STICHAI_PERIM_PASS !== "0";
 
 // ── potrace ──────────────────────────────────────────────────────────────────
 let _pt = null;
@@ -262,28 +239,6 @@ function edgeWalkUnderlay(polygons, color, stepPx, trimGap) {
   return boundaryWalk(polygons.slice(0,1), color, stepPx*2, trimGap, 2); 
 }
 
-// ── Layered zigzag underlay (runs PERPENDICULAR to the top fill) ─────────────
-// Rule-compliant foundation: coarse rows (2-3mm) inset from the edge, longer
-// underlay stitches (fewer penetrations). Returns running-type stitches in
-// ORIGINAL coords. Emitted AFTER edge-walk, BEFORE the top fill.
-function zigzagUnderlay(group, color, c0, phi, spacingPx, ulStitchPx, insetPx, travelCut) {
-  const a = phi + Math.PI/2;                 // perpendicular to top fill
-  const ca = Math.cos(a), sa = Math.sin(a);
-  const rot = group.map(poly=>poly.map(([px,py])=>{
-    const dx=px-c0[0], dy=py-c0[1];
-    return [c0[0]+dx*ca-dy*sa, c0[1]+dx*sa+dy*ca];
-  }));
-  const runs = scanlineRuns(rot, spacingPx, -Math.max(1, insetPx)); // negative = inset
-  if(!runs.length) return [];
-  const st = runsToStitches(runs, color, ulStitchPx, travelCut);
-  for(const s of st){
-    const dx=s.x-c0[0], dy=s.y-c0[1];
-    s.x = c0[0]+dx*ca+dy*sa; s.y = c0[1]-dx*sa+dy*ca;  // back-rotate
-    if(s.type==="fill") s.type="running";              // mark as underlay
-  }
-  return st;
-}
-
 // ── Boundary walk (resampled polygon boundary → running stitches) ────────────
 function boundaryWalk(polygons, color, stepPx, trimGap, insetPx=0) {
   const paths=[];
@@ -420,7 +375,7 @@ async function removeBorderBackground(sharp,cleanedBuffer,pm,W,H){
 }
 
 function absorbSlivers(pm,W,H,darkCi,magCi){
-  for(let pass=0;pass<4;pass++){  // 4 passes: catches fragments that emerge after first-pass merges create new small components
+  for(let pass=0;pass<2;pass++){
     const lbl=new Int32Array(W*H);
     const stack=new Int32Array(W*H);
     let nc=0;
@@ -449,8 +404,8 @@ function absorbSlivers(pm,W,H,darkCi,magCi){
       const col=cols[c],a=areas[c],per=pers[c],bn=bestN[c];
       if(col===darkCi)continue;
       let absorb;
-      if(col===magCi) absorb = a<3000;
-      else absorb = (a<250) || (a<20000 && a<per*4.0);  // tighter: absorbs larger fragments + thin strands (high perimeter-to-area)
+      if(col===magCi) absorb = a<2000;
+      else absorb = (a<150) || (a<12000 && a<per*3.0);
       if(!absorb)continue;
       if(bn>=0){tgt[c]=bn;changed++;}
       else if(a<2000){tgt[c]=-2;changed++;}
@@ -524,19 +479,10 @@ async function buildMaskPNG(sharp, pixMap, ci, W, H, tuckZone) {
     for(let i=0;i<W*H;i++) if(a[i]) m[i]=1;
   }
 
-  const fillGrow = parseInt(process.env.STICHAI_FILL_GROW||"2");  // 0..3 (default 2: closes fill↔outline seam gaps; capped by clip below)
-  const clipOut  = (process.env.STICHAI_FILL_CLIP_BG !== "0");    // clip fill grow to NOT cross background pixels
-  let c2=dilateBin(m, tuckZone ? Math.max(1,fillGrow) : fillGrow);  // +2 base: closes fill↔outline seam gaps
-  if (clipOut) {
-    /* Hard cap: fill mask may NOT cross past original silhouette by more than
-       `fillGrow + 1` pixels. This stops +2/+3 base-grow from spilling past
-       open hand/edge contours while still letting fills reach the outline.  */
-    const origD = dilateBin(a, fillGrow + (tuckZone ? 1 : 0));
-    for (let i = 0; i < W * H; i++) if (c2[i] && !origD[i]) c2[i] = 0;
-  }
+  const c2=dilateBin(m, tuckZone ? 1 : 1);   // dark outline grows +3px to cover grown/tucked fills (contour registration); fills stay +1
 
   if(tuckZone){
-    for(let it=0;it<(parseInt(process.env.STICHAI_TUCK_ITERS)||6);it++){   // tuck into dark band: seats fills under outlines + closes seams. Env-tunable STICHAI_TUCK_ITERS.
+    for(let it=0;it<3;it++){
       const prev=c2.slice();
       for(let i=W;i<W*H-W;i++){
         if(prev[i]||!tuckZone[i])continue;
@@ -550,8 +496,8 @@ async function buildMaskPNG(sharp, pixMap, ci, W, H, tuckZone) {
 }
 
 // ── Hard stitch-length cap ────────────────────────────────────────────────────
-function hardCap(stitches, maxStitch, trimGap, minStitch) {
-  const TRAVEL_CUT = Math.min(trimGap, 100);   // bridge fill-internal gaps ≤10mm.
+function hardCap(stitches, maxStitch, trimGap) {
+  const TRAVEL_CUT = Math.min(trimGap, 80);   // aligned with 8mm travelCut   
   const out=[]; let prev=null;
   for(const s of stitches){
     if(prev && s.type!=="trim"){
@@ -562,7 +508,7 @@ function hardCap(stitches, maxStitch, trimGap, minStitch) {
       } else if(d>maxStitch && s.type!=="satin"){
         const n=Math.ceil(d/maxStitch);
         for(let k=1;k<n;k++) out.push({x:prev.x+(s.x-prev.x)*k/n,y:prev.y+(s.y-prev.y)*k/n,color:s.color,type:s.type});
-      } else if(d<minStitch && s.type!=="satin"){ continue; }
+      } else if(d<3 && s.type==="fill"){ continue; }
     }
     out.push(s); prev=s;
   }
@@ -573,14 +519,11 @@ function hardCap(stitches, maxStitch, trimGap, minStitch) {
 async function vectorizeToDST(cleanedBuffer, colors, canvasSize, pxPerMm, params={}) {
   const sharp=require("sharp");
   const P=params;
-  const pRow     = Math.max(3, Math.round((P.tatamiRow??3)));
-  const maxStitch= Math.round((P.maxStitchMm ?? 2.5) * pxPerMm);   // density: 3.8->2.5mm (in-rule fill stitch len 2.5-3.0mm, near pro median 2.1); tunable via params.maxStitchMm
-  const minStitch= Math.round((P.minStitchMm ?? 1.0) * pxPerMm);   // rule: min 1.0-1.5mm safe; removes sub-1mm interior fill fragments. tunable via params.minStitchMm
+  const pRow     = 3 /* 0.3mm vector fill: decoupled from v72 tatamiRow (=4 -> was 0.4mm) */;
+  const maxStitch= Math.round(3.8 * pxPerMm);   
   const stepPx   = Math.max(8, Math.round(1.8*pxPerMm));
-  const trimGap  = 8*pxPerMm;
-  const travelCut= 10*pxPerMm;   // 12mm bridge caused inter-row running stitches to span
-                                 // across polygon edges -> stray threads outside the contour.
-                                 // 10mm = best safe value.
+  const trimGap  = 7*pxPerMm;
+  const travelCut= 8*pxPerMm;   // bridge gaps <=8mm with travel stitches (was 4mm -> too many trims)   
   const pullComp = Math.max(1,Math.round(0.2*pxPerMm)); 
   const MIN_AREA = 1.5*pxPerMm*pxPerMm;
   const MIN_SUBPATH = 1.5*pxPerMm*pxPerMm;
@@ -671,7 +614,7 @@ async function vectorizeToDST(cleanedBuffer, colors, canvasSize, pxPerMm, params
   }
 
   const tuckZone=(()=>{
-    const T=parseInt(process.env.STICHAI_TUCK_T||"3");  // dark-band radius. Env-tunable.
+    const T=3;
     const a=new Uint8Array(W*H);
     for(let i=0;i<W*H;i++) a[i]=(pixMap[i]===darkCi)?1:0;
     const b=new Uint8Array(W*H);
@@ -704,11 +647,7 @@ async function vectorizeToDST(cleanedBuffer, colors, canvasSize, pxPerMm, params
     if(isMagenta(colors[ci])) continue;
     const pngBuf=await buildMaskPNG(sharp,pixMap,ci,W,H, ci===darkCi?null:tuckZone);
     let svg;
-    // Detail preservation: dark/outline colour carries the eyes/mouth/brows, which
-    // are small. Use a lower potrace speckle threshold there so they survive; keep
-    // the normal threshold on fills so we don't add noise/fragments. Tunable.
-    const _td = (ci===darkCi) ? Math.round(MIN_AREA*(P.darkFeatureFrac ?? (process.env.STICHAI_DARK_FEAT_FRAC ? parseFloat(process.env.STICHAI_DARK_FEAT_FRAC) : 0.6))) : Math.round(MIN_AREA);
-    try{ svg=await traceMask(pngBuf,{turdSize:_td}); }
+    try{ svg=await traceMask(pngBuf,{turdSize:Math.round(MIN_AREA)}); }
     catch(e){ console.warn(`[vec] ci=${ci} potrace fail: ${e.message}`); continue; }
     const groups=parseSVGPathGroups(svg);
     const subpaths=groups.reduce((s,g)=>s+g.length,0);
@@ -717,23 +656,13 @@ async function vectorizeToDST(cleanedBuffer, colors, canvasSize, pxPerMm, params
     const head=pi>=0?svg.slice(pi,pi+100):svg.slice(0,100);
     console.log(`[vec] ci=${ci} ${colors[ci]} svgLen=${svg.length} pathTags=${pathTags} groups=${groups.length} subpaths=${subpaths} head=${JSON.stringify(head)}`);
     if(!groups.length) continue;
-    const _minSub = (ci===darkCi) ? MIN_SUBPATH*(P.darkFeatureFrac ?? (process.env.STICHAI_DARK_FEAT_FRAC ? parseFloat(process.env.STICHAI_DARK_FEAT_FRAC) : 0.6)) : MIN_SUBPATH;
-    const filtered=groups.map(g=>filterSubpaths(g,_minSub)).filter(g=>g.length);
+    const filtered=groups.map(g=>filterSubpaths(g,MIN_SUBPATH)).filter(g=>g.length);
     const keptSub=filtered.reduce((s,g)=>s+g.length,0);
     if(keptSub<subpaths) console.log(`[vec] ci=${ci} dropped ${subpaths-keptSub} tiny subpaths (kept ${keptSub})`);
     if(!filtered.length) continue;
     const units=filtered.flatMap(g=>groupByContainment(g));
     console.log(`[vec] ci=${ci} units=${units.length} (containment-grouped)`);
     const areaPx=units.reduce((s,g)=>s+g[0].length,0);
-    // Drop speck color regions: anything smaller than 0.04% of canvas area
-    // (~256px² at 800x800) is too small to stitch clearly and shows up as
-    // a floating dot. Skip the dark-feature bucket in this check (eyelashes /
-    // eyebrows are intentional but small).
-    const speckThreshold = Math.max(200, Math.round(W * H * 0.0004));
-    if (ci !== darkCi && areaPx < speckThreshold) {
-      console.log(`[vec] ci=${ci} dropped as speck (areaPx=${areaPx} < ${speckThreshold})`);
-      continue;
-    }
     colorRegions.push({ci,color:colors[ci],groups:units,areaPx});
   }
 
@@ -764,7 +693,6 @@ async function vectorizeToDST(cleanedBuffer, colors, canvasSize, pxPerMm, params
     if(isDark){
       // Order outline units nearest-neighbor by centroid so inter-unit travel
       // stays short (<=travelCut -> running stitch instead of a trim/jump).
-      // Reduces the jump count driven by potrace's arbitrary subpath order.
       let _og = groups;
       if (groups.length > 2) {
         const cents = groups.map(g => centroid(g[0]));
@@ -846,43 +774,12 @@ async function vectorizeToDST(cleanedBuffer, colors, canvasSize, pxPerMm, params
         const ul=edgeWalkUnderlay(group,color,stepPx,trimGap);
         if(ul.length){ travelTo(ul[0].x,ul[0].y,color); emitAll(ul); }
 
-        // Layered zigzag underlay (rule: 2-3mm foundation, perpendicular to fill).
-        if(USE_FILL_UNDERLAY && aMm2 >= (P.underlayMinAreaMm2 ?? 20)){
-          const ulZig = zigzagUnderlay(
-            group, color, centroid(outer), colorPhi,
-            Math.max(15, Math.round((P.underlaySpacingMm ?? 2.5) * pxPerMm)),  // 2.5mm rows
-            Math.max(20, Math.round((P.underlayStitchMm ?? 4.0) * pxPerMm)),   // 4mm underlay stitch
-            Math.max(3, Math.round(0.5 * pxPerMm)),                            // 0.5mm inset
-            travelCut);
-          if(ulZig.length){ travelTo(ulZig[0].x,ulZig[0].y,color); emitAll(ulZig); }
-        }
-
         const c0=centroid(outer);
         const phi=colorPhi;
         const ca=Math.cos(phi),sa=Math.sin(phi);
-
-        // ── Directional fill (flow-following) ─────────────────────────────
-        // Try the curvature-guided fill first when enabled. It produces rows
-        // that follow the form (hand-digitizer style) on non-folding regions.
-        // If it declines (folded shape) or under-produces, fall back to the
-        // proven scanline below — so output is never worse than before.
-        let dirOK=false;
-        if(USE_DIRECTIONAL_FILL){
-          try{
-            const dstitches=directionalFill(group,color,pxPerMm,pRow/pxPerMm,maxStitch);
-            // sanity: coverage proportional to area (guards against sparse/failed fills)
-            const expect=polyArea(outer)/(pRow*Math.max(2,0.7*pxPerMm));
-            if(dstitches.length >= Math.max(8, expect*0.45)){
-              travelTo(dstitches[0].x,dstitches[0].y,color);
-              emitAll(dstitches);
-              dirOK=true;
-            }
-          }catch(e){ /* fall back to scanline */ }
-        }
-
         const rot=group.map(poly=>poly.map(([px,py])=>{const dx=px-c0[0],dy=py-c0[1];return[c0[0]+dx*ca-dy*sa,c0[1]+dx*sa+dy*ca];}));
 
-        const runs=dirOK?[]:scanlineRuns(rot,pRow,pullComp);
+        const runs=scanlineRuns(rot,pRow,pullComp);
         if(runs.length){
           const secs=sectionRuns(runs,pRow);
           const starts=secs.map(s2=>{const r0=s2[0];const dx=r0.x0-c0[0],dy=r0.y-c0[1];return[c0[0]+dx*ca+dy*sa,c0[1]-dx*sa+dy*ca];});
@@ -907,68 +804,14 @@ async function vectorizeToDST(cleanedBuffer, colors, canvasSize, pxPerMm, params
         const finish=boundaryWalk([outer],color,stepPx,trimGap,0);
         if(finish.length){ travelTo(finish[0].x,finish[0].y,color); emitAll(finish); }
 
-        // Perimeter satin pass: re-trace silhouette at dense step (0.15mm, was 0.2mm)
-        // to smooth stair-step artifacts from clipped fill rows crossing curved
-        // face contours. Tighter step = higher stitch density along silhouette.
-        if (USE_PERIM_PASS && aMm2 >= 25) {
-          const perim = boundaryWalk([outer], color, Math.max(2, Math.round(0.15 * pxPerMm)), trimGap, 0);
-          if (perim.length) { travelTo(perim[0].x, perim[0].y, color); emitAll(perim); }
-        }
-
-        // ── Tatami (cross-direction) fill — second pass perpendicular to primary ──
-        // Only on regions bigger than `tatamiMinAreaMm2` (default 80mm² ≈ large
-        // blocks like faces, dress). Smaller regions stay single-direction so
-        // eyes/lips/hair strands keep their detail.
-        if (USE_TATAMI_FILL && aMm2 >= (P.tatamiMinAreaMm2 ?? 80)) {
-          const phi2 = colorPhi + Math.PI / 2;
-          const ca2 = Math.cos(phi2), sa2 = Math.sin(phi2);
-          const rot2 = group.map(poly => poly.map(([px, py]) => {
-            const dx = px - c0[0], dy = py - c0[1];
-            return [c0[0] + dx * ca2 - dy * sa2, c0[1] + dx * sa2 + dy * ca2];
-          }));
-          const runs2 = scanlineRuns(rot2, pRow, pullComp);
-          if (runs2.length) {
-            const secs2 = sectionRuns(runs2, pRow);
-            const starts2 = secs2.map(s2 => {
-              const r0 = s2[0];
-              const dx = r0.x0 - c0[0], dy = r0.y - c0[1];
-              return [c0[0] + dx * ca2 + dy * sa2, c0[1] - dx * sa2 + dy * ca2];
-            });
-            const u2b = new Array(secs2.length).fill(false);
-            let sp2 = _last ? [_last.x, _last.y] : c0;
-            for (let q = 0; q < secs2.length; q++) {
-              let bj = -1, bD = Infinity;
-              for (let j = 0; j < secs2.length; j++) {
-                if (u2b[j]) continue;
-                const d = (starts2[j][0] - sp2[0]) ** 2 + (starts2[j][1] - sp2[1]) ** 2;
-                if (d < bD) { bD = d; bj = j; }
-              }
-              if (bj < 0) break; u2b[bj] = true;
-              const fs2 = runsToStitches(secs2[bj], color, maxStitch, travelCut);
-              for (const s of fs2) {
-                const dx = s.x - c0[0], dy = s.y - c0[1];
-                s.x = c0[0] + dx * ca2 + dy * sa2;
-                s.y = c0[1] - dx * sa2 + dy * ca2;
-              }
-              if (fs2.length) {
-                travelTo(fs2[0].x, fs2[0].y, color);
-                emitAll(fs2);
-                sp2 = _last ? [_last.x, _last.y] : starts2[bj];
-              }
-            }
-          }
-        }
-
         curPos=_last?[_last.x,_last.y]:centroid(outer);
       }
     }
   }
 
-  function addLocks(sts,minStitch){
+  function addLocks(sts){
     const out=[];
-    const lockStep=Math.max(3,minStitch);
-    // Single perpendicular lock stitch — always ≥ minStitch from anchor and from next stitch
-    const lock=(x,y,color)=>{out.push({x:x,y:y+lockStep,color,type:"running"});};
+    const lock=(x,y,color)=>{out.push({x:x+3,y:y,color,type:"running"},{x:x-3,y:y+3,color,type:"running"},{x:x,y:y,color,type:"running"});};
     for(let i=0;i<sts.length;i++){
       const s=sts[i], prev=sts[i-1], next=sts[i+1];
       const cStart = (i===0 || (prev && prev.color!==s.color)) && s.type!=="trim";
@@ -979,7 +822,7 @@ async function vectorizeToDST(cleanedBuffer, colors, canvasSize, pxPerMm, params
     }
     return out;
   }
-  const capped=addLocks(hardCap(allStitches,maxStitch,trimGap,minStitch),minStitch);
+  const capped=addLocks(hardCap(allStitches,maxStitch,trimGap));
   const jc=capped.filter(s=>s.type==="trim"||s.type==="jump").length;
   console.log(`[vectorize] stitches=${capped.length} jumps=${jc} (${(100*jc/Math.max(1,capped.length)).toFixed(1)}%)`);
   const colorCounts=colors.map(()=>({count:0,type:"fill"}));
@@ -987,4 +830,4 @@ async function vectorizeToDST(cleanedBuffer, colors, canvasSize, pxPerMm, params
   return {stitches:capped,colorCounts};
 }
 
-module.exports = { vectorizeToDST, parseSVGPathGroups, scanlineRuns, zigzagUnderlay };
+module.exports = { vectorizeToDST, parseSVGPathGroups, scanlineRuns };
