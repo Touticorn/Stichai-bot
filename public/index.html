@@ -1416,7 +1416,7 @@ function renderColorItem(i){
   if(st==='pending')el.classList.add('on','pending');
   if(st.indexOf('merged:')===0)el.classList.add('merged');
   if(locked)el.classList.add('locked');
-  syncShapesForColor(dd.colors[i], st==='on'||st==='pending');
+  syncShapesForColor(dd.colors[i], st==='on');
   var dot=el.querySelector('.c-merge-dot');
   if(dot){
     if(st.indexOf('merged:')===0){
