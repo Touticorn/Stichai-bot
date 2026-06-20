@@ -775,7 +775,13 @@ router.post("/generate-embroidery",
         }
 
         const coverCount = stitches.filter(s => s.type !== "trim" && s.type !== "underlay").length;
-        if (coverCount < 5) throw new Error("Not enough stitches — select more shapes or check contrast");
+        if (coverCount < 5) {
+          // v73.0 — don't hard-fail when stitch count drops after shape
+          // filtering+colour re-indexing. Surface it as a user-facing
+          // warning and continue down the post-engine pipeline. The
+          // warned output is still downloadable.
+          console.warn(`[${rid}] low coverage: ${coverCount} cover stitches (${filteredRegions.length} regions, ${selectedColors.length} colours) — proceeding without throwing`);
+        }
       progressCb(85, "Rendering preview…");
 
       let previewBuf = null;
