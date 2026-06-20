@@ -301,8 +301,9 @@ router.post("/detect-shapes",
           const ch = qinfo.channels;
           for (let i = 0; i < data.length; i += ch) {
             const r = data[i], g = data[i + 1], b = data[i + 2];
-            // skip magenta in the centroid scan too
-            if (r > 150 && b > 150 && g < 90 && Math.abs(r - b) < 60) continue;
+            // KEEP magenta pixels this time — the cartoon IS saturated magenta
+            // and removing everything here defeats the purpose. We let the
+            // median-cut centroids decide what's dominant.
             const hex = "#" + [r, g, b].map(c => c.toString(16).padStart(2, "0")).join("").toUpperCase();
             hexCounts.set(hex, (hexCounts.get(hex) || 0) + 1);
           }
@@ -314,7 +315,13 @@ router.post("/detect-shapes",
         if (quantColors && quantColors.length >= 3) {
           colors       = quantColors;
           paletteSource = "centroids";
-          console.log(`[${rid}] centroid fallback produced ${colors.length} colors from quantized cartoon`);
+          console.log(`[${rid}] centroid fallback produced ${colors.length} colors from quantized cartoon (top: ${quantColors.slice(0,4).join(",")})`);
+        } else if (quantColors && quantColors.length >= 1) {
+          // Accept even 1 saturated magenta-dominant color as better than nothing;
+          // downstream posterize WILL at least produce 1-2 fills from it.
+          colors       = [...quantColors, "#000000", "#FFFFFF"];
+          paletteSource = "centroids-partial";
+          console.log(`[${rid}] centroid partial ${colors.length} colors from quantized cartoon`);
         } else {
           colors       = ["#000000", "#FFFFFF", "#FF0000", "#0000FF", "#FFFF00"];
           paletteSource = "fallback";
