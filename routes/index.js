@@ -664,7 +664,7 @@ router.post("/generate-embroidery",
       // produced fan/starburst artefacts on cartoon subjects.
       const useV70ForCartoon = (mode === "cartoon");
       _engineStage = "route-pick";
-      if (process.env.STICHAI_DEBUG === "1") console.log(`[${rid}] engine route: photo+useV71=${mode === "photo" && useV71} cartoon=${useV70ForCartoon} vec-pipe=${!!cleanedBuffer} regions=${filteredRegions.length} colors=${selectedColors.length}`);
+      console.log(`[${rid}] engine route: photo+useV71=${mode === "photo" && useV71} cartoon=${useV70ForCartoon} vec-pipe=${!!cleanedBuffer} regions=${filteredRegions.length} colors=${selectedColors.length}`);
       if (mode === "photo" && useV71) {
         const filtPm = buildFilteredPixMap(filteredRegions, selectedColors, canvasSize, pixMap, colors);
         const result = v71_generatePhotoStitch(filtPm, selectedColors, canvasSize, params);
