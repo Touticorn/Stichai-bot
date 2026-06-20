@@ -63,6 +63,49 @@ const MAX_CANVAS_SIZE = 2400;
    So we simply drop any region whose colour is very close to pure white.
    No geometry checks, no edge-counting, no fillRatio — just colour.
    This eliminates the entire class of "gown vs backdrop" heuristic bugs. */
+function spreadPalette(colors, targetCount) {
+  if (!Array.isArray(colors) || colors.length === 0) return colors;
+  if (!Array.isArray(colors) || colors.length >= targetCount) return colors;
+  const out = [colors[0]];
+  const minDE = 25; // dE76 threshold for "visually distinct"
+  for (let i = 1; i < colors.length; i++) {
+    const c = colors[i];
+    const lab = rgbToLab(hexToRgb(c));
+    let tooClose = false;
+    for (const o of out) {
+      const d = dE(lab, rgbToLab(hexToRgb(o)));
+      if (d < minDE) { tooClose = true; break; }
+    }
+    if (tooClose) continue;
+    out.push(c);
+    if (out.length >= targetCount) break;
+  }
+  if (out.length < targetCount) {
+    // Pad with darker/lighter/hue-rotated variants of the dominant
+    const dom = colors[0];
+    const m = /^#([0-9A-F]{2})([0-9A-F]{2})([0-9A-F]{2})$/i.exec(dom);
+    const baseR = m ? parseInt(m[1], 16) : 255;
+    const baseG = m ? parseInt(m[2], 16) : 0;
+    const baseB = m ? parseInt(m[3], 16) : 255;
+    const variants = [
+      [0, 0, 0],
+      [255, 255, 255],
+      [Math.round(baseR*0.7), Math.round(baseG*0.7), Math.round(baseB*0.7)],
+      [Math.round(baseR*0.85), Math.round(baseG*0.85), Math.round(baseB*0.85)],
+      [Math.min(255, Math.round(baseR*1.15)), Math.min(255, Math.round(baseG*1.15)), Math.min(255, Math.round(baseB*1.15))],
+      [Math.min(255, Math.round(baseR*1.3)), Math.min(255, Math.round(baseG*1.3)), Math.min(255, Math.round(baseB*1.3))],
+      [Math.min(255, baseR+30), Math.max(0, baseG-30), Math.max(0, baseB-30)],
+      [Math.max(0, baseR-30), Math.min(255, baseG+30), Math.max(0, baseB-30)],
+    ];
+    for (const [rr, gg, bb] of variants) {
+      if (out.length >= targetCount) break;
+      const hex = "#" + [rr,gg,bb].map(c => c.toString(16).padStart(2, "0")).join("").toUpperCase();
+      if (!out.includes(hex)) out.push(hex);
+    }
+  }
+  return out.slice(0, targetCount);
+}
+
 function dropBackgroundRegions(regions, canvasSize, dropWhite) {
   if (!Array.isArray(regions) || !regions.length) return regions;
   const dominated = regions.filter(r => {
@@ -206,8 +249,9 @@ router.post("/detect-shapes",
           // the regenerator output to a fixed number of flat blocks.
           try {
             const { quantizeBuffer } = require("../lib/quantize");
-            cartoon.buffer = await quantizeBuffer(cartoon.buffer, colorCount + 1);
-            console.log(`[${rid}] Cartoon quantized to ${colorCount + 1} colors`);
+            const qq = await quantizeBuffer(cartoon.buffer, colorCount + 1);
+            cartoon.buffer = qq.buffer;
+            console.log(`[${rid}] Cartoon quantized to ${colorCount + 1} colors (${qq.centroids.length} centroids)`);
           } catch (e) { console.warn(`[${rid}] cartoon quantize skipped:`, e.message); }
 
           // Tier-1: strip magenta letterbox bars before the cartoon hits
@@ -289,50 +333,76 @@ router.post("/detect-shapes",
         let qbForOverride = null;
         try {
           const { quantizeBuffer } = require("../lib/quantize");
-          // sample centroids by running quantize again on the *cartoon* buffer
+          // sample centroids by running quantize on the *cartoon* buffer
           // (post-letterbox + post-quantize). The cartoon path stores it in _lastCartoonBuf.
-          const qb = await quantizeBuffer(
+          // Use centroids directly so N cluster heads are always represented,
+          // even if pixel-walk would have missed small clusters.
+          const qq = await quantizeBuffer(
             (typeof _lastCartoonBuf !== "undefined" && _lastCartoonBuf) || sourceBuffer,
             colorCount + 1
           );
-          qbForOverride = qb;
-          const qRaw = await require("sharp")(qb).raw().toBuffer({ resolveWithObject: true });
-          // Walk pixels, count up to N hex codes by frequency
+          qbForOverride = qq.buffer;
+          const centerHexes = (qq.centroids || []).map(([r,g,b]) =>
+            "#" + [r,g,b].map(c => c.toString(16).padStart(2,"0")).join("").toUpperCase()
+          );
+          // Order by pixel frequency descending so most common becomes colors[0].
+          const qRaw = await require("sharp")(qq.buffer).raw().toBuffer({ resolveWithObject: true });
           const hexCounts = new Map();
           const { data, info: qinfo } = qRaw;
           const ch = qinfo.channels;
           for (let i = 0; i < data.length; i += ch) {
             const r = data[i], g = data[i + 1], b = data[i + 2];
-            // KEEP magenta pixels this time — the cartoon IS saturated magenta
-            // and removing everything here defeats the purpose. We let the
-            // median-cut centroids decide what's dominant.
             const hex = "#" + [r, g, b].map(c => c.toString(16).padStart(2, "0")).join("").toUpperCase();
             hexCounts.set(hex, (hexCounts.get(hex) || 0) + 1);
           }
-          const sorted = [...hexCounts.entries()].sort((a, b) => b[1] - a[1]);
-          quantColors = sorted.slice(0, colorCount).map(([h]) => h);
+          centerHexes.sort((a, b) => (hexCounts.get(b) || 0) - (hexCounts.get(a) || 0));
+          quantColors = centerHexes.slice(0, colorCount);
         } catch (e) {
           console.warn(`[${rid}] centroid fallback failed:`, e.message);
         }
         if (quantColors && quantColors.length >= 3) {
-          colors       = quantColors;
+          // Hue-spread: if all N centroids cluster too tightly (median-cut
+          // snapped subtle RGB variants of the same hue), each pixel-mapped
+          // region would similarly snap to one color, yielding "N shapes
+          // with 1 color". Force a minimum dE between adjacent palette
+          // entries by adding light/dark/hue-rotated siblings.
+          const spread = spreadPalette(quantColors, colorCount);
+          colors       = spread;
           paletteSource = "centroids";
-          // ALSO override cleanedBuffer with the 9-color quantized cartoon (qb)
-          // so buildPixelMap runs against ACTUAL color variation, not the
-          // 5-level posterize that collapses everything to magenta. Without
-          // this, child regions are unrecoverable because pixelMap is uniform.
           if (qbForOverride) {
             cleanedBuffer = qbForOverride;
-            console.log(`[${rid}] centroid fallback overriding cleanedBuffer with 9-color quantized cartoon`);
+            console.log(`[${rid}] centroid fallback overriding cleanedBuffer with ${colorCount + 1}-color quantized cartoon`);
           }
-          console.log(`[${rid}] centroid fallback produced ${colors.length} colors from quantized cartoon (top: ${quantColors.slice(0,4).join(",")})`);
+          console.log(`[${rid}] centroid fallback produced ${colors.length} colors from quantized cartoon (top: ${colors.slice(0,4).join(",")})`);
         } else if (quantColors && quantColors.length >= 1) {
-          // Accept even 1 saturated magenta-dominant color as better than nothing;
-          // downstream posterize WILL at least produce 1-2 fills from it.
-          colors       = [...quantColors, "#000000", "#FFFFFF"];
+          // Accept even 1 saturated magenta-dominant color: pad to colorCount
+          // by darker/lighter variants so downstream regions per-region
+          // detection has real color variation (prevents "N shapes with 1 color").
+          const dom = quantColors[0];
+          const m = /^#([0-9A-F]{2})([0-9A-F]{2})([0-9A-F]{2})$/i.exec(dom);
+          const baseR = m ? parseInt(m[1], 16) : 255;
+          const baseG = m ? parseInt(m[2], 16) : 0;
+          const baseB = m ? parseInt(m[3], 16) : 255;
+          const padded = [...quantColors];
+          const variants = [
+            [0,    0,    0   ],       // pure black
+            [255,  255,  255 ],       // pure white
+            [Math.round(baseR*0.7), Math.round(baseG*0.7), Math.round(baseB*0.7)], // 70% darker
+            [Math.round(baseR*0.85),Math.round(baseG*0.85),Math.round(baseB*0.85)],// 85% darker
+            [Math.min(255, Math.round(baseR*1.15)), Math.min(255, Math.round(baseG*1.15)), Math.min(255, Math.round(baseB*1.15))], // 115% lighter
+            [Math.min(255, Math.round(baseR*1.3)),  Math.min(255, Math.round(baseG*1.3)),  Math.min(255, Math.round(baseB*1.3))], // 130% lighter
+            [Math.min(255, baseR+30), Math.max(0, baseG-30), Math.max(0, baseB-30)], // shifted toward red
+            [Math.max(0, baseR-30), Math.min(255, baseG+30), Math.max(0, baseB-30)], // shifted toward green
+          ];
+          for (const [rr, gg, bb] of variants) {
+            if (padded.length >= colorCount) break;
+            const hex = "#" + [rr,gg,bb].map(c=>c.toString(16).padStart(2,"0")).join("").toUpperCase();
+            if (!padded.includes(hex)) padded.push(hex);
+          }
+          colors       = padded.slice(0, colorCount);
           paletteSource = "centroids-partial";
           if (qbForOverride) cleanedBuffer = qbForOverride;
-          console.log(`[${rid}] centroid partial ${colors.length} colors from quantized cartoon`);
+          console.log(`[${rid}] centroid partial: ${quantColors.length} unique, padded to ${colors.length} (top: ${quantColors.slice(0,2).join(",")})`);
         } else {
           colors       = ["#000000", "#FFFFFF", "#FF0000", "#0000FF", "#FFFF00"];
           paletteSource = "fallback";
