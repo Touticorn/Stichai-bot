@@ -123,20 +123,13 @@ def render(dst_path, out_png, ppmm=12):
 
 
 def score(png_path, target_colors=7):
-    r = subprocess.run(["python3", "tools/render_score.py", png_path, "--target", str(target_colors)],
-                       capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(__file__)))
-    print(r.stdout.strip())
-    if r.returncode != 0:
-        print(r.stderr.strip())
-    scores = {}
-    for line in (r.stdout or "").splitlines():
-        if ":" in line:
-            k, v = line.split(":", 1)
-            k = k.strip()
-            try:
-                scores[k] = float(v.strip())
-            except ValueError:
-                scores[k] = v.strip()
+    import re
+    from render_score import score_render
+    scores = score_render(png_path, target_colors)
+    print(f"Render score: {scores['file']}")
+    for k in ['vertical_bar','fragmentation','halo_strands','color_count','edge_density']:
+        print(f"  {k:15s} {scores[k]:.3f}")
+    print(f"  TOTAL:         {scores['total']:.3f} (lower=better)")
     return scores
 
 
@@ -198,10 +191,10 @@ def remote_sweep(input_path, sweep, work_dir, canvas_mm=160, target_colors=7):
         render(dst_path, png_path)
         scores = score(png_path, target_colors)
         results.append({"tune": tune, "scores": scores, "dst": dst_path, "png": png_path})
-    results.sort(key=lambda r: r["scores"].get("TOTAL", 1.0))
+    results.sort(key=lambda r: r["scores"].get("total", 1.0))
     print("\n=== Best tunes ===")
     for r in results[:5]:
-        print(f"  {r['scores']['TOTAL']:.3f}  {r['tune']}")
+        print(f"  {r['scores']['total']:.3f}  {r['tune']}")
     return results
 
 

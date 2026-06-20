@@ -511,8 +511,10 @@ router.post("/generate-embroidery",
       const params   = getStitchParams(specs, canvasSize);
       // Autotune: accept tune={} JSON body to override vector pipeline parameters
       if (body.tune) {
-        try { params.tune = typeof body.tune === 'string' ? JSON.parse(body.tune) : body.tune; }
-        catch (e) { console.warn(`[${rid}] invalid tune JSON:`, e.message); }
+        try {
+          params.tune = typeof body.tune === 'string' ? JSON.parse(body.tune) : body.tune;
+          console.log(`[${rid}] AUTOTUNE_TUNE:`, JSON.stringify(params.tune));
+        } catch (e) { console.warn(`[${rid}] invalid tune JSON:`, e.message); }
       }
       progressCb(5, "Preparing image…");
 
