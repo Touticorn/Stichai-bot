@@ -169,32 +169,38 @@ def evaluate_pngs(png_dir, target_colors=7, pattern="*_viewer.png"):
 def remote_sweep(input_path, sweep, work_dir, canvas_mm=160, target_colors=7):
     os.makedirs(work_dir, exist_ok=True)
     grid = make_grid(sweep)
-    print(f"Running remote sweep with {len(grid)} tune configs")
+    print(f"Running remote sweep with {len(grid)} tune configs", flush=True)
     results = []
     for i, tune in enumerate(grid):
         job_id = f"autotune_{i}_{os.urandom(4).hex()}"
-        print(f"\n[{i+1}/{len(grid)}] tune={tune}")
+        print(f"\n[{i+1}/{len(grid)}] tune={tune}", flush=True)
         r = generate(job_id, input_path, tune=tune, canvas_mm=canvas_mm)
         api_id = r.get("id")
         if not api_id:
-            print(f"  FAILED: {r}")
+            print(f"  FAILED: {r}", flush=True)
             continue
         dst_path = os.path.join(work_dir, f"{api_id}.dst")
         png_path = os.path.join(work_dir, f"{api_id}.png")
+        meta_path = os.path.join(work_dir, f"{api_id}.json")
         d = poll_by_id(api_id)
         if d.get("status") != "done":
-            print(f"  job failed: {d}")
+            print(f"  job failed: {d}", flush=True)
             continue
         if not download_raw(api_id, dst_path):
-            print(f"  download failed")
+            print(f"  download failed", flush=True)
             continue
         render(dst_path, png_path)
         scores = score(png_path, target_colors)
-        results.append({"tune": tune, "scores": scores, "dst": dst_path, "png": png_path})
+        with open(meta_path, "w") as f:
+            json.dump({"tune": tune, "scores": scores, "api_id": api_id, "job_id": job_id}, f, indent=2)
+        results.append({"tune": tune, "scores": scores, "dst": dst_path, "png": png_path, "meta": meta_path})
+        print(f"  -> {meta_path}", flush=True)
     results.sort(key=lambda r: r["scores"].get("total", 1.0))
-    print("\n=== Best tunes ===")
+    print("\n=== Best tunes ===", flush=True)
     for r in results[:5]:
-        print(f"  {r['scores']['total']:.3f}  {r['tune']}")
+        print(f"  {r['scores']['total']:.3f}  {r['tune']}", flush=True)
+    with open(os.path.join(work_dir, "results.json"), "w") as f:
+        json.dump([{"tune": r["tune"], "scores": r["scores"], "api_id": os.path.basename(r["dst"]).replace(".dst", "")} for r in results], f, indent=2)
     return results
 
 
