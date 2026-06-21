@@ -82,6 +82,7 @@ app.get("/health", (_, res) =>
     version: "73.0",
     queue:   jobs.jobQueue.length,
     running: jobs.runningJobs,
+    commit:  process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || "unknown",
   })
 );
 
