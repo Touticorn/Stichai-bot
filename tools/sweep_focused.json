@@ -1,7 +1,6 @@
 {
-  "bridgeMaxGap": [0, 4, 8, 16],
-  "absorbMinArea": [100, 250, 500, 1000],
-  "absorbMaxArea": [10000, 20000],
-  "absorbPerimRatio": [2.0, 4.0, 8.0],
-  "autoZoomMargin": [0.0, 0.005, 0.01, 0.02]
+  "v72MinArea": [1.5, 2.0, 2.5, 3.0],
+  "v70MinArea": [1.5, 2.0, 2.5, 3.0],
+  "v72FragPx": [1.0, 1.5, 2.0, 2.5],
+  "autoZoomMargin": [0.005, 0.01, 0.02]
 }

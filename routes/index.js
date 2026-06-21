@@ -741,13 +741,15 @@ router.post("/generate-embroidery",
         } else {
           result = v72_buildAndGenerate(filtPm, selectedColors, canvasSize, 10, params);
         }
-        if (result.stitches && result.stitches.filter(s => s.type === "fill").length > 200) {
+        const fillCount = result.stitches ? result.stitches.filter(s => s.type === "fill").length : 0;
+        const totalCount  = result.stitches ? result.stitches.length : 0;
+        if (fillCount > 200 || totalCount > 1500) {
           stitches    = result.stitches;
           colorCounts = result.colorCounts;
-          console.log(`[${rid}] used vector engine (potrace)`);
+          console.log(`[${rid}] used vector engine (potrace): fill=${fillCount} total=${totalCount}`);
         } else {
           // Fallback to v70 if v72 somehow under-produced
-          const v70Shapes = v70_buildShapes(filtPm, selectedColors, canvasSize, 10);
+          const v70Shapes = v70_buildShapes(filtPm, selectedColors, canvasSize, 10, params);
           if (v70Shapes.length > 0) {
             const r70 = v70_generateStitches(v70Shapes, selectedColors, params, canvasSize);
             stitches    = r70.stitches;
