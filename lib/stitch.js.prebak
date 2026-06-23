@@ -748,7 +748,7 @@ function v70_buildShapes(pixMap, colors, canvasSize, pxPerMm, params) {
      Fragmentation (80-120 regions) is handled by colour-grouped NN ordering
      in v70_generateStitches, NOT by merging (which makes masks sparse and
      kills fill density). */
-  const rawRegions = v70_findRegions((process.env.STICHAI_CLOSE_MASKS!=="0"?v70_closeColorMasks(pixMap,colors,canvasSize):pixMap), canvasSize, canvasSize, minAreaPx);
+  const rawRegions = v70_findRegions(pixMap, canvasSize, canvasSize, minAreaPx);
   console.log(`[v70] Raw regions: ${rawRegions.length} (minArea=${minAreaPx}px)`);
 
   const shapes = [];
@@ -758,7 +758,6 @@ function v70_buildShapes(pixMap, colors, canvasSize, pxPerMm, params) {
     const pca = v70_pca(pts);
     const cls = v70_classify(pts, pca, pxPerMm);
     const m = v70_buildMask(pts);
-    { const _e=(m.offX<=1)+(m.offY<=1)+((m.offX+m.w-1)>=canvasSize-2)+((m.offY+m.h-1)>=canvasSize-2); const _f=(m.w*m.h)/(canvasSize*canvasSize); if(process.env.STICHAI_SKIP_BG!=="0" && _f>0.30 && _e>=2){ continue; } }
     shapes.push({
       ci: reg.ci,
       color: colors[reg.ci],
@@ -924,17 +923,16 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
       while (remaining.length) {
         let bi = 0, bd = Infinity;
         for (let k = 0; k < remaining.length; k++) {
-          const c = remaining[k]._start || _centroid(remaining[k]);
+          const c = _centroid(remaining[k]);
           const d = (c.x - cx) * (c.x - cx) + (c.y - cy) * (c.y - cy);
           if (d < bd) { bd = d; bi = k; }
         }
         const next = remaining.splice(bi, 1)[0];
         ordered.push(next);
-        const c = (next._start || _centroid(next)); cx = c.x; cy = c.y;
+        const c = _centroid(next); cx = c.x; cy = c.y;
       }
       return ordered;
     };
-    for (const sh of group) { if (!sh._start) { const _p = v70_traceOutline(sh.mask, sh.w, sh.h); sh._path = _p; sh._start = _p.length ? { x: _p[0][0] + sh.offX, y: _p[0][1] + sh.offY } : { x: sh.offX + sh.w/2, y: sh.offY + sh.h/2 }; } }
     // Reorder each type-run separately so the fill→satin→run sequence is kept.
     {
       const byType = { fill: [], satin: [], running: [] };
@@ -955,7 +953,7 @@ function v70_generateStitches(shapes, colors, params, canvasSize) {
 
     for (const sh of group) {
       /* Trim if moving far */
-      const path = sh._path || v70_traceOutline(sh.mask, sh.w, sh.h);
+      const path = v70_traceOutline(sh.mask, sh.w, sh.h);
       if (!path.length) continue;
       const startX = path[0][0] + sh.offX, startY = path[0][1] + sh.offY;
       if (Math.hypot(startX - lastX, startY - lastY) > 12 * pxScale) {
@@ -1390,7 +1388,7 @@ function v72_buildAndGenerate(pixMap, colors, canvasSize, pxPerMm, params) {
     for (let i = 0; i < fm.length; i++) if (fm[i] === SENT) fm[i] = -1;
     fillSrc = fm;
   }
-  let regions = v70_findRegions((process.env.STICHAI_CLOSE_MASKS!=="0"?v70_closeColorMasks(fillSrc,colors,canvasSize):fillSrc), canvasSize, canvasSize, minAreaPx);
+  let regions = v70_findRegions(fillSrc, canvasSize, canvasSize, minAreaPx);
   if (!outlineMask) regions = v72_mergeSameColorFragments(regions, Math.max(2, Math.round(0.8 * pxPerMm)));
   console.log(`[v72] regions: ${regions.length}${outlineMask ? " (outline-aware)" : ""}`);
 
@@ -1409,7 +1407,6 @@ function v72_buildAndGenerate(pixMap, colors, canvasSize, pxPerMm, params) {
     const pca = v70_pca(pts);
     const cls = v70_classify(pts, pca, pxPerMm);
     const m = v70_buildMask(pts);
-    { const _e=(m.offX<=1)+(m.offY<=1)+((m.offX+m.w-1)>=canvasSize-2)+((m.offY+m.h-1)>=canvasSize-2); const _f=(m.w*m.h)/(canvasSize*canvasSize); if(process.env.STICHAI_SKIP_BG!=="0" && _f>0.30 && _e>=2){ continue; } }
     shapes.push({
       ci: reg.ci, color: colors[reg.ci], type: cls.type, pca,
       mask: m.mask, w: m.w, h: m.h, offX: m.offX, offY: m.offY,

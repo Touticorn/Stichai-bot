@@ -97,7 +97,6 @@ def render(inp, outp, ppmm=8.0, mode="thread", show_travels=True):
 
     ci, last, lastcmd = 0, None, None
     travels, stitch_count = 0, 0
-    travel_segs = []
 
     for x, y, c in cmds:
         if c == pe.COLOR_CHANGE:
@@ -116,17 +115,13 @@ def render(inp, outp, ppmm=8.0, mode="thread", show_travels=True):
             last = (x, y); lastcmd = c
 
         elif c in (pe.JUMP, pe.TRIM):
-            if last is not None and show_travels:
-                travel_segs.append((P(*last), P(x, y), c))
+            if last is not None and show_travels and mode not in ("viewer", "inf", "embmod"):
+                d.line([P(*last), P(x, y)], fill=(230, 0, 0), width=1)
                 travels += 1
             last = (x, y); lastcmd = c
         else:
             last = (x, y); lastcmd = c
 
-    for _a, _b, _c in travel_segs:
-        d.line([_a, _b], fill=(0, 60, 255), width=2)
-        if _c == pe.TRIM:
-            d.ellipse([_b[0]-3, _b[1]-3, _b[0]+3, _b[1]+3], outline=(230, 0, 0), width=2)
     img.save(outp)
     print(f"rendered {outp}  ({W}x{H}px, {ppmm}px/mm, mode={mode}/{label}, "
           f"thread={thread}px)  blocks={ci+1}  stitches={stitch_count}  travels={travels}")
