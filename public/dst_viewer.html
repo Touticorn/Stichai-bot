@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>DST Viewer — faithful (EVP-style)</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --txt:#e6e9ef; --mut:#8b93a3; --accent:#5a7bff; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--txt);
+    font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  body { display:flex; flex-direction:column; }
+  header { padding:10px 12px; background:var(--panel); border-bottom:1px solid var(--line);
+    display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; }
+  h1 { font-size:14px; font-weight:600; margin:0 6px 0 0; letter-spacing:.2px; }
+  label.file { background:var(--accent); color:#fff; padding:7px 12px; border-radius:8px;
+    font-weight:600; cursor:pointer; white-space:nowrap; }
+  label.file.sec { background:#2a2f3a; }
+  input[type=file]{ display:none; }
+  .toggle { display:flex; align-items:center; gap:5px; color:var(--mut); }
+  .toggle input { accent-color:var(--accent); }
+  #stats { display:flex; flex-wrap:wrap; gap:4px 16px; padding:8px 12px; background:#12141a;
+    border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; color:var(--mut); }
+  #stats b { color:var(--txt); font-weight:600; }
+  #stats .bad b { color:#ff6b6b; }
+  #stats .good b { color:#4ade80; }
+  #wrap { flex:1; position:relative; overflow:hidden; }
+  canvas { display:block; width:100%; height:100%; touch-action:none; }
+  #drop { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:var(--mut); text-align:center; padding:24px; pointer-events:none; }
+  #zoomrow { padding:6px 12px; background:var(--panel); border-top:1px solid var(--line);
+    display:flex; align-items:center; gap:10px; color:var(--mut); }
+  #zoomrow input[type=range]{ flex:1; accent-color:var(--accent); }
+  small { color:var(--mut); }
+</style>
+</head>
+<body>
+<header>
+  <h1>DST Viewer — faithful</h1>
+  <label class="file">Open .dst<input type="file" id="dst" accept=".dst,.DST"></label>
+  <label class="file sec">+ .inf colors<input type="file" id="inf" accept=".inf,.INF"></label>
+  <span class="toggle"><input type="checkbox" id="tShow" checked>travels</span>
+  <span class="toggle"><input type="checkbox" id="tThread">thread mode</span>
+</header>
+<div id="stats"><span><small>no file loaded — pick a .dst</small></span></div>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="drop">Tap “Open .dst”, or drop a file here.<br><small>Renders every stitch as a hairline + travels on top, like EVP. Honest by design.</small></div>
+</div>
+<div id="zoomrow"><small>zoom</small><input type="range" id="zoom" min="1" max="8" step="0.1" value="1"><small id="zlab">1.0×</small></div>
+
+<script>
+// ── Tajima DST decode (matches dst_metrics.py exactly) ──────────────────
+const STITCH=0, JUMP=1, COLORCHG=2, END=3;
+function decodeDST(buf){
+  const b = new Uint8Array(buf);
+  const body = b.length > 512 ? b.subarray(512) : b;
+  let x=0,y=0; const recs=[];
+  for(let i=0;i+3<=body.length;i+=3){
+    const b0=body[i], b1=body[i+1], b2=body[i+2];
+    if(b2===0xF3) break;
+    let dx=0,dy=0;
+    if(b0&0x01)dx+=1; if(b0&0x02)dx-=1; if(b0&0x04)dx+=9; if(b0&0x08)dx-=9;
+    if(b1&0x01)dx+=3; if(b1&0x02)dx-=3; if(b1&0x04)dx+=27; if(b1&0x08)dx-=27;
+    if(b2&0x04)dx+=81; if(b2&0x08)dx-=81;
+    if(b0&0x80)dy+=1; if(b0&0x40)dy-=1; if(b0&0x20)dy+=9; if(b0&0x10)dy-=9;
+    if(b1&0x80)dy+=3; if(b1&0x40)dy-=3; if(b1&0x20)dy+=27; if(b1&0x10)dy-=27;
+    if(b2&0x20)dy+=81; if(b2&0x10)dy-=81;
+    dy=-dy; x+=dx; y+=dy;
+    const ctl=b2&0xC3;
+    let t = ctl===0xC3 ? COLORCHG : ((b2&0x83)===0x83 ? JUMP : STITCH);
+    recs.push({x,y,t,dx,dy});
+  }
+  return recs;
+}
+
+// ── Palette (matches render_dst.py) ─────────────────────────────────────
+function buildPalette(n){
+  const base=[[60,150,70],[110,70,165],[180,175,60],[200,70,70],[60,110,200],
+    [200,120,50],[40,160,160],[190,80,170],[120,95,60],[90,90,95]];
+  const out=base.slice();
+  for(let i=base.length;i<n;i++){
+    const h=(i*0.61803398875)%1, s=0.62, v=0.74;
+    const k=(m)=>{const z=(m+h*6)%6; return Math.round(255*(v - v*s*Math.max(0,Math.min(z,4-z,1))));};
+    out.push([k(5),k(3),k(1)]);
+  }
+  return out;
+}
+const rgb = a => `rgb(${a[0]},${a[1]},${a[2]})`;
+
+// ── State ───────────────────────────────────────────────────────────────
+let recs=null, infColors=null, view={zoom:1, ox:0, oy:0};
+const cvs=document.getElementById('c'), ctx=cvs.getContext('2d');
+const dropEl=document.getElementById('drop');
+
+function computeStats(r){
+  let st=0,jmp=0,col=0, j10=0, maxj=0;
+  let minx=1e9,miny=1e9,maxx=-1e9,maxy=-1e9;
+  for(const p of r){
+    if(p.t===COLORCHG){col++; continue;}
+    if(p.t===JUMP){ jmp++; const d=Math.hypot(p.dx,p.dy)/10; if(d>10)j10++; if(d>maxj)maxj=d; }
+    else st++;
+    if(p.x<minx)minx=p.x; if(p.x>maxx)maxx=p.x;
+    if(p.y<miny)miny=p.y; if(p.y>maxy)maxy=p.y;
+  }
+  return {st,jmp,col:col+1,j10,maxj,
+    w:(maxx-minx)/10,h:(maxy-miny)/10, minx,miny,maxx,maxy};
+}
+
+function renderStats(s){
+  const el=document.getElementById('stats');
+  const j10cls = s.j10===0 ? 'good' : 'bad';
+  const mjcls  = s.maxj<10 ? 'good' : 'bad';
+  el.innerHTML =
+    `<span>stitches <b>${s.st.toLocaleString()}</b></span>`+
+    `<span>blocks <b>${s.col}</b></span>`+
+    `<span>jumps <b>${s.jmp}</b></span>`+
+    `<span class="${j10cls}">jumps&gt;10mm <b>${s.j10}</b></span>`+
+    `<span class="${mjcls}">max jump <b>${s.maxj.toFixed(1)}mm</b></span>`+
+    `<span>bbox <b>${s.w.toFixed(0)}×${s.h.toFixed(0)}mm</b></span>`;
+}
+
+function draw(){
+  if(!recs) return;
+  const dpr=Math.min(window.devicePixelRatio||1, 2.5);
+  const W=cvs.clientWidth, H=cvs.clientHeight;
+  cvs.width=Math.round(W*dpr); cvs.height=Math.round(H*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  const thread=document.getElementById('tThread').checked;
+  ctx.fillStyle = thread ? '#f4f2ee' : '#d6e6f5';
+  ctx.fillRect(0,0,W,H);
+
+  const s=computeStats(recs);
+  const pad=14;
+  const scale = Math.min((W-2*pad)/(s.maxx-s.minx||1),(H-2*pad)/(s.maxy-s.miny||1)) * view.zoom;
+  const cx=(s.minx+s.maxx)/2, cy=(s.miny+s.maxy)/2;
+  const tx=W/2 + view.ox, ty=H/2 + view.oy;
+  const PX = x => tx + (x-cx)*scale;
+  const PY = y => ty + (y-cy)*scale;
+
+  const palette = (!thread && infColors) ? infColors : buildPalette(Math.max(s.col,10));
+  const showTravels=document.getElementById('tShow').checked;
+  const sw = thread ? Math.max(2, scale*0.0035*10) : 1;  // thread mode = fat & flattering
+
+  // Pass 1: stitches (hairlines per block)
+  ctx.lineWidth=sw; ctx.lineCap='round'; ctx.lineJoin='round';
+  let ci=0, last=null, lastT=null;
+  ctx.beginPath();
+  let curCol = rgb(palette[0%palette.length]);
+  ctx.strokeStyle=curCol;
+  for(const p of recs){
+    if(p.t===COLORCHG){ ctx.stroke(); ctx.beginPath(); ci++; curCol=rgb(palette[ci%palette.length]); ctx.strokeStyle=curCol; last=null; lastT=p.t; continue; }
+    if(p.t===STITCH){
+      if(last && lastT===STITCH){ ctx.moveTo(PX(last.x),PY(last.y)); ctx.lineTo(PX(p.x),PY(p.y)); }
+      last=p; lastT=p.t;
+    } else { // jump
+      last=p; lastT=p.t;
+    }
+  }
+  ctx.stroke();
+
+  // Pass 2: travels on top (thin, slate). Reveals the spaghetti like EVP.
+  if(showTravels && !thread){
+    ctx.lineWidth=1; ctx.strokeStyle='rgba(70,90,150,0.85)';
+    ctx.beginPath(); last=null; lastT=null;
+    for(const p of recs){
+      if(p.t===COLORCHG){ last=null; lastT=p.t; continue; }
+      if(p.t===JUMP){
+        if(last) { ctx.moveTo(PX(last.x),PY(last.y)); ctx.lineTo(PX(p.x),PY(p.y)); }
+        last=p; lastT=p.t;
+      } else { last=p; lastT=p.t; }
+    }
+    ctx.stroke();
+  }
+}
+
+function load(buf){
+  recs=decodeDST(buf);
+  view={zoom:1,ox:0,oy:0};
+  document.getElementById('zoom').value=1;
+  document.getElementById('zlab').textContent='1.0×';
+  dropEl.style.display='none';
+  renderStats(computeStats(recs));
+  draw();
+}
+
+// ── Inputs ──────────────────────────────────────────────────────────────
+document.getElementById('dst').addEventListener('change',e=>{
+  const f=e.target.files[0]; if(!f) return;
+  f.arrayBuffer().then(load);
+});
+document.getElementById('inf').addEventListener('change',e=>{
+  const f=e.target.files[0]; if(!f) return;
+  f.text().then(t=>{
+    const cols=[]; let m;
+    const re1=/Color=(\d+),(\d+),(\d+)/g;
+    while((m=re1.exec(t))) cols.push([+m[1],+m[2],+m[3]]);
+    if(!cols.length){ const re2=/Hex=#([0-9A-Fa-f]{6})/g;
+      while((m=re2.exec(t))) cols.push([parseInt(m[1].slice(0,2),16),parseInt(m[1].slice(2,4),16),parseInt(m[1].slice(4,6),16)]); }
+    infColors=cols.length?cols:null; draw();
+  });
+});
+['tShow','tThread'].forEach(id=>document.getElementById(id).addEventListener('change',draw));
+const zoom=document.getElementById('zoom');
+zoom.addEventListener('input',()=>{ view.zoom=+zoom.value;
+  document.getElementById('zlab').textContent=view.zoom.toFixed(1)+'×'; draw(); });
+
+// drag to pan
+let drag=null;
+cvs.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,ox:view.ox,oy:view.oy}; cvs.setPointerCapture(e.pointerId);});
+cvs.addEventListener('pointermove',e=>{ if(!drag)return; view.ox=drag.ox+(e.clientX-drag.x); view.oy=drag.oy+(e.clientY-drag.y); draw(); });
+cvs.addEventListener('pointerup',()=>drag=null);
+cvs.addEventListener('pointercancel',()=>drag=null);
+
+// drop file
+const wrap=document.getElementById('wrap');
+['dragover','drop'].forEach(ev=>wrap.addEventListener(ev,e=>e.preventDefault()));
+wrap.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) f.arrayBuffer().then(load); });
+
+window.addEventListener('resize',draw);
+</script>
+</body>
+</html>
