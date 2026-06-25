@@ -726,6 +726,9 @@ router.post("/generate-embroidery",
         colorCounts  = result.colorCounts;
       } else if (useV70ForCartoon || (effectiveMode !== "logo" && useV71)) {
         const filtPm   = buildFilteredPixMap(filteredRegions, selectedColors, canvasSize, pixMap, colors);
+        { const _cp=new Array(selectedColors.length).fill(0);
+          for(let _i=0;_i<filtPm.length;_i++){const _v=filtPm[_i]; if(_v>=0&&_v<_cp.length)_cp[_v]++;}
+          console.log(`[${rid}] color reality:`+selectedColors.map((c,k)=>' '+c+'='+(_cp[k]||0)+'px'+((_cp[k]||0)<200?'(noise/skip)':'')).join('')); }
         // v72 unified portrait engine: outline-removal → whole-region fills +
         // underlay + tie-offs + back-to-front order + outline on top.
         let result;
