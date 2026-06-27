@@ -429,7 +429,7 @@ router.post("/detect-shapes",
           if (added.length) {
             // HARD CAP: never grow palette past user-requested colorCount.
             // Face colors take priority over body colors.
-            colors = added.concat(colors).slice(0, colorCount);
+            colors = (function(){var _k=colors.slice();for(var _i=0;_i<added.length;_i++){if(_k.length>=colorCount)break;var _f=hexToRgb(added[_i]);var _dup=_k.some(function(_c){var _q=hexToRgb(_c);return (_q.r-_f.r)*(_q.r-_f.r)+(_q.g-_f.g)*(_q.g-_f.g)+(_q.b-_f.b)*(_q.b-_f.b)<1600;});if(!_dup)_k.push(added[_i]);}return _k.slice(0,colorCount);})(); /* PALETTE_MERGE_FIX */
             console.log(`[${rid}] face-palette added ${Math.min(added.length, colorCount)} (kept total=${colors.length}/${colorCount})`);
           }
           // Safety net: any downstream addition that slipped past.
@@ -575,7 +575,7 @@ router.post("/generate-embroidery",
             if (added.length) {
               // HARD CAP: total palette must NEVER exceed user-requested colorCount.
               // Face colors first (priority for facial features), then drop excess body colors.
-              colors = added.concat(colors).slice(0, colorCount);
+              colors = (function(){var _k=colors.slice();for(var _i=0;_i<added.length;_i++){if(_k.length>=colorCount)break;var _f=hexToRgb(added[_i]);var _dup=_k.some(function(_c){var _q=hexToRgb(_c);return (_q.r-_f.r)*(_q.r-_f.r)+(_q.g-_f.g)*(_q.g-_f.g)+(_q.b-_f.b)*(_q.b-_f.b)<1600;});if(!_dup)_k.push(added[_i]);}return _k.slice(0,colorCount);})(); /* PALETTE_MERGE_FIX */
               console.log(`[${rid}] face-palette added ${Math.min(added.length, colorCount)} colors (kept total=${colors.length}/${colorCount})`);
               // Rebuild pixMap to include the new colors
               pixMap = await buildPixelMap(cleanedBuffer, maskFile?.buffer, colors, canvasSize);
