@@ -1,56 +1,50 @@
 #!/usr/bin/env python3
 """
-render_dst.py — render a DST with thread-accurate or viewer-matching colors.
+render_dst.py — FAITHFUL embroidery viewer. Shows a DST the way Embroidery
+Viewer Pro (EVP) does, so the render is a trustworthy reference: if it looks
+messy, the file IS messy. No cosmetic smoothing, no hidden jumps.
+
+Why the old render lied: it drew stitches ~3px thick with bead dots, which
+smears a sparse/chaotic fill into a solid clean shape, and it hid jumps in the
+comparison modes. This version draws every stitch as a hairline and every
+travel (jump/trim) as a thin line on top — exactly what makes EVP honest.
 
 Modes:
-  thread   — thick lines, fabric-coverage check
-  wire     — 1px wireframe
-  viewer   — thin lines, neutral bg (generic)
-  inf      — real thread colors from .inf file (if present)
-  embmod   — match Embroidermodder Android default palette (best-effort)
+  evp     (default) — faithful EVP-style: thin threads, distinct block colors,
+                      visible travels, light-blue canvas. USE THIS FOR TESTS.
+  thread            — legacy thick cosmetic render (flattering; do NOT trust).
+  wire              — 1px monochrome wireframe.
 
-Usage: python3 render_dst.py IN.dst OUT.png [scale_px_per_mm] [mode] [show_travels]
+Usage: python3 render_dst.py IN.dst OUT.png [ppmm] [mode] [show_travels]
 """
-import sys, os, re
-import pyembroidery as pe
+import sys, os, re, colorsys
 from PIL import Image, ImageDraw
 
-# ── Palettes ──────────────────────────────────────────────────────────
+# Command constants (mapped from pyembroidery in the loader; kept as plain ints
+# so the drawing code is testable without pyembroidery).
+STITCH, JUMP, TRIM, COLOR_CHANGE = 0, 1, 2, 3
 
-# Actual digitizer colors from INF file (override with real thread data)
-# Read dynamically from companion .inf
-
-# Embroidermodder-style viewer palette: high-contrast block identifiers.
-# These are NOT real thread colors — just visually distinct so you can
-# tell blocks apart when comparing before/after code changes.
-EMBMOD_PALETTE = [
-    (220,  60,  60),   # 0  red           — Block 0
-    ( 60, 100, 220),   # 1  blue          — Block 1
-    ( 60, 180,  80),   # 2  bright green  — Block 2
-    (240, 220, 100),   # 3  yellow        — Block 3
-    ( 40,  40,  40),   # 4  charcoal      — Block 4
-    (160, 100,  60),   # 5  brown         — Block 5
-    (220, 200, 220),   # 6  light grey    — Block 6
-    (180,  60, 180),   # 7  purple        — Block 7
-]
-
-# Generic fallback palette (when nothing else available)
-FALLBACK_PALETTE = [
-    (0,0,0), (255,255,255), (180,30,30), (220,150,0), (220,200,0),
-    (20,160,60), (30,120,220), (150,40,200), (180,100,40), (220,180,140),
-    (230,90,160), (120,90,40), (90,90,90), (0,170,170), (180,180,0),
-    (200,120,80),
-]
-
-# ── Helpers ───────────────────────────────────────────────────────────
+# ── Palette: distinct saturated hues per block, EVP-like separability ──────
+def build_palette(n):
+    base = [
+        (60, 150, 70), (110, 70, 165), (180, 175, 60), (200, 70, 70),
+        (60, 110, 200), (200, 120, 50), (40, 160, 160), (190, 80, 170),
+        (120, 95, 60), (90, 90, 95),
+    ]
+    if n <= len(base):
+        return base
+    out = list(base)
+    for i in range(len(base), n):
+        h = (i * 0.61803398875) % 1.0
+        r, g, b = colorsys.hsv_to_rgb(h, 0.62, 0.74)
+        out.append((int(r*255), int(g*255), int(b*255)))
+    return out
 
 def parse_inf(inf_path):
-    """Parse .inf file for thread colors and names."""
     if not os.path.exists(inf_path):
         return []
     colors = []
-    with open(inf_path) as f:
-        text = f.read()
+    text = open(inf_path).read()
     for m in re.finditer(r'Color=(\d+),(\d+),(\d+)', text):
         colors.append((int(m.group(1)), int(m.group(2)), int(m.group(3))))
     if not colors:
@@ -59,85 +53,95 @@ def parse_inf(inf_path):
             colors.append((int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)))
     return colors
 
+# ── Loader: pyembroidery → normalized records ─────────────────────────────
+def load_records(path):
+    import pyembroidery as pe
+    patt = pe.read(path)
+    cmap = {pe.STITCH: STITCH, pe.JUMP: JUMP, pe.TRIM: TRIM,
+            pe.COLOR_CHANGE: COLOR_CHANGE}
+    recs = []
+    for x, y, c in patt.stitches:
+        recs.append((x, y, cmap.get(c, None)))
+    return recs
 
-def render(inp, outp, ppmm=8.0, mode="thread", show_travels=True):
-    patt = pe.read(inp)
-    cmds = patt.stitches
-
-    stitch_pts = [(c[0], c[1]) for c in cmds if c[2] == pe.STITCH]
-    if not stitch_pts:
-        print("No stitches found")
-        return
-    xs, ys = zip(*stitch_pts)
+# ── Faithful renderer ──────────────────────────────────────────────────────
+def render(records, outp, ppmm=8.0, mode="evp", show_travels=True, inf_colors=None):
+    pts = [(x, y) for x, y, c in records if c == STITCH]
+    if not pts:
+        print("No stitches found"); return
+    xs, ys = zip(*pts)
     minx, miny, maxx, maxy = min(xs), min(ys), max(xs), max(ys)
-
     sc = ppmm / 10.0
-    W, H = int((maxx - minx) * sc) + 40, int((maxy - miny) * sc) + 40
 
-    bg = (214, 230, 245) if mode in ("viewer", "inf", "embmod") else (244, 242, 238)
-    img = Image.new("RGB", (W, H), bg)
+    if mode == "thread":            # legacy thick cosmetic render (do not trust)
+        SS = 1
+        bg = (244, 242, 238)
+        stitch_w = max(1, round(0.35 * ppmm))
+        travel_w = 1
+    elif mode == "wire":            # 1px monochrome wireframe
+        SS = 1
+        bg = (255, 255, 255)
+        stitch_w = 1
+        travel_w = 1
+    else:                           # evp + any legacy name (inf/viewer/embmod) → faithful
+        mode = "evp"
+        SS = 3                      # supersample → smooth hairline threads
+        bg = (214, 230, 245)        # EVP light-blue canvas
+        stitch_w = SS               # 1px effective thread
+        travel_w = SS
+
+    pad = 20
+    W = int((maxx - minx) * sc) + pad * 2
+    H = int((maxy - miny) * sc) + pad * 2
+    img = Image.new("RGB", (W * SS, H * SS), bg)
     d = ImageDraw.Draw(img)
 
     def P(x, y):
-        return (int((x - minx) * sc) + 20, int((y - miny) * sc) + 20)
+        return (int(((x - minx) * sc + pad) * SS),
+                int(((y - miny) * sc + pad) * SS))
 
-    thread = (max(1, round(0.10 * ppmm)) if mode in ("viewer", "inf", "embmod")
-              else max(1, round(0.35 * ppmm)) if mode == "thread"
-              else 1)
+    n_blocks = sum(1 for _, _, c in records if c == COLOR_CHANGE) + 1
+    palette = (inf_colors if (mode == "evp" and inf_colors)
+               else build_palette(max(n_blocks, 10)))
 
-    inf_colors = parse_inf(os.path.splitext(inp)[0] + ".inf")
-    if mode == "embmod":
-        palette, label = EMBMOD_PALETTE, "EMBMOD"
-    elif mode == "inf" and inf_colors:
-        palette, label = inf_colors, "INF"
-    elif inf_colors:
-        palette, label = inf_colors, "INF"
-    else:
-        palette, label = FALLBACK_PALETTE, "FALLBACK"
-
+    # Pass 1: stitches (thin, per-block color). Pass 2: travels on top.
     ci, last, lastcmd = 0, None, None
-    travels, stitch_count = 0, 0
-    travel_segs = []
-
-    for x, y, c in cmds:
-        if c == pe.COLOR_CHANGE:
+    travel_segs, nstitch, ntravel = [], 0, 0
+    for x, y, c in records:
+        if c == COLOR_CHANGE:
             ci += 1; last = None; lastcmd = c; continue
-
-        if c == pe.STITCH:
-            stitch_count += 1
-            if last is not None and lastcmd == pe.STITCH:
-                col = palette[ci % len(palette)]
-                a, b = P(*last), P(x, y)
-                d.line([a, b], fill=col, width=thread)
-                if mode == "thread" and thread >= 3:
-                    r = thread // 2
-                    for px, py in (a, b):
-                        d.ellipse([px - r, py - r, px + r, py + r], fill=col)
+        if c == STITCH:
+            nstitch += 1
+            if last is not None and lastcmd == STITCH:
+                d.line([P(*last), P(x, y)], fill=palette[ci % len(palette)],
+                       width=stitch_w)
             last = (x, y); lastcmd = c
-
-        elif c in (pe.JUMP, pe.TRIM):
+        elif c in (JUMP, TRIM):
             if last is not None and show_travels:
                 travel_segs.append((P(*last), P(x, y), c))
-                travels += 1
+                ntravel += 1
             last = (x, y); lastcmd = c
         else:
             last = (x, y); lastcmd = c
 
-    for _a, _b, _c in travel_segs:
-        d.line([_a, _b], fill=(0, 60, 255), width=2)
-        if _c == pe.TRIM:
-            d.ellipse([_b[0]-3, _b[1]-3, _b[0]+3, _b[1]+3], outline=(230, 0, 0), width=2)
-    img.save(outp)
-    print(f"rendered {outp}  ({W}x{H}px, {ppmm}px/mm, mode={mode}/{label}, "
-          f"thread={thread}px)  blocks={ci+1}  stitches={stitch_count}  travels={travels}")
+    # Travels drawn on TOP — thin, faithful. Jumps slate, trims slightly redder
+    # so a trim-heavy file reads as busy exactly like it does in EVP.
+    for a, b, c in travel_segs:
+        col = (70, 90, 150) if c == JUMP else (150, 70, 90)
+        d.line([a, b], fill=col, width=travel_w)
 
+    if SS > 1:
+        img = img.resize((W, H), Image.LANCZOS)
+    img.save(outp)
+    print(f"rendered {outp}  ({W}x{H}px @ {ppmm}px/mm, mode={mode})  "
+          f"blocks={n_blocks}  stitches={nstitch}  travels={ntravel}")
 
 if __name__ == "__main__":
-    inp = sys.argv[1]
-    outp = sys.argv[2]
+    inp, outp = sys.argv[1], sys.argv[2]
     if os.path.basename(outp) == outp:
         outp = os.path.join("/storage/emulated/0/Download/", outp)
     ppmm = float(sys.argv[3]) if len(sys.argv) > 3 else 8.0
-    mode = sys.argv[4] if len(sys.argv) > 4 else "thread"
+    mode = sys.argv[4] if len(sys.argv) > 4 else "evp"
     show_travels = (sys.argv[5] != "0") if len(sys.argv) > 5 else True
-    render(inp, outp, ppmm, mode, show_travels)
+    inf = parse_inf(os.path.splitext(inp)[0] + ".inf")
+    render(load_records(inp), outp, ppmm, mode, show_travels, inf)
