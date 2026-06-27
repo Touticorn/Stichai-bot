@@ -96,7 +96,7 @@ async function run() {
     colors,
     canvasSize,
     pxPerMm,
-    { mode, selectedColors: colors, tune }
+    { mode, selectedColors: colors, tune, ...tune }
   );
 
   const fillStitches = stitches.filter(s => s.type === "stitch").length;
