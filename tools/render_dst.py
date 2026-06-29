@@ -83,6 +83,11 @@ def render(records, outp, ppmm=8.0, mode="evp", show_travels=True, inf_colors=No
         bg = (255, 255, 255)
         stitch_w = 1
         travel_w = 1
+    elif mode == "evp_dense":       # EVP style with realistic thread thickness
+        SS = 3
+        bg = (214, 230, 245)
+        stitch_w = max(SS, round(0.4 * ppmm) * SS)  # ~0.4mm thread width (denser)
+        travel_w = SS
     else:                           # evp + any legacy name (inf/viewer/embmod) → faithful
         mode = "evp"
         SS = 3                      # supersample → smooth hairline threads
