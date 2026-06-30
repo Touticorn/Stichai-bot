@@ -350,9 +350,35 @@ router.post("/detect-shapes",
             ).sort((a, b) => (hexCounts.get(b) || 0) - (hexCounts.get(a) || 0));
             
             // Take top bucket colors (leave 2 slots for centroids)
-            const bucketSlots = Math.max(3, colorCount - 2);
+            // Leave room for face-palette hair colors: take colorCount-4 bucket
+            // colors, leaving 3-4 slots for centroid enrichment + face-palette hair.
+            const bucketSlots = Math.max(3, colorCount - 4);
             const enriched = bucketColors.slice(0, bucketSlots);
             const enrichedLabs = enriched.map(c => rgbToLab(hexToRgb(c)));
+            // Pre-add face-palette HAIR colors before centroid enrichment.
+            // Hair colors are spatially detected (top of subject) and represent
+            // distinct regions that global color extraction misses.
+            try {
+              const { extractFacePalette } = require('../lib/face-palette');
+              const preFaces = await extractFacePalette(
+                (typeof _lastCartoonBuf !== 'undefined' && _lastCartoonBuf) || sourceBuffer,
+                { colorsPerFace: 3, scanWidth: 256 }
+              );
+              for (const f of preFaces) {
+                if (!f.isHair) continue;
+                for (const hc of f.colors) {
+                  if (enriched.length >= colorCount - 1) break; // leave 1 slot for centroid
+                  if (enriched.some(c => normHex(c) === normHex(hc))) continue;
+                  const hLab = rgbToLab(hexToRgb(hc));
+                  const minD = Math.min(...enrichedLabs.map(l => dE(hLab, l)));
+                  if (minD > 10) {
+                    enriched.push(hc);
+                    enrichedLabs.push(hLab);
+                    console.log(`[${rid}] pre-enrichment hair color added ${hc} (dE=${minD.toFixed(0)})`);
+                  }
+                }
+              }
+            } catch (e) { console.warn(`[${rid}] pre-enrichment hair scan skipped:`, e.message); }
             
             // Fill remaining slots with centroids not already represented
             for (const ch of centroidHexes) {
