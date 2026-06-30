@@ -322,7 +322,65 @@ router.post("/detect-shapes",
           }
         }
       } else if (bucketColors?.length >= 3) {
-        colors       = bucketColors;
+        // CENTROID_ENRICHMENT: when Gemini is unavailable (direct mode / credits
+        // depleted), bucketColors from extractColorsFromUnmasked can miss small
+        // but important color clusters (e.g. gray hair merged into dark outline).
+        // Strategy: take fewer bucket colors (colorCount-2), then fill remaining
+        // slots with median-cut centroids that represent ALL color clusters.
+        // This ensures small-but-distinct clusters (gray hair, dark brown) get
+        // palette slots even if they're a small percentage of pixels.
+        if (cartoonOk) {
+          try {
+            const { quantizeBuffer } = require("../lib/quantize");
+            const qq2 = await quantizeBuffer(
+              (typeof _lastCartoonBuf !== "undefined" && _lastCartoonBuf) || cleanedBuffer,
+              colorCount + 1
+            );
+            // Sort centroids by frequency in the quantized image
+            const qRaw = await require("sharp")(qq2.buffer).raw().toBuffer({ resolveWithObject: true });
+            const hexCounts = new Map();
+            const { data: qd, info: qi2 } = qRaw;
+            const qch = qi2.channels;
+            for (let i = 0; i < qd.length; i += qch) {
+              const hex = "#" + [qd[i], qd[i+1], qd[i+2]].map(c => c.toString(16).padStart(2,"0")).join("").toUpperCase();
+              hexCounts.set(hex, (hexCounts.get(hex) || 0) + 1);
+            }
+            const centroidHexes = (qq2.centroids || []).map(([r,g,b]) =>
+              "#" + [r,g,b].map(c => c.toString(16).padStart(2,"0")).join("").toUpperCase()
+            ).sort((a, b) => (hexCounts.get(b) || 0) - (hexCounts.get(a) || 0));
+            
+            // Take top bucket colors (leave 2 slots for centroids)
+            const bucketSlots = Math.max(3, colorCount - 2);
+            const enriched = bucketColors.slice(0, bucketSlots);
+            const enrichedLabs = enriched.map(c => rgbToLab(hexToRgb(c)));
+            
+            // Fill remaining slots with centroids not already represented
+            for (const ch of centroidHexes) {
+              if (enriched.length >= colorCount) break;
+              const cLab = rgbToLab(hexToRgb(ch));
+              const minDist = Math.min(...enrichedLabs.map(l => dE(cLab, l)));
+              if (minDist > 15) {
+                enriched.push(ch);
+                enrichedLabs.push(cLab);
+                console.log(`[${rid}] centroid enrichment added ${ch} (dE=${minDist.toFixed(0)} from nearest)`);
+              }
+            }
+            // If still short, add back from bucketColors
+            for (const bc of bucketColors) {
+              if (enriched.length >= colorCount) break;
+              if (!enriched.some(c => normHex(c) === normHex(bc))) {
+                enriched.push(bc);
+              }
+            }
+            colors = enriched.slice(0, colorCount);
+            console.log(`[${rid}] enriched palette: ${colors.join(', ')}`);
+          } catch (e) {
+            console.warn(`[${rid}] centroid enrichment skipped:`, e.message);
+            colors = bucketColors;
+          }
+        } else {
+          colors = bucketColors;
+        }
         paletteSource = "buckets";
       } else {
         // Bucket extraction collapsed (e.g. magenta-heavy cartoon with mask skipped
