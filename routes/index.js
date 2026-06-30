@@ -332,10 +332,10 @@ router.post("/detect-shapes",
         if (cartoonOk) {
           try {
             const { quantizeBuffer } = require("../lib/quantize");
-            const qq2 = await quantizeBuffer(
-              (typeof _lastCartoonBuf !== "undefined" && _lastCartoonBuf) || cleanedBuffer,
-              colorCount + 1
-            );
+            // Use cleanedBuffer (post-letterbox, post-face-simplify) — same image
+            // that extractColorsFromUnmasked used. This ensures centroids match
+            // the actual pixel map, not the pre-crop cartoon.
+            const qq2 = await quantizeBuffer(cleanedBuffer, colorCount + 1);
             // Sort centroids by frequency in the quantized image
             const qRaw = await require("sharp")(qq2.buffer).raw().toBuffer({ resolveWithObject: true });
             const hexCounts = new Map();
@@ -359,7 +359,14 @@ router.post("/detect-shapes",
               if (enriched.length >= colorCount) break;
               const cLab = rgbToLab(hexToRgb(ch));
               const minDist = Math.min(...enrichedLabs.map(l => dE(cLab, l)));
-              if (minDist > 15) {
+              // Add centroid if it's distant enough from existing colors.
+              // Use dE > 15 OR luminance gap > 20 — catches colors that are
+              // close in hue but different in brightness (e.g. gray hair vs
+              // skin tone: both warm, but lum differs by 20+).
+              const existingLum = enrichedLabs.map(l => Math.round(l.l));
+              const newLum = Math.round(cLab.l);
+              const lumGap = Math.max(...enrichedLabs.map(l => Math.abs(Math.round(l.l) - newLum)));
+              if (minDist > 15 || (minDist > 8 && lumGap > 20)) {
                 enriched.push(ch);
                 enrichedLabs.push(cLab);
                 console.log(`[${rid}] centroid enrichment added ${ch} (dE=${minDist.toFixed(0)} from nearest)`);
