@@ -90,9 +90,9 @@ def render(records, outp, ppmm=8.0, mode="evp", show_travels=True, inf_colors=No
         travel_w = SS
     else:                           # evp + any legacy name (inf/viewer/embmod) → faithful
         mode = "evp"
-        SS = 3                      # supersample → smooth hairline threads
+        SS = 3                      # supersample → smooth threads
         bg = (214, 230, 245)        # EVP light-blue canvas
-        stitch_w = SS               # 1px effective thread
+        stitch_w = max(SS, round(0.6 * ppmm) * SS)  # ~0.6mm thread (dense, EVP-like)
         travel_w = SS
 
     pad = 20
