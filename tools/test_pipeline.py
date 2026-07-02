@@ -87,8 +87,8 @@ def render_score(dst_path, original_path, render_path):
         except: pass
     return 0.5  # default neutral score
 
-def run_pipeline(input_img, mode, color_count, canvas_mm, tune_json="{}"):
-    """Run the full pipeline and return scores."""
+def run_pipeline(input_img, mode, color_count, canvas_mm, tune_json="{}", skip_render=False):
+    """Run the full pipeline and return scores. skip_render=True for speed."""
     from pathlib import Path
     work_dir = Path(__file__).parent / "_work"
     work_dir.mkdir(exist_ok=True)
@@ -131,13 +131,19 @@ def run_pipeline(input_img, mode, color_count, canvas_mm, tune_json="{}"):
         for f in qa_metrics["flags"]:
             print(f"  ⚠ {f}")
     
-    # Render score
-    print(f"[pipeline] Rendering + visual scoring...")
-    rs = render_score(dst_path, input_img, render_path)
-    print(f"  Render score: {rs:.3f}")
+    # Render score (skip for intermediate autotune runs)
+    rs = 0.5  # neutral default
+    if not skip_render:
+        print(f"[pipeline] Rendering + visual scoring...")
+        rs = render_score(dst_path, input_img, render_path)
+        print(f"  Render score: {rs:.3f}")
     
     # Combined score (weighted: QA 40%, render 60%)
-    combined = 0.4 * qa_score_val + 0.6 * rs
+    # When skip_render, use QA only (100%)
+    if skip_render:
+        combined = qa_score_val
+    else:
+        combined = 0.4 * qa_score_val + 0.6 * rs
     print(f"[pipeline] Combined score: {combined:.3f}")
     print(f"  DST: {dst_path}")
     print(f"  Render: {render_path}")

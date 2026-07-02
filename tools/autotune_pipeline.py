@@ -19,16 +19,13 @@ import sys, os, json, copy, itertools
 sys.path.insert(0, os.path.dirname(__file__))
 from test_pipeline import run_pipeline
 
-# Parameters to tune and their search ranges
+# Reduced params for faster autotune (most impactful only)
 TUNE_PARAMS = {
-    "potraceTurdSize":   [100, 200, 500, 1000],
+    "potraceTurdSize":   [100, 300, 500, 1000],
     "darkTurdSize":      [500, 1000, 2000],
-    "tatamiRow":         [2, 3],
-    "bridgeMaxGap":      [4, 6, 8],
+    "tatamiRow":         [2, 3, 4],
+    "bridgeMaxGap":      [4, 8],
     "absorbMinArea":     [100, 250, 500],
-    "absorbMaxArea":     [10000, 20000, 30000],
-    "darkUnifyLum":      [40, 58, 70],
-    "darkUnifyThresh":   [70, 95, 120],
 }
 
 def coordinate_descent(input_img, mode, colors, mm, max_iters=2):
@@ -56,12 +53,13 @@ def coordinate_descent(input_img, mode, colors, mm, max_iters=2):
                 trial_tune = copy.deepcopy(best_tune)
                 trial_tune[param] = val
                 
-                result = run_pipeline(input_img, mode, colors, mm, json.dumps(trial_tune))
+                # Skip rendering for intermediate runs (3x faster)
+                result = run_pipeline(input_img, mode, colors, mm, json.dumps(trial_tune), skip_render=True)
                 if not result:
                     continue
                 
                 score = result["combined"]
-                print(f"  {param}={val}: score={score:.3f} (best={param_best_score:.3f})")
+                print(f"  {param}={val}: qa_score={score:.3f} (best={param_best_score:.3f})")
                 
                 if score > param_best_score:
                     param_best_score = score
